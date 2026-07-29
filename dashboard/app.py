@@ -159,10 +159,15 @@ def render_watchlist_section(storage: Storage, symbols: list[str]) -> None:
         st.info("Chưa có mã nào trong danh sách theo dõi.")
         return
 
+    # Gộp truy vấn (1 lượt gọi cho TẤT CẢ mã) thay vì hỏi từng mã một —
+    # xem giải thích chi tiết trong docstring `get_latest_many()`.
+    snapshot_map = storage.get_latest_many("indicator_snapshot", symbols)
+    realtime_map = storage.get_latest_many("realtime_price", symbols)
+
     rows = []
     for symbol in symbols:
-        record = storage.get_latest("indicator_snapshot", symbol)
-        realtime_record = storage.get_latest("realtime_price", symbol)
+        record = snapshot_map.get(symbol)
+        realtime_record = realtime_map.get(symbol)
 
         if record is None:
             rows.append({
@@ -1314,6 +1319,17 @@ def render_stock_character_section(storage: Storage) -> None:
     """Hiển thị báo cáo tính cách giao dịch (`core.stock_character_classifier`)
     cho toàn bộ mã đã quét — dứt khoát tăng/giảm, bùng nổ ngắn, lình xình,
     trung tính, kèm cảnh báo SQUAT/CHURNING nếu có.
+
+    TỐI ƯU TỐC ĐỘ (29/07/2026): trước đây gọi `get_latest()` RIÊNG cho
+    từng mã (N lượt round-trip Supabase). Giờ dùng `get_latest_many()`
+    để gộp lại CHỈ CÒN 1 lượt gọi tổng, bất kể quét bao nhiêu mã.
+
+    CHỌN NHIỀU MÃ + LƯU/XÓA LỰA CHỌN (29/07/2026): trước đây chỉ có ô
+    tìm kiếm lọc theo 1 từ khóa — muốn xem vài mã cụ thể phải tìm từng
+    mã một. Giờ thêm `st.multiselect` cho phép chọn NHIỀU mã cùng lúc,
+    kèm nút lưu lựa chọn (bền vào storage, riêng theo từng người xem
+    qua `?user=...` — giống cơ chế watchlist) và nút xóa lựa chọn đã
+    lưu để quay lại xem TOÀN BỘ mã như mặc định.
     """
     st.subheader("🎭 Tính cách giao dịch từng mã")
     st.caption(
@@ -1322,23 +1338,52 @@ def render_stock_character_section(storage: Storage) -> None:
         "dùng để điều chỉnh độ tin cậy tín hiệu Mua/Bán và phân bổ vốn."
     )
 
-    symbol_ids = storage.query_all_keys("stock_character")
-    if not symbol_ids:
+    all_symbol_ids = storage.query_all_keys("stock_character")
+    if not all_symbol_ids:
         st.info(
             "Chưa có dữ liệu. Chạy `main.py` hoặc `run_full_market.py` để "
             "tính tính cách giao dịch cho các mã."
         )
         return
 
-    symbol_ids = render_search_box_if_needed(symbol_ids, key="stock_character_search")
+    user_id = get_current_user_id()
+    saved_record = storage.get_latest("stock_character_selection", user_id)
+    saved_selection = saved_record["data"].get("symbols", []) if saved_record else []
+    # Chỉ giữ lại các mã đã lưu mà VẪN còn tồn tại dữ liệu (tránh lỗi nếu
+    # mã đã bị bỏ khỏi lần quét gần nhất).
+    default_selection = [s for s in saved_selection if s in all_symbol_ids]
+
+    selected = st.multiselect(
+        "🔎 Chọn các mã muốn xem (để trống = xem TẤT CẢ mã)",
+        options=sorted(all_symbol_ids),
+        default=default_selection,
+        key="stock_character_multiselect",
+    )
+
+    col_save, col_clear = st.columns(2)
+    with col_save:
+        if st.button("💾 Lưu lựa chọn này", key="stock_character_save_btn"):
+            storage.save("stock_character_selection", user_id, {"symbols": selected})
+            st.success(f"Đã lưu {len(selected)} mã đã chọn.")
+    with col_clear:
+        if st.button("🗑️ Xóa lựa chọn đã lưu (xem lại toàn bộ)", key="stock_character_clear_btn"):
+            storage.save("stock_character_selection", user_id, {"symbols": []})
+            st.rerun()
+
+    symbol_ids = selected if selected else all_symbol_ids
+    if not selected:
+        symbol_ids = render_search_box_if_needed(symbol_ids, key="stock_character_search")
 
     nhan_emoji = {
         "DUT_KHOAT_TANG": "🟢", "DUT_KHOAT_GIAM": "🔴",
         "BUNG_NO_NGAN": "🟠", "LINH_XINH": "🟡", "TRUNG_TINH": "⚪",
     }
+
+    character_map = storage.get_latest_many("stock_character", symbol_ids)
+
     rows = []
     for sym in symbol_ids:
-        record = storage.get_latest("stock_character", sym)
+        record = character_map.get(sym)
         if record is None:
             continue
         data = record["data"]
@@ -1353,7 +1398,7 @@ def render_stock_character_section(storage: Storage) -> None:
         })
 
     if not rows:
-        st.info("Không có mã nào khớp từ khóa tìm kiếm.")
+        st.info("Không có mã nào khớp từ khóa tìm kiếm / lựa chọn.")
         return
 
     st.dataframe(
@@ -1618,31 +1663,46 @@ def build_watchlist_detail_table(_storage: Storage, symbols: tuple[str, ...]) ->
     thành chuỗi) để `st.dataframe`/`st.data_editor` tự căn phải + định
     dạng đẹp qua `column_config` — tránh lỗi chữ/số bị ngắt dòng giữa từ
     khi hiển thị (đã gặp thực tế khi dùng chuỗi trong cột hẹp).
+
+    TỐI ƯU TỐC ĐỘ (29/07/2026): trước đây hàm này gọi `get_latest()`
+    RIÊNG cho từng mã × từng loại dữ liệu (5 loại/mã) — với watchlist
+    N mã là 5×N lượt round-trip mạng tới Supabase, rất chậm (N=5 mã ->
+    25 lượt gọi nối tiếp nhau). Giờ dùng `get_latest_many()` để gộp lại:
+    CHỈ còn ~5-6 lượt gọi TỔNG CỘNG, bất kể watchlist có bao nhiêu mã.
     """
+    symbols = list(symbols)
+
     entry_screener_record = _storage.get_latest("entry_screener_report", "latest")
     entry_screener_lookup = {}
     if entry_screener_record:
         for m in entry_screener_record["data"].get("danh_sach_ma", []):
             entry_screener_lookup[m["ma"]] = m
 
+    # --- Bước 1: lấy gộp snapshot/sector/signal/pattern cho TOÀN BỘ mã,
+    #     mỗi loại dữ liệu chỉ 1 lượt gọi (thay vì N lượt) ---
+    snapshot_map = _storage.get_latest_many("indicator_snapshot", symbols)
+    sector_map = _storage.get_latest_many("symbol_sector", symbols)
+    signal_map = _storage.get_latest_many("stock_signal", symbols)
+    pattern_map = _storage.get_latest_many("pattern_result", symbols)
+
+    # --- Bước 2: giai đoạn thị trường theo NGÀNH — cần biết ngành của
+    #     từng mã trước (từ sector_map ở trên), rồi gộp 1 lượt gọi cho
+    #     TẤT CẢ các ngành khác nhau (thường ít hơn nhiều so với số mã) ---
+    distinct_sectors = {
+        sector_map[sym]["data"].get("sector")
+        for sym in symbols
+        if sym in sector_map and sector_map[sym]["data"].get("sector")
+    }
+    regime_map = _storage.get_latest_many("market_regime_quant", list(distinct_sectors))
+
     rows = []
     for sym in symbols:
         try:
-            snapshot_record = _storage.get_latest("indicator_snapshot", sym)
-            snapshot = snapshot_record["data"] if snapshot_record else {}
-
-            sector_record = _storage.get_latest("symbol_sector", sym)
-            sector = sector_record["data"].get("sector") if sector_record else None
-
-            regime_record = _storage.get_latest("market_regime_quant", sector) if sector else None
-            regime_data = regime_record["data"] if regime_record else {}
-
-            signal_record = _storage.get_latest("stock_signal", sym)
-            signal_data = signal_record["data"] if signal_record else {}
-
-            pattern_record = _storage.get_latest("pattern_result", sym)
-            pattern_data = pattern_record["data"] if pattern_record else {}
-
+            snapshot = snapshot_map[sym]["data"] if sym in snapshot_map else {}
+            sector = sector_map[sym]["data"].get("sector") if sym in sector_map else None
+            regime_data = regime_map[sector]["data"] if sector in regime_map else {}
+            signal_data = signal_map[sym]["data"] if sym in signal_map else {}
+            pattern_data = pattern_map[sym]["data"] if sym in pattern_map else {}
             screener_entry = entry_screener_lookup.get(sym, {})
 
             khuyen_nghi = signal_data.get("khuyen_nghi")
@@ -2014,9 +2074,11 @@ def main() -> None:
 
     if selected_section is not None:
         # --- Chế độ CHỈ XEM 1 MỤC — không cuộn, chỉ hiện đúng mục đã chọn ---
+        # LƯU Ý: KHÔNG thêm tiêu đề markdown ở đây — mỗi hàm render_* bên
+        # dưới đã tự gọi st.subheader() với đúng tên mục rồi, thêm tiêu đề
+        # ở ngoài nữa sẽ làm tiêu đề hiện lặp lại 2 lần trên trang.
         for label, render_fn, args in sections_to_call:
             if label == selected_section:
-                st.markdown(f"### {label}")
                 render_fn(*args)
                 break
     else:
