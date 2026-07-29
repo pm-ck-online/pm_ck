@@ -256,6 +256,47 @@ class Storage:
 
         return self._row_to_dict(row)
 
+    def get_latest_many(self, category: str, keys: list[str]) -> dict[str, dict]:
+        """Lấy bản ghi MỚI NHẤT cho NHIỀU key cùng lúc, trong ĐÚNG 1 câu
+        truy vấn SQL — thay vì gọi `get_latest()` lặp lại cho từng key
+        (mỗi lần là 1 lượt round-trip mạng riêng tới Supabase, rất chậm
+        khi watchlist có nhiều mã vì độ trễ mạng cộng dồn).
+
+        Cách làm: lấy VỀ TẤT CẢ bản ghi khớp (category, key IN keys),
+        sắp xếp key rồi timestamp giảm dần — sau đó chỉ giữ lại bản ghi
+        ĐẦU TIÊN gặp cho mỗi key (chính là bản mới nhất, vì đã sắp xếp
+        timestamp giảm dần). Cách này hoạt động giống hệt trên cả SQLite
+        và PostgreSQL, không cần cú pháp DISTINCT ON/window function
+        riêng cho từng backend.
+
+        Trả về dict {key: {"timestamp":..., "data": {...}}} — key nào
+        không có dữ liệu sẽ KHÔNG xuất hiện trong dict trả về.
+        """
+        if not keys:
+            return {}
+
+        p = self._placeholder
+        placeholders = ", ".join([p] * len(keys))
+        cursor = self._execute(
+            f"""
+            SELECT key, timestamp, data FROM records
+            WHERE category = {p} AND key IN ({placeholders})
+            ORDER BY key, timestamp DESC, id DESC
+            """,
+            (category, *keys),
+        )
+        rows = cursor.fetchall()
+
+        result: dict[str, dict] = {}
+        for row in rows:
+            try:
+                key, timestamp, data = row["key"], row["timestamp"], row["data"]
+            except (KeyError, IndexError, TypeError):
+                key, timestamp, data = row[0], row[1], row[2]
+            if key not in result:  # chỉ giữ bản ĐẦU TIÊN gặp = mới nhất
+                result[key] = {"timestamp": timestamp, "data": json.loads(data)}
+        return result
+
     def get_history(
         self, category: str, key: str, limit: int = 100
     ) -> list[dict]:
