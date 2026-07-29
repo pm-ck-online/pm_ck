@@ -1,0 +1,353 @@
+# ==============================================================================
+# CẤU HÌNH TRUNG TÂM — Phần mềm theo dõi & mô phỏng giao dịch CK Việt Nam (pm_ck)
+# ==============================================================================
+# LƯU Ý QUAN TRỌNG: Đây là phần mềm THEO DÕI VÀ MÔ PHỎNG.
+# KHÔNG đặt lệnh giao dịch thật dưới bất kỳ hình thức nào.
+
+app:
+  name: "pm_ck"
+  timezone: "Asia/Ho_Chi_Minh"
+  log_level: "INFO"
+
+# ------------------------------------------------------------------------------
+# NGUỒN DỮ LIỆU (data_collector)
+# ------------------------------------------------------------------------------
+# adapter: tên adapter đang dùng (thiết kế dạng interface để dễ đổi nguồn)
+# delayed_mode: mặc định BẬT (true) để tránh phát sinh chi phí dữ liệu real-time
+#   ngay từ giai đoạn thử nghiệm. Nhiều nguồn công khai (SSI iBoard, VNDIRECT
+#   DChart, TCBS, Fireant...) có khả năng bị tính phí theo quy định mới —
+#   cần tự xác minh lại trước khi tắt chế độ này.
+data_source:
+  adapter: "vnstock"            # "mock" | "vnstock" | "ssi" | "vndirect" | ... (tự bổ sung sau)
+  delayed_mode: true
+  warn_if_paid_source: true
+  polling_interval_minutes: 5
+  trading_hours:
+    morning: ["09:00", "11:30"]
+    afternoon: ["13:00", "15:00"]
+  cache:
+    enabled: true
+    dir: "./data_cache"
+  retry:
+    max_attempts: 3
+    backoff_seconds: 2
+  stale_data_alert_minutes: 15   # cảnh báo nếu dữ liệu không cập nhật quá X phút
+
+# ------------------------------------------------------------------------------
+# DỮ LIỆU VĨ MÔ (ưu tiên cao nhất trong toàn hệ thống)
+# ------------------------------------------------------------------------------
+macro:
+  sources:
+    - "nhnn_fx_intervention"     # can thiệp tỷ giá NHNN
+    - "omo_operations"           # bơm/hút tiền qua OMO
+    - "interest_rates"           # lãi suất huy động/cho vay
+    - "sector_policy_signals"    # định hướng chính sách theo ngành (vd. room tín dụng BĐS)
+  refresh_hours: 24
+
+# ------------------------------------------------------------------------------
+# CHỈ BÁO KỸ THUẬT (indicators)
+# ------------------------------------------------------------------------------
+indicators:
+  ma_short_period: 20        # MA20 - trung bình động đơn giản, ngắn hạn
+  ema_mid_periods: [50, 100] # EMA50, EMA100 - trung hạn
+  ema_long_period: 200       # EMA200 - dài hạn, đường chuẩn xác nhận giai đoạn thị trường
+  volume_ma_periods: [15, 20]
+  breakout_volume_multiplier: 1.5   # volume đột biến > 1.5-2 lần trung bình
+
+# ------------------------------------------------------------------------------
+# NHẬN DIỆN MÔ HÌNH THU HẸP BIÊN ĐỘ (pattern_detector)
+# ------------------------------------------------------------------------------
+pattern_detector:
+  scan_months_min: 10
+  scan_months_max: 30
+  n_segments: 4
+
+# ------------------------------------------------------------------------------
+# XÁC ĐỊNH GIAI ĐOẠN THỊ TRƯỜNG (market_regime_detector)
+# ------------------------------------------------------------------------------
+market_regime:
+  confirmation_lag_sessions: 3   # số phiên cần ổn định trước khi đổi phân loại giai đoạn
+
+# ------------------------------------------------------------------------------
+# PHÂN BỔ VỐN (capital_allocator) — chỉ khuyến nghị, không tự thực thi
+# ------------------------------------------------------------------------------
+capital_allocator:
+  risk_per_trade_pct: 2.0      # rủi ro mỗi lệnh không quá 2% NAV mô phỏng
+  risk_total_portfolio_pct: 20.0  # rủi ro toàn danh mục không quá 20% NAV mô phỏng
+  allocation:
+    uptrend:
+      target_pct_range: [70, 100]
+      tranches_pct: [30, 50, 20]
+    downtrend:
+      target_pct_range: [10, 30]
+      tranches_pct: [100]
+    sideway:
+      target_pct_range: [30, 50]
+      tranches_pct: [100]
+
+# ------------------------------------------------------------------------------
+# BACKTEST
+# ------------------------------------------------------------------------------
+backtest:
+  fee_pct: 0.15   # phí môi giới + thuế bán tham khảo (0.1% - 0.35% tùy CTCK), cấu hình được
+  walk_forward:
+    enabled: true
+    n_splits: 4
+
+# ------------------------------------------------------------------------------
+# DANH MỤC MÔ PHỎNG (paper_portfolio)
+# ------------------------------------------------------------------------------
+paper_portfolio:
+  initial_cash: 100000000   # 100 triệu VND (ví dụ mặc định, người dùng tự đổi)
+  rebalance_alert_threshold_pct: 10.0  # cảnh báo khi lệch tỷ trọng khuyến nghị > X%
+
+# ------------------------------------------------------------------------------
+# THÔNG BÁO (notifier) — Telegram
+# ------------------------------------------------------------------------------
+notifier:
+  telegram:
+    enabled: false
+    bot_token_env: "TELEGRAM_BOT_TOKEN"   # đọc từ biến môi trường, KHÔNG hardcode
+    whitelist_chat_ids: []                 # chỉ các chat_id trong danh sách này được gửi lệnh điều khiển
+
+# ------------------------------------------------------------------------------
+# DANH SÁCH THEO DÕI (watchlist) — dùng cho main.py chạy pipeline demo
+# ------------------------------------------------------------------------------
+# LƯU Ý: đây là ánh xạ mã -> ngành TẠM THỜI cho mục đích demo/kiểm thử
+# luồng chạy. Khi có nguồn dữ liệu ngành thật (qua data_collector), nên
+# thay thế bằng bảng ánh xạ đầy đủ và chính xác hơn.
+watchlist:
+  symbols:
+    AAS: "securities"
+    ABB: "banking"
+    ABI: "insurance"
+    ACB: "banking"
+    AGG: "real_estate"
+    AGP: "pharma"
+    AGR: "securities"
+    AMV: "pharma"
+    ANV: "seafood_textile"
+    ASM: "energy"
+    BAB: "banking"
+    BAF: "agriculture"
+    BCC: "public_investment"
+    BCG: "energy"
+    BCM: "industrial_real_estate"
+    BCR: "real_estate"
+    BFC: "fertilizer_chemical"
+    BIC: "insurance"
+    BID: "banking"
+    BMI: "insurance"
+    BSI: "securities"
+    BSR: "oil_gas"
+    BVB: "banking"
+    BVH: "insurance"
+    BVS: "securities"
+    C4G: "public_investment"
+    CEO: "real_estate"
+    CII: "public_investment"
+    CKG: "real_estate"
+    CMG: "technology"
+    CMX: "seafood_textile"
+    CRE: "real_estate"
+    CRV: "real_estate"
+    CSV: "fertilizer_chemical"
+    CTD: "real_estate"
+    CTG: "banking"
+    CTI: "public_investment"
+    CTR: "technology"
+    CTS: "securities"
+    D2D: "industrial_real_estate"
+    DBC: "agriculture"
+    DBD: "pharma"
+    DCL: "pharma"
+    DCM: "fertilizer_chemical"
+    DDV: "fertilizer_chemical"
+    DGC: "fertilizer_chemical"
+    DGW: "retail_consumer"
+    DHG: "pharma"
+    DHT: "pharma"
+    DIG: "real_estate"
+    DMC: "pharma"
+    DP2: "pharma"
+    DP3: "pharma"
+    DPG: "public_investment"
+    DPM: "fertilizer_chemical"
+    DPR: "industrial_real_estate"
+    DRC: "industrial_real_estate"
+    DSC: "securities"
+    DSE: "securities"
+    DTD: "industrial_real_estate"
+    DXG: "real_estate"
+    DXP: "shipping_port"
+    DXS: "real_estate"
+    EIB: "banking"
+    ELC: "technology"
+    FCN: "public_investment"
+    FPT: "technology"
+    FRT: "retail_consumer"
+    FTS: "securities"
+    G36: "public_investment"
+    GAS: "oil_gas"
+    GEE: "energy"
+    GEG: "energy"
+    GEL: "public_investment"
+    GEX: "energy"
+    GIL: "seafood_textile"
+    GMD: "shipping_port"
+    GSP: "shipping_port"
+    GVR: "industrial_real_estate"
+    HAG: "agriculture"
+    HAH: "shipping_port"
+    HBC: "real_estate"
+    HCM: "securities"
+    HDB: "banking"
+    HDC: "real_estate"
+    HDG: "energy"
+    HHV: "public_investment"
+    HPA: "agriculture"
+    HPG: "steel"
+    HSG: "steel"
+    HT1: "public_investment"
+    HTN: "real_estate"
+    HUT: "public_investment"
+    IDC: "industrial_real_estate"
+    IDI: "seafood_textile"
+    IDJ: "real_estate"
+    IJC: "industrial_real_estate"
+    IMP: "pharma"
+    ITA: "industrial_real_estate"
+    JVC: "pharma"
+    KBC: "industrial_real_estate"
+    KDH: "real_estate"
+    KLB: "banking"
+    KSB: "public_investment"
+    LAS: "fertilizer_chemical"
+    LCG: "public_investment"
+    LHG: "industrial_real_estate"
+    LPB: "banking"
+    LSS: "fertilizer_chemical"
+    MBB: "banking"
+    MBS: "securities"
+    MCH: "retail_consumer"
+    MIG: "insurance"
+    MKV: "pharma"
+    MML: "agriculture"
+    MSB: "banking"
+    MSH: "seafood_textile"
+    MSN: "retail_consumer"
+    MWG: "retail_consumer"
+    NAB: "banking"
+    NHA: "real_estate"
+    NKG: "steel"
+    NLG: "real_estate"
+    NT2: "energy"
+    NTL: "real_estate"
+    NVB: "banking"
+    NVL: "real_estate"
+    OCB: "banking"
+    OIL: "oil_gas"
+    ORS: "securities"
+    PC1: "energy"
+    PDR: "real_estate"
+    PET: "retail_consumer"
+    PGB: "banking"
+    PHP: "shipping_port"
+    PHR: "industrial_real_estate"
+    PLC: "public_investment"
+    PLX: "oil_gas"
+    PME: "pharma"
+    PNJ: "retail_consumer"
+    POW: "energy"
+    PTI: "insurance"
+    PVB: "oil_gas"
+    PVC: "oil_gas"
+    PVD: "oil_gas"
+    PVI: "insurance"
+    PVS: "oil_gas"
+    PVT: "shipping_port"
+    PVX: "oil_gas"
+    PXL: "oil_gas"
+    PXS: "oil_gas"
+    QNS: "fertilizer_chemical"
+    REE: "energy"
+    SAB: "vn30_other"
+    SBS: "securities"
+    SBT: "fertilizer_chemical"
+    SCR: "real_estate"
+    SGB: "banking"
+    SGP: "shipping_port"
+    SGT: "industrial_real_estate"
+    SHB: "banking"
+    SHS: "securities"
+    SIP: "industrial_real_estate"
+    SMC: "steel"
+    SSB: "banking"
+    SSI: "securities"
+    STB: "banking"
+    STK: "seafood_textile"
+    SZC: "industrial_real_estate"
+    TAL: "industrial_real_estate"
+    TCB: "banking"
+    TCH: "real_estate"
+    TCM: "seafood_textile"
+    TCX: "securities"
+    TDC: "industrial_real_estate"
+    TIG: "steel"
+    TIP: "industrial_real_estate"
+    TLH: "steel"
+    TNG: "seafood_textile"
+    TPB: "banking"
+    TV2: "energy"
+    VBB: "banking"
+    VCB: "banking"
+    VCG: "public_investment"
+    VCI: "securities"
+    VCK: "securities"
+    VDS: "securities"
+    VGC: "industrial_real_estate"
+    VGI: "technology"
+    VGS: "steel"
+    VGT: "seafood_textile"
+    VHC: "seafood_textile"
+    VHM: "vn30_other"
+    VIB: "banking"
+    VIC: "vn30_other"
+    VIP: "shipping_port"
+    VIS: "steel"
+    VIX: "securities"
+    VJC: "vn30_other"
+    VMD: "pharma"
+    VND: "securities"
+    VNM: "vn30_other"
+    VOS: "shipping_port"
+    VPB: "banking"
+    VPI: "real_estate"
+    VPL: "vn30_other"
+    VPX: "securities"
+    VRE: "vn30_other"
+    VSC: "shipping_port"
+    VTK: "technology"
+    VTO: "shipping_port"
+    VTP: "technology"
+  # Chỉ số thị trường chung — chỉ lấy giá + chỉ báo để theo dõi/vẽ biểu
+  # đồ, KHÔNG chạy pattern_detector/market_regime/capital_allocation (vì
+  # không "mua" được một chỉ số như một cổ phiếu).
+  indices:
+    - "VNINDEX"
+    - "VN30"
+    - "VN100"
+
+# ------------------------------------------------------------------------------
+# STORAGE
+# ------------------------------------------------------------------------------
+storage:
+  type: "sqlite"       # sqlite cho giai đoạn đầu, có thể đổi sang postgres sau
+  path: "./data/pm_ck.db"
+
+# ------------------------------------------------------------------------------
+# DASHBOARD
+# ------------------------------------------------------------------------------
+dashboard:
+  language: "vi"
+  refresh_seconds: 60

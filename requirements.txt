@@ -1,0 +1,42 @@
+# ==============================================================================
+# pm_ck — Phần mềm theo dõi & mô phỏng giao dịch CK Việt Nam
+# Requirements cơ bản cho giai đoạn khởi tạo khung dự án
+# ==============================================================================
+
+# --- Xử lý dữ liệu ---
+pandas>=2.2
+numpy>=1.26
+scipy>=1.11  # cần cho core/stock_character_classifier.py (percentileofscore)
+
+# --- Chỉ báo kỹ thuật ---
+pandas-ta>=0.3.14b0
+
+# --- Cấu hình & tiện ích ---
+PyYAML>=6.0
+python-dotenv>=1.0
+
+# --- Lưu trữ dữ liệu ---
+SQLAlchemy>=2.0
+
+# --- Gọi API / thu thập dữ liệu ---
+requests>=2.31
+
+# --- Thông báo Telegram ---
+python-telegram-bot>=21.0
+
+# --- Giao diện dashboard ---
+streamlit>=1.35
+
+# --- Biểu đồ (dùng trong backtest_engine) ---
+matplotlib>=3.8
+
+# --- Biểu đồ tương tác (nến Nhật, khối lượng) cho dashboard ---
+plotly>=5.20
+
+# --- PostgreSQL/Supabase (tùy chọn — chỉ cần khi dùng chung dữ liệu
+#     nhiều máy qua Supabase; không cần nếu chỉ dùng SQLite cục bộ) ---
+psycopg2-binary>=2.9
+
+# --- Kiểm thử ---
+pytest>=8.0
+pytest-mock>=3.14

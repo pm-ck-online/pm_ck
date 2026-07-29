@@ -1,0 +1,27 @@
+# Môi trường ảo
+venv/
+.venv/
+
+# Cache Python
+__pycache__/
+*.pyc
+
+# Biến môi trường (chứa token, thông tin nhạy cảm)
+.env
+
+# Dữ liệu & cache
+data_cache/
+data/
+*.db
+
+# IDE
+.vscode/
+.idea/
+
+# Pytest
+.pytest_cache/
+logs/
+
+# Streamlit Cloud secrets THẬT — KHÔNG BAO GIỜ đưa lên git (chứa mật khẩu
+# Supabase). Chỉ file .example (mẫu, không có giá trị thật) mới được đưa lên.
+.streamlit/secrets.toml
