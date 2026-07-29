@@ -2014,11 +2014,61 @@ DASHBOARD_SECTIONS = {
 }
 
 
+def require_login() -> None:
+    """Chặn xem TOÀN BỘ nội dung dashboard cho tới khi đăng nhập bằng
+    Google — dùng `st.login()`/`st.user` có sẵn của Streamlit (yêu cầu
+    streamlit>=1.42 + gói `Authlib`, đã khai báo trong requirements.txt).
+
+    CẦN CẤU HÌNH TRƯỚC KHI DÙNG (xem hướng dẫn đầy đủ trong CLAUDE.md):
+      1. Tạo OAuth Client ID trên Google Cloud Console.
+      2. Thêm mục [auth] vào Streamlit Cloud -> Settings -> Secrets
+         (redirect_uri, cookie_secret, client_id, client_secret,
+         server_metadata_url).
+      3. Thêm `ALLOWED_EMAILS` vào Secrets — danh sách email được phép
+         xem dashboard, cách nhau bởi dấu phẩy (VD: "a@gmail.com,
+         b@gmail.com"). Để trống/không khai báo -> CHO PHÉP MỌI email
+         Google đăng nhập được (không khuyến khích khi public link).
+
+    LƯU Ý: đây là lớp bảo vệ Ở MỨC DASHBOARD — không mã hóa/ẩn dữ liệu
+    trong Supabase, ai có connection string thật vẫn truy cập được DB
+    trực tiếp. Đủ dùng cho mục đích ngăn người lạ tình cờ vào xem/sửa
+    qua link công khai, KHÔNG thay thế cho bảo mật hạ tầng đầy đủ.
+    """
+    if not st.user.is_logged_in:
+        st.title("📊 pm_ck — Đăng nhập")
+        st.write(
+            "Đây là dashboard riêng tư. Vui lòng đăng nhập bằng tài khoản "
+            "Google đã được cấp quyền để tiếp tục."
+        )
+        st.button("🔐 Đăng nhập bằng Google", on_click=st.login, type="primary")
+        st.stop()
+
+    allowed_emails_raw = st.secrets.get("ALLOWED_EMAILS", "")
+    allowed_emails = {
+        e.strip().lower() for e in allowed_emails_raw.split(",") if e.strip()
+    }
+
+    if allowed_emails and (st.user.email or "").lower() not in allowed_emails:
+        st.title("📊 pm_ck")
+        st.error(
+            f"🚫 Tài khoản **{st.user.email}** chưa được cấp quyền xem "
+            f"dashboard này. Liên hệ quản trị viên nếu bạn cần truy cập."
+        )
+        st.button("Đăng xuất", on_click=st.logout)
+        st.stop()
+
+    with st.sidebar:
+        st.caption(f"👤 Đã đăng nhập: {st.user.email}")
+        st.button("🔓 Đăng xuất", on_click=st.logout, key="logout_btn")
+
+
 def main() -> None:
     st.set_page_config(
         page_title="pm_ck — Dashboard theo dõi CK Việt Nam",
         layout="wide",
     )
+
+    require_login()
 
     st.title("📊 pm_ck — Theo dõi & mô phỏng giao dịch chứng khoán Việt Nam")
     st.caption(
@@ -2032,6 +2082,7 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Cấu hình hiển thị")
+
 
         sectors_input = st.text_input(
             "Danh sách ngành cần xem giai đoạn thị trường (cách nhau bởi dấu phẩy)",
