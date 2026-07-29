@@ -1605,7 +1605,8 @@ def save_watchlist(storage: Storage, symbols: list[str], user_id: str = "default
     storage.save("watchlist", user_id, {"symbols": symbols})
 
 
-def build_watchlist_detail_table(storage: Storage, symbols: list[str]) -> pd.DataFrame:
+@st.cache_data(ttl=30, show_spinner="Đang tải dữ liệu watchlist...")
+def build_watchlist_detail_table(_storage: Storage, symbols: tuple[str, ...]) -> pd.DataFrame:
     """Tổng hợp thông tin CƠ BẢN + KỸ THUẬT đã tính sẵn ở CÁC MODULE KHÁC
     (không tính toán lại) cho từng mã trong watchlist, thành 1 bảng duy
     nhất — dùng lại: `indicator_snapshot` (giá/MA/EMA/volume),
@@ -1618,7 +1619,7 @@ def build_watchlist_detail_table(storage: Storage, symbols: list[str]) -> pd.Dat
     dạng đẹp qua `column_config` — tránh lỗi chữ/số bị ngắt dòng giữa từ
     khi hiển thị (đã gặp thực tế khi dùng chuỗi trong cột hẹp).
     """
-    entry_screener_record = storage.get_latest("entry_screener_report", "latest")
+    entry_screener_record = _storage.get_latest("entry_screener_report", "latest")
     entry_screener_lookup = {}
     if entry_screener_record:
         for m in entry_screener_record["data"].get("danh_sach_ma", []):
@@ -1627,19 +1628,19 @@ def build_watchlist_detail_table(storage: Storage, symbols: list[str]) -> pd.Dat
     rows = []
     for sym in symbols:
         try:
-            snapshot_record = storage.get_latest("indicator_snapshot", sym)
+            snapshot_record = _storage.get_latest("indicator_snapshot", sym)
             snapshot = snapshot_record["data"] if snapshot_record else {}
 
-            sector_record = storage.get_latest("symbol_sector", sym)
+            sector_record = _storage.get_latest("symbol_sector", sym)
             sector = sector_record["data"].get("sector") if sector_record else None
 
-            regime_record = storage.get_latest("market_regime_quant", sector) if sector else None
+            regime_record = _storage.get_latest("market_regime_quant", sector) if sector else None
             regime_data = regime_record["data"] if regime_record else {}
 
-            signal_record = storage.get_latest("stock_signal", sym)
+            signal_record = _storage.get_latest("stock_signal", sym)
             signal_data = signal_record["data"] if signal_record else {}
 
-            pattern_record = storage.get_latest("pattern_result", sym)
+            pattern_record = _storage.get_latest("pattern_result", sym)
             pattern_data = pattern_record["data"] if pattern_record else {}
 
             screener_entry = entry_screener_lookup.get(sym, {})
@@ -1714,8 +1715,17 @@ def render_watchlist_manager_section(storage: Storage) -> None:
     else:
         st.success(f"👤 Đang xem watchlist riêng của: **{user_id}**")
 
-    new_symbol = st.text_input("Thêm mã mới", key="new_symbol_input", placeholder="Ví dụ: SSI")
-    if st.button("➕ Thêm vào watchlist", key="add_symbol_btn"):
+    # Bọc trong st.form để bấm Enter trong ô nhập cũng submit được, không
+    # bắt buộc phải bấm chuột vào nút "Thêm vào watchlist" (hành vi mặc
+    # định của Streamlit: text_input đứng riêng lẻ KHÔNG submit khi Enter,
+    # chỉ submit khi nằm trong form).
+    with st.form("add_symbol_form", clear_on_submit=True):
+        new_symbol = st.text_input(
+            "Thêm mã mới", key="new_symbol_input", placeholder="Ví dụ: SSI"
+        )
+        submitted = st.form_submit_button("➕ Thêm vào watchlist")
+
+    if submitted:
         symbol_clean = new_symbol.strip().upper()
         if symbol_clean and symbol_clean not in watchlist:
             watchlist.append(symbol_clean)
@@ -1739,7 +1749,7 @@ def render_watchlist_manager_section(storage: Storage) -> None:
     #     + cột tick "🗑️ Xóa" tích hợp ngay trong bảng, xử lý xóa hàng
     #     loạt qua 1 nút bấm bên dưới. ---
     st.markdown("### 📊 Thông tin chi tiết")
-    detail_df = build_watchlist_detail_table(storage, displayed_watchlist)
+    detail_df = build_watchlist_detail_table(storage, tuple(displayed_watchlist))
     detail_df.insert(len(detail_df.columns), "🗑️ Xóa", False)
 
     edited_df = st.data_editor(
