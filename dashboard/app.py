@@ -1260,6 +1260,29 @@ def _compute_recovery_probability_cached(df: pd.DataFrame, ma: str, dieu_kien_lo
     return tinh_xac_suat_phuc_hoi_lich_su(ma, df, dieu_kien_loc=dieu_kien_loc)
 
 
+@st.cache_data(ttl=600, show_spinner="Đang quét toàn bộ watchlist tìm mã đứt gãy vùng nền...")
+def _compute_base_breakdown_scan_cached(
+    _storage: Storage, symbols: tuple[str, ...], params: dict
+) -> pd.DataFrame:
+    """Bọc `quet_co_phieu_dut_gay_qua_ban()` (Module 7) bằng cache 10
+    phút — quét TOÀN BỘ watchlist mỗi mã đều tốn chi phí O(n^2) tìm vùng
+    nền, không nên chạy lại mỗi lần trang rerun nếu watchlist/ngưỡng lọc
+    không đổi. Tham số `_storage` có dấu gạch dưới để Streamlit KHÔNG cố
+    hash đối tượng kết nối DB (không hashable) khi tính cache key.
+    """
+    from core.base_breakdown_screener import quet_co_phieu_dut_gay_qua_ban
+
+    return quet_co_phieu_dut_gay_qua_ban(
+        list(symbols),
+        lambda ma: _load_ohlcv_history_df(_storage, ma),
+        lookback_vung_nen=params["lookback_vung_nen"],
+        min_ngay_vung_nen=params["min_ngay_vung_nen"],
+        nguong_giam_toi_thieu_pct=params["nguong_giam_toi_thieu_pct"],
+        nguong_rsi=params["nguong_rsi"],
+        nguong_volume_ratio=params["nguong_volume_ratio"],
+    )
+
+
 def render_historical_recovery_probability_section(storage: Storage) -> None:
     """Hiển thị XÁC SUẤT TẦN SUẤT LỊCH SỬ (empirical) mà 1 mã phục hồi sau
     khi rơi vào tình huống "giảm mạnh + quá bán + volume đột biến + đóng
@@ -1286,6 +1309,81 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
         )
         return
 
+    # --------------------------------------------------------------------
+    # BẢNG TỔNG HỢP SÀNG LỌC (Module 7 — core.base_breakdown_screener):
+    # quét TOÀN BỘ watchlist tại THỜI ĐIỂM HIỆN TẠI (khác Module 6 ở trên,
+    # vốn quét NGƯỢC quá khứ để tính tần suất) — tìm các mã ĐANG thỏa đồng
+    # thời 3 tiêu chí: đứt gãy vùng nền + quá bán + volume đột biến.
+    # --------------------------------------------------------------------
+    st.markdown("### 🔎 Bảng tổng hợp: Đứt gãy vùng nền + Quá bán + Volume đột biến")
+    st.caption(
+        "Quét TOÀN BỘ watchlist tại thời điểm hiện tại — khác với phần \"Xác suất "
+        "phục hồi lịch sử\" phía dưới (vốn quét ngược quá khứ để tính tần suất). "
+        "Đây là bộ lọc kỹ thuật RÚT GỌN (chỉ 3 tiêu chí cốt lõi), KHÔNG phải tín "
+        "hiệu mua/bán. Mã lọt qua bộ lọc nên được xem tiếp mục \"Tính cách giao "
+        "dịch từng mã\" và \"Xác suất phục hồi lịch sử\" cho riêng mã đó trước khi "
+        "cân nhắc bất kỳ quyết định nào."
+    )
+
+    with st.expander("⚙️ Tùy chỉnh ngưỡng sàng lọc"):
+        scol1, scol2, scol3 = st.columns(3)
+        with scol1:
+            s_giam_pct = st.number_input(
+                "Giảm tối thiểu từ pivot (%)", value=15.0, min_value=5.0, max_value=80.0,
+                step=1.0, key="screen_giam_pct",
+            )
+            s_lookback = st.number_input(
+                "Số phiên tra ngược tìm vùng nền", value=60, min_value=20, max_value=250,
+                step=5, key="screen_lookback",
+            )
+        with scol2:
+            s_rsi = st.number_input(
+                "RSI(14) tối đa (quá bán)", value=30.0, min_value=5.0, max_value=50.0,
+                step=1.0, key="screen_rsi",
+            )
+            s_min_ngay = st.number_input(
+                "Số phiên tối thiểu để công nhận vùng nền", value=10, min_value=5, max_value=60,
+                step=1, key="screen_min_ngay",
+            )
+        with scol3:
+            s_vol_ratio = st.number_input(
+                "Tỷ lệ khối lượng tối thiểu (x TB20)", value=1.5, min_value=1.0, max_value=5.0,
+                step=0.1, key="screen_vol_ratio",
+            )
+
+    if st.button("🔍 Quét watchlist ngay", key="screen_scan_btn"):
+        screen_params = {
+            "lookback_vung_nen": int(s_lookback),
+            "min_ngay_vung_nen": int(s_min_ngay),
+            "nguong_giam_toi_thieu_pct": s_giam_pct,
+            "nguong_rsi": s_rsi,
+            "nguong_volume_ratio": s_vol_ratio,
+        }
+        try:
+            screen_result = _compute_base_breakdown_scan_cached(
+                storage, tuple(available_symbols), screen_params
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"⚠️ Lỗi khi quét: {exc}")
+            screen_result = pd.DataFrame()
+
+        if screen_result.empty:
+            st.info("Không có mã nào trong watchlist thỏa đồng thời cả 3 tiêu chí tại thời điểm này.")
+        else:
+            st.success(f"Tìm thấy {len(screen_result)} mã thỏa đồng thời cả 3 tiêu chí:")
+            display_df = screen_result.rename(columns={
+                "ma": "Mã", "gia_pivot_ho_tro": "Giá pivot hỗ trợ",
+                "so_phien_vung_nen": "Số phiên vùng nền", "gia_hien_tai": "Giá hiện tại",
+                "pct_giam_tu_pivot": "% giảm từ pivot", "rsi_hien_tai": "RSI(14)",
+                "volume_ratio": "Tỷ lệ KL/TB20",
+            })
+            st.dataframe(display_df, width='stretch', hide_index=True)
+
+    st.divider()
+
+    # --------------------------------------------------------------------
+    # TÍNH TOÁN CHO 1 MÃ ĐƠN LẺ (Module 6 — xem lại tần suất lịch sử)
+    # --------------------------------------------------------------------
     selected_symbol = st.selectbox(
         "Chọn mã để tính xác suất phục hồi", available_symbols,
         key="recovery_prob_symbol",
