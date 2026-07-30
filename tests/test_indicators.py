@@ -12,6 +12,7 @@ import pytest
 
 from core.indicators import (
     InsufficientDataError,
+    calculate_bollinger_bands,
     calculate_ema,
     calculate_ma,
     calculate_rsi,
@@ -199,6 +200,41 @@ class TestGetIndicatorSnapshot:
 # ==============================================================================
 # Test: calculate_rsi (chỉ báo bổ sung)
 # ==============================================================================
+
+class TestCalculateBollingerBands:
+    def test_middle_band_equals_sma(self):
+        closes = list(range(1, 41))  # 1..40, tăng đều
+        df = _make_df(closes=closes)
+        upper, middle, lower = calculate_bollinger_bands(df, period=20, num_std=2.0)
+        expected_sma_last = sum(closes[-20:]) / 20
+        assert middle.iloc[-1] == pytest.approx(expected_sma_last, abs=0.01)
+
+    def test_upper_band_above_middle_above_lower(self):
+        closes = [10 + (i % 7) - 3 + i * 0.05 for i in range(60)]
+        df = _make_df(closes=closes)
+        upper, middle, lower = calculate_bollinger_bands(df, period=20)
+        valid = middle.notna()
+        assert (upper[valid] >= middle[valid]).all()
+        assert (middle[valid] >= lower[valid]).all()
+
+    def test_zero_volatility_bands_collapse_to_middle(self):
+        # Giá không đổi suốt -> độ lệch chuẩn = 0 -> upper = middle = lower
+        df = _make_df(closes=[100.0] * 30)
+        upper, middle, lower = calculate_bollinger_bands(df, period=20)
+        assert upper.iloc[-1] == pytest.approx(middle.iloc[-1], abs=0.001)
+        assert lower.iloc[-1] == pytest.approx(middle.iloc[-1], abs=0.001)
+
+    def test_first_period_rows_are_nan(self):
+        df = _make_df(closes=list(range(1, 41)))
+        upper, middle, lower = calculate_bollinger_bands(df, period=20)
+        assert middle.iloc[:19].isna().all()
+        assert not pd.isna(middle.iloc[19])
+
+    def test_raises_for_missing_required_columns(self):
+        df = pd.DataFrame({"open": [1, 2, 3] * 10})
+        with pytest.raises(ValueError):
+            calculate_bollinger_bands(df, period=20)
+
 
 class TestCalculateRSI:
     def test_rsi_approaches_100_for_continuous_gains(self):
