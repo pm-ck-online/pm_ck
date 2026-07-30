@@ -1249,6 +1249,135 @@ def render_pattern_section(storage: Storage, symbols: Optional[list[str]] = None
     st.dataframe(df, width='stretch', hide_index=True)
 
 
+@st.cache_data(ttl=600, show_spinner="Đang quét lịch sử tìm các tình huống tương tự...")
+def _compute_recovery_probability_cached(df: pd.DataFrame, ma: str, dieu_kien_loc: dict) -> dict:
+    """Bọc `tinh_xac_suat_phuc_hoi_lich_su()` bằng cache 10 phút — việc
+    quét toàn bộ lịch sử (750-1250 phiên) có chi phí tính toán đáng kể,
+    không nên chạy lại mỗi lần trang rerun nếu mã/điều kiện lọc không đổi.
+    """
+    from core.historical_recovery_probability import tinh_xac_suat_phuc_hoi_lich_su
+
+    return tinh_xac_suat_phuc_hoi_lich_su(ma, df, dieu_kien_loc=dieu_kien_loc)
+
+
+def render_historical_recovery_probability_section(storage: Storage) -> None:
+    """Hiển thị XÁC SUẤT TẦN SUẤT LỊCH SỬ (empirical) mà 1 mã phục hồi sau
+    khi rơi vào tình huống "giảm mạnh + quá bán + volume đột biến + đóng
+    cửa yếu" — dựa trên `core.historical_recovery_probability` (Module 6).
+
+    ĐÂY LÀ THỐNG KÊ TẦN SUẤT QUÁ KHỨ, KHÔNG PHẢI DỰ BÁO — luôn hiển thị
+    kèm cỡ mẫu và mức độ tin cậy thống kê để người xem tự đánh giá.
+    """
+    from core.historical_recovery_probability import DIEU_KIEN_MAC_DINH
+
+    st.subheader("📊 Xác suất phục hồi lịch sử")
+    st.caption(
+        "⚠️ Đây là TẦN SUẤT THỰC NGHIỆM tính từ chính lịch sử giá của mã đó — "
+        "KHÔNG phải xác suất dự báo tương lai được đảm bảo. Quá khứ không chắc "
+        "lặp lại; cỡ mẫu càng nhỏ thì độ tin cậy càng thấp. Luôn xem kèm cỡ mẫu "
+        "và mức độ tin cậy thống kê bên dưới trước khi tham khảo."
+    )
+
+    available_symbols = sorted(storage.query_all_keys("ohlcv_history"))
+    if not available_symbols:
+        st.info(
+            "Chưa có dữ liệu lịch sử OHLCV. Chạy `main.py` hoặc "
+            "`run_full_market.py` trước để có dữ liệu tính toán."
+        )
+        return
+
+    selected_symbol = st.selectbox(
+        "Chọn mã để tính xác suất phục hồi", available_symbols,
+        key="recovery_prob_symbol",
+    )
+
+    with st.expander("⚙️ Tùy chỉnh điều kiện lọc \"tình huống giảm\" (để mặc định nếu không chắc)"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            giam_toi_thieu_pct = st.number_input(
+                "Giảm tối thiểu (%)", value=float(DIEU_KIEN_MAC_DINH["giam_toi_thieu_pct"]),
+                min_value=1.0, max_value=50.0, step=0.5, key="recovery_giam_pct",
+            )
+            so_phien_toi_da = st.number_input(
+                "Trong tối đa (phiên)", value=int(DIEU_KIEN_MAC_DINH["so_phien_toi_da"]),
+                min_value=1, max_value=10, step=1, key="recovery_so_phien",
+            )
+        with col2:
+            rsi_toi_da = st.number_input(
+                "RSI(14) tối đa (quá bán)", value=float(DIEU_KIEN_MAC_DINH["rsi_toi_da"]),
+                min_value=5.0, max_value=50.0, step=1.0, key="recovery_rsi",
+            )
+            volume_ratio_toi_thieu = st.number_input(
+                "Tỷ lệ khối lượng tối thiểu (x TB20)", value=float(DIEU_KIEN_MAC_DINH["volume_ratio_toi_thieu"]),
+                min_value=1.0, max_value=5.0, step=0.1, key="recovery_vol_ratio",
+            )
+        with col3:
+            so_phien_giam_lien_tiep = st.number_input(
+                "Số phiên giảm liên tiếp tối thiểu", value=int(DIEU_KIEN_MAC_DINH["so_phien_giam_lien_tiep_toi_thieu"]),
+                min_value=1, max_value=10, step=1, key="recovery_streak",
+            )
+            closing_strength_toi_da = st.number_input(
+                "Đóng cửa yếu tối đa (closing strength)", value=float(DIEU_KIEN_MAC_DINH["closing_strength_toi_da"]),
+                min_value=0.0, max_value=1.0, step=0.05, key="recovery_closing_strength",
+            )
+
+    dieu_kien_loc = {
+        "giam_toi_thieu_pct": giam_toi_thieu_pct,
+        "so_phien_toi_da": int(so_phien_toi_da),
+        "rsi_toi_da": rsi_toi_da,
+        "volume_ratio_toi_thieu": volume_ratio_toi_thieu,
+        "so_phien_giam_lien_tiep_toi_thieu": int(so_phien_giam_lien_tiep),
+        "closing_strength_toi_da": closing_strength_toi_da,
+    }
+
+    df = _load_ohlcv_history_df(storage, selected_symbol)
+    if df is None or df.empty:
+        st.warning(f"Không có dữ liệu lịch sử OHLCV cho mã {selected_symbol}.")
+        return
+
+    try:
+        result = _compute_recovery_probability_cached(df, selected_symbol, dieu_kien_loc)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"⚠️ Lỗi khi tính toán: {exc}")
+        return
+
+    so_lan = result["so_lan_quan_sat_lich_su"]
+    do_tin_cay = result["do_tin_cay_thong_ke"]
+    do_tin_cay_emoji = {
+        "RAT_THAP": "🔴", "THAP": "🟠", "TRUNG_BINH": "🟡", "KHA_CAO": "🟢",
+    }.get(do_tin_cay, "")
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Số lần quan sát trong lịch sử", so_lan)
+    col_b.metric("Tổng số phiên dữ liệu", result["tong_so_phien_du_lieu_dau_vao"])
+    col_c.metric("Độ tin cậy thống kê", f"{do_tin_cay_emoji} {do_tin_cay}")
+
+    st.caption(result["ghi_chu_do_tin_cay"])
+
+    if so_lan == 0:
+        st.info("Không tìm thấy tình huống nào khớp điều kiện lọc trong lịch sử dữ liệu hiện có.")
+    else:
+        rows = []
+        for key, label in [
+            ("sau_1_phien", "Sau 1 phiên"), ("sau_3_phien", "Sau 3 phiên"), ("sau_5_phien", "Sau 5 phiên"),
+        ]:
+            r = result["ket_qua_theo_so_phien_du_bao"].get(key, {})
+            rows.append({
+                "Mốc thời gian": label,
+                "Số lần quan sát": r.get("so_lan_quan_sat"),
+                "Số lần phục hồi": r.get("so_lan_phuc_hoi"),
+                "Tỷ lệ phục hồi (%)": r.get("ty_le_phuc_hoi_pct"),
+                "% thay đổi TB": r.get("pct_thay_doi_trung_binh"),
+                "% thay đổi trung vị": r.get("pct_thay_doi_trung_vi"),
+                "Min (%)": r.get("pct_thay_doi_min"),
+                "Max (%)": r.get("pct_thay_doi_max"),
+                "Độ lệch chuẩn": r.get("do_lech_chuan"),
+            })
+        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+
+    st.warning(result["canh_bao_phap_ly"])
+
+
 # ==============================================================================
 # PHẦN 5 — HIỆU SUẤT DANH MỤC MÔ PHỎNG
 # ==============================================================================
@@ -2008,6 +2137,7 @@ DASHBOARD_SECTIONS = {
     "🔎 Mã có mô hình thu hẹp biên độ": None,
     "🚦 Báo cáo tín hiệu Mua/Bán": None,
     "🎭 Tính cách giao dịch từng mã": None,
+    "📊 Xác suất phục hồi lịch sử": None,
     "🔍 Rà soát danh sách vào lệnh ngắn hạn": None,
     "⏱️ Tiêu chí ngắn hạn": None,
     "💼 Danh mục mô phỏng": None,
@@ -2118,6 +2248,7 @@ def main() -> None:
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
         ("🚦 Báo cáo tín hiệu Mua/Bán", render_stock_signal_report_section, (storage,)),
         ("🎭 Tính cách giao dịch từng mã", render_stock_character_section, (storage,)),
+        ("📊 Xác suất phục hồi lịch sử", render_historical_recovery_probability_section, (storage,)),
         ("🔍 Rà soát danh sách vào lệnh ngắn hạn", render_entry_screener_section, (storage,)),
         ("⏱️ Tiêu chí ngắn hạn", render_short_term_signal_section, (storage,)),
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
