@@ -1,0 +1,17 @@
+# .streamlit/config.toml
+# =========================
+# Cố định giao diện SÁNG cho TẤT CẢ người xem dashboard, không phụ thuộc
+# vào việc máy/trình duyệt của từng người đang bật chế độ Sáng hay Tối.
+#
+# LÝ DO: mặc định (không có file này), Streamlit tự lấy theo cài đặt hệ
+# điều hành/trình duyệt của TỪNG NGƯỜI XEM riêng biệt — nên cùng 1 link,
+# người dùng máy chế độ Tối sẽ thấy giao diện đen, người khác thấy giao
+# diện trắng, gây khác biệt không mong muốn giữa các người xem.
+
+[theme]
+base = "light"
+primaryColor = "#2563eb"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans serif"
