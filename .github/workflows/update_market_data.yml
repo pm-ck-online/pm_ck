@@ -1,0 +1,37 @@
+name: Cập nhật dữ liệu pm_ck (tự động, mỗi 30 phút trong giờ giao dịch)
+
+on:
+  schedule:
+    # Chạy mỗi 30 phút, từ 2h00 đến 8h00 UTC (= 9h00-15h00 giờ Việt Nam),
+    # CHỈ vào Thứ 2 - Thứ 6 (bỏ qua cuối tuần vì thị trường không giao dịch).
+    - cron: "*/30 2-8 * * 1-5"
+  # Cho phép bấm chạy TAY từ tab "Actions" trên GitHub để test thử ngay,
+  # không cần đợi tới đúng lịch.
+  workflow_dispatch:
+
+jobs:
+  update-market-data:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30  # tự hủy nếu chạy quá 30 phút (an toàn, tránh treo vô hạn)
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cài đặt thư viện
+        run: pip install -r requirements.txt
+
+      - name: Chạy cập nhật toàn bộ watchlist (giá, chỉ báo, tín hiệu...)
+        env:
+          PM_CK_DB_PATH: ${{ secrets.PM_CK_DB_PATH }}
+        run: python run_full_market.py
+
+      - name: Cập nhật chỉ số VNINDEX / VN30 / VN100
+        env:
+          PM_CK_DB_PATH: ${{ secrets.PM_CK_DB_PATH }}
+        run: python update_indices.py
