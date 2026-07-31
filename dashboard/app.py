@@ -697,6 +697,50 @@ EVENT_OPTIONS = {
     "positive_resolution": "Sự kiện tích cực xác nhận, rủi ro giải tỏa",
 }
 
+GEOPOLITICAL_EVENT_LOG_CATEGORY = "geopolitical_event_entry"
+
+
+def _sync_current_geopolitical_event(storage: Storage) -> None:
+    """Đồng bộ trạng thái "sự kiện ĐANG ÁP DỤNG" (đọc bởi
+    `core/macro_score_engine.py` qua khóa cũ `manual_macro_setting` /
+    `geopolitical_event` — dùng chung bởi `main.py`, `check_macro_score.py`
+    và dashboard) — LUÔN lấy theo sự kiện có NGÀY BẮT ĐẦU GẦN NHẤT trong
+    danh sách log `geopolitical_event_entry`.
+
+    Gọi hàm này ngay sau khi thêm/sửa/xóa bất kỳ sự kiện nào trong danh
+    sách, để khóa "trạng thái hiện tại" luôn khớp với sự kiện mới nhất —
+    KHÔNG cần sửa main.py/check_macro_score.py, 2 script đó vẫn đọc đúng
+    1 khóa cũ như trước, chỉ khác là giờ khóa đó được cập nhật tự động
+    thay vì nhập tay trực tiếp.
+
+    Nếu danh sách rỗng (đã xóa hết sự kiện) -> xóa luôn trạng thái hiện
+    tại, macro engine sẽ tự dùng mặc định "none" (không có sự kiện).
+    """
+    event_ids = storage.query_all_keys(GEOPOLITICAL_EVENT_LOG_CATEGORY)
+    if not event_ids:
+        storage.delete_key("manual_macro_setting", "geopolitical_event")
+        return
+
+    entries = []
+    for eid in event_ids:
+        record = storage.get_latest(GEOPOLITICAL_EVENT_LOG_CATEGORY, eid)
+        if record:
+            entries.append({"id": eid, **record["data"]})
+
+    if not entries:
+        storage.delete_key("manual_macro_setting", "geopolitical_event")
+        return
+
+    # Sự kiện có NGÀY BẮT ĐẦU (start_date, định dạng YYYY-MM-DD) MỚI NHẤT
+    # được coi là đang chi phối bối cảnh hiện tại.
+    moi_nhat = max(entries, key=lambda e: e["start_date"])
+    storage.save("manual_macro_setting", "geopolitical_event", {
+        "event_key": moi_nhat["event_key"],
+        "note": moi_nhat.get("note", ""),
+        "updated_date": moi_nhat["start_date"],
+        "source_entry_id": moi_nhat["id"],
+    })
+
 
 def load_macro_series(storage: Storage, series_key: str) -> list[dict]:
     record = storage.get_latest("manual_macro_series", series_key)
@@ -718,6 +762,7 @@ def render_manual_macro_data_section(storage: Storage) -> None:
     )
 
     from datetime import date as date_cls
+    import uuid
 
     from core.manual_macro_data import (
         add_cpi_us_entry,
@@ -871,49 +916,135 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             st.rerun()
         st.metric("Mục tiêu hiện tại", f"{current_target}%/năm")
 
-    # --- TAB 4: Sự kiện địa chính trị (chọn 1 trong 5 mức, không phải chuỗi) ---
+    # --- TAB 4: Sự kiện địa chính trị — DANH SÁCH nhiều sự kiện, mỗi sự
+    #     kiện có ngày bắt đầu riêng để tính "mốc ảnh hưởng" (số ngày đã
+    #     trôi qua), sửa/xóa được TỪNG sự kiện riêng lẻ (không xóa cả
+    #     danh sách như thiết kế cũ) ---
     with tab_event:
         st.caption(
             "Đây là điểm DUY NHẤT có thể ghi đè (override) toàn bộ Macro Score "
             "về mức rất âm bất kể các chỉ số khác — cập nhật ngay khi có tin tức "
-            "quan trọng, không chờ dữ liệu kinh tế phản ánh (luôn trễ hơn thị trường)."
+            "quan trọng, không chờ dữ liệu kinh tế phản ánh (luôn trễ hơn thị trường). "
+            "Hệ thống tự động lấy sự kiện có **ngày bắt đầu gần nhất** trong danh "
+            "sách dưới đây làm trạng thái áp dụng cho tính điểm vĩ mô."
         )
+
+        # --- Đọc toàn bộ danh sách sự kiện đã nhập ---
+        event_ids = storage.query_all_keys(GEOPOLITICAL_EVENT_LOG_CATEGORY)
+        events = []
+        for eid in event_ids:
+            record = storage.get_latest(GEOPOLITICAL_EVENT_LOG_CATEGORY, eid)
+            if record:
+                events.append({"id": eid, **record["data"]})
+        events.sort(key=lambda e: e["start_date"], reverse=True)
+
+        # --- Trạng thái ĐANG ÁP DỤNG (tự động lấy theo sự kiện mới nhất) ---
         current_event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
-        current_event_key = (
-            current_event_record["data"]["event_key"] if current_event_record else "none"
-        )
-        event_keys = list(EVENT_OPTIONS.keys())
-        current_index = event_keys.index(current_event_key) if current_event_key in event_keys else 0
-
-        selected_event = st.selectbox(
-            "Mức độ sự kiện hiện tại", event_keys,
-            index=current_index, format_func=lambda k: EVENT_OPTIONS[k], key="event_select",
-        )
-        event_note = st.text_area("Ghi chú (tùy chọn)", key="event_note")
-
-        col_update, col_delete = st.columns(2)
-        with col_update:
-            if st.button("Cập nhật trạng thái sự kiện", key="update_event_btn"):
-                storage.save("manual_macro_setting", "geopolitical_event", {
-                    "event_key": selected_event, "note": event_note,
-                    "updated_date": date_cls.today().isoformat(),
-                })
-                st.success(f"Đã cập nhật: {EVENT_OPTIONS[selected_event]}.")
-                st.rerun()
-        with col_delete:
-            if current_event_record and st.button(
-                "🗑️ Xóa sự kiện đã nhập", key="delete_event_btn",
-                help="Xóa hẳn dữ liệu đã nhập, đặt lại về mặc định — dùng khi nhập nhầm.",
-            ):
-                storage.delete_key("manual_macro_setting", "geopolitical_event")
-                st.success(f"Đã xóa. Đặt lại về mặc định: {EVENT_OPTIONS['none']}.")
-                st.rerun()
-
         if current_event_record:
+            current_data = current_event_record["data"]
             st.info(
-                f"Trạng thái hiện tại: **{EVENT_OPTIONS[current_event_key]}** "
-                f"(cập nhật lần cuối: {current_event_record['data'].get('updated_date', '—')})"
+                f"📌 Đang áp dụng cho tính điểm vĩ mô: "
+                f"**{EVENT_OPTIONS.get(current_data['event_key'], current_data['event_key'])}** "
+                f"(bắt đầu {current_data.get('updated_date', '—')}) — "
+                f"tự động lấy theo sự kiện có ngày bắt đầu gần nhất bên dưới."
             )
+        else:
+            st.info("📌 Chưa có sự kiện nào được nhập — đang dùng mặc định: Không có sự kiện rủi ro nổi bật.")
+
+        st.markdown("#### ➕ Thêm sự kiện mới")
+        col_new1, col_new2 = st.columns(2)
+        with col_new1:
+            new_event_key = st.selectbox(
+                "Mức độ sự kiện", list(EVENT_OPTIONS.keys()),
+                format_func=lambda k: EVENT_OPTIONS[k], key="new_event_key",
+            )
+        with col_new2:
+            new_event_start_date = st.date_input(
+                "Ngày bắt đầu sự kiện", value=date_cls.today(), key="new_event_start_date",
+            )
+        new_event_note = st.text_area("Ghi chú (tùy chọn)", key="new_event_note")
+
+        if st.button("➕ Thêm sự kiện mới", key="add_event_btn"):
+            new_id = f"evt_{uuid.uuid4().hex[:12]}"
+            storage.save(GEOPOLITICAL_EVENT_LOG_CATEGORY, new_id, {
+                "event_key": new_event_key,
+                "start_date": new_event_start_date.isoformat(),
+                "note": new_event_note,
+                "created_at": date_cls.today().isoformat(),
+            })
+            _sync_current_geopolitical_event(storage)
+            st.success(f"Đã thêm sự kiện: {EVENT_OPTIONS[new_event_key]} (bắt đầu {new_event_start_date.isoformat()}).")
+            st.rerun()
+
+        st.divider()
+        st.markdown("#### 📋 Danh sách sự kiện đã nhập")
+
+        if not events:
+            st.info("Chưa có sự kiện nào trong danh sách.")
+        else:
+            today = date_cls.today()
+            rows = []
+            for e in events:
+                try:
+                    so_ngay = (today - date_cls.fromisoformat(e["start_date"])).days
+                except ValueError:
+                    so_ngay = None
+                rows.append({
+                    "Ngày bắt đầu": e["start_date"],
+                    "Mức độ": EVENT_OPTIONS.get(e["event_key"], e["event_key"]),
+                    "Ghi chú": e.get("note") or "—",
+                    "Số ngày đã trôi qua (mốc ảnh hưởng)": so_ngay,
+                })
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+
+            st.markdown("#### ✏️ Sửa / 🗑️ Xóa 1 sự kiện cụ thể")
+            options_nhan = {
+                e["id"]: f"{e['start_date']} — {EVENT_OPTIONS.get(e['event_key'], e['event_key'])}"
+                for e in events
+            }
+            selected_id = st.selectbox(
+                "Chọn sự kiện cần sửa/xóa", list(options_nhan.keys()),
+                format_func=lambda eid: options_nhan[eid], key="edit_event_select",
+            )
+            selected_event_data = next(e for e in events if e["id"] == selected_id)
+
+            col_edit1, col_edit2 = st.columns(2)
+            with col_edit1:
+                edit_event_key = st.selectbox(
+                    "Mức độ sự kiện", list(EVENT_OPTIONS.keys()),
+                    index=list(EVENT_OPTIONS.keys()).index(selected_event_data["event_key"])
+                    if selected_event_data["event_key"] in EVENT_OPTIONS else 0,
+                    format_func=lambda k: EVENT_OPTIONS[k], key=f"edit_event_key_{selected_id}",
+                )
+            with col_edit2:
+                edit_start_date = st.date_input(
+                    "Ngày bắt đầu sự kiện",
+                    value=date_cls.fromisoformat(selected_event_data["start_date"]),
+                    key=f"edit_event_date_{selected_id}",
+                )
+            edit_note = st.text_area(
+                "Ghi chú (tùy chọn)", value=selected_event_data.get("note", ""),
+                key=f"edit_event_note_{selected_id}",
+            )
+
+            col_save, col_del = st.columns(2)
+            with col_save:
+                if st.button("💾 Lưu thay đổi cho sự kiện này", key=f"save_event_btn_{selected_id}"):
+                    storage.save(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id, {
+                        "event_key": edit_event_key,
+                        "start_date": edit_start_date.isoformat(),
+                        "note": edit_note,
+                        "created_at": selected_event_data.get("created_at", date_cls.today().isoformat()),
+                    })
+                    _sync_current_geopolitical_event(storage)
+                    st.success("Đã lưu thay đổi.")
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️ Xóa sự kiện này", key=f"delete_event_btn_{selected_id}"):
+                    storage.delete_key(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id)
+                    _sync_current_geopolitical_event(storage)
+                    st.success("Đã xóa sự kiện này.")
+                    st.rerun()
 
     # --- Rà soát: hiển thị chi tiết công thức tính điểm vĩ mô ---
     with st.expander("🔍 Rà soát chi tiết công thức tính điểm vĩ mô"):
