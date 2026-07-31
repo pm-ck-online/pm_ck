@@ -643,32 +643,92 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
 # PHẦN 2 — GIAI ĐOẠN THỊ TRƯỜNG HIỆN TẠI
 # ==============================================================================
 
-def render_market_regime_section(storage: Storage, sectors: list[str]) -> None:
+def render_market_regime_section(storage: Storage) -> None:
+    """Hiển thị giai đoạn thị trường (định tính) — ĐÃ CẬP NHẬT (31/07/2026):
+        1. Thêm chỉ số VNINDEX (vị trí so với EMA200) hiển thị riêng ở đầu.
+        2. Tự động lấy TẤT CẢ ngành hiện có dữ liệu (không cần người dùng
+           gõ tay danh sách ngành ở sidebar như thiết kế cũ).
+        3. Với mỗi ngành, hiện rõ DANH SÁCH MÃ đang ở TRÊN đường EMA200
+           (và danh sách mã đang dưới, để đối chiếu).
+    """
     st.subheader("📊 Giai đoạn thị trường hiện tại")
 
-    if not sectors:
-        st.info("Chưa có dữ liệu giai đoạn thị trường cho ngành nào.")
+    # --- VNINDEX — hiển thị riêng, luôn ở đầu mục ---
+    vnindex_record = storage.get_latest("indicator_snapshot", "VNINDEX")
+    if vnindex_record:
+        vdata = vnindex_record["data"]
+        tren_ema = vdata.get("price_above_ema200")
+        trang_thai = "✅ Trên EMA200" if tren_ema is True else (
+            "❌ Dưới EMA200" if tren_ema is False else "— Chưa đủ dữ liệu"
+        )
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("VNINDEX", f"{vdata.get('close', '—')}")
+        col_v2.metric("EMA200", f"{vdata.get('ema200', '—')}")
+        col_v3.metric("Vị trí so với EMA200", trang_thai)
+    else:
+        st.info("Chưa có dữ liệu VNINDEX. Chạy `update_indices.py` hoặc `main.py` trước.")
+
+    st.divider()
+
+    # --- Tự động lấy TOÀN BỘ ngành hiện có dữ liệu (không phụ thuộc danh
+    #     sách gõ tay) — dựa trên bảng ánh xạ mã -> ngành đã có sẵn. ---
+    all_symbol_sector_keys = storage.query_all_keys("symbol_sector")
+    if not all_symbol_sector_keys:
+        st.info("Chưa có dữ liệu ngành nào. Chạy `main.py` hoặc `run_full_market.py` trước.")
+        return
+
+    sector_map = storage.get_latest_many("symbol_sector", all_symbol_sector_keys)
+    symbols_by_sector: dict[str, list[str]] = {}
+    for sym, record in sector_map.items():
+        sector = record["data"].get("sector")
+        if sector:
+            symbols_by_sector.setdefault(sector, []).append(sym)
+
+    all_sectors = sorted(symbols_by_sector.keys())
+    if not all_sectors:
+        st.info("Chưa có dữ liệu ngành nào.")
         return
 
     regime_emoji = {"uptrend": "🟢", "downtrend": "🔴", "sideway": "🟡"}
     all_affected_sectors: set[str] = set()
 
-    for sector in sectors:
-        record = storage.get_latest("market_regime", sector)
-        if record is None:
-            continue
+    for sector in all_sectors:
+        symbols_trong_nganh = sorted(symbols_by_sector.get(sector, []))
+        snapshot_map = storage.get_latest_many("indicator_snapshot", symbols_trong_nganh)
 
-        data = record["data"]
-        regime = data.get("regime")
-        confidence = data.get("confidence", 0.0)
+        ma_tren_ema200 = sorted(
+            sym for sym in symbols_trong_nganh
+            if snapshot_map.get(sym) and snapshot_map[sym]["data"].get("price_above_ema200") is True
+        )
+        ma_duoi_ema200 = sorted(
+            sym for sym in symbols_trong_nganh
+            if snapshot_map.get(sym) and snapshot_map[sym]["data"].get("price_above_ema200") is False
+        )
+
+        record = storage.get_latest("market_regime", sector)
+        regime = record["data"].get("regime") if record else None
+        confidence = record["data"].get("confidence", 0.0) if record else 0.0
         emoji = regime_emoji.get(regime, "⚪")
 
-        with st.expander(f"{emoji} {sector}: {regime or 'chưa xác định'} "
-                          f"(độ tin cậy {confidence * 100:.0f}%)"):
-            for reason in data.get("reasoning", []):
-                st.write(f"- {reason}")
+        with st.expander(
+            f"{emoji} {sector}: {regime or 'chưa xác định'} "
+            f"(độ tin cậy {confidence * 100:.0f}%) — {len(ma_tren_ema200)}/{len(symbols_trong_nganh)} mã trên EMA200"
+        ):
+            if record:
+                for reason in record["data"].get("reasoning", []):
+                    st.write(f"- {reason}")
+                all_affected_sectors.update(record["data"].get("affected_sectors", []))
+            else:
+                st.write("Chưa có dữ liệu giai đoạn thị trường cho ngành này.")
 
-        all_affected_sectors.update(data.get("affected_sectors", []))
+            st.markdown(
+                f"**✅ Mã đang TRÊN EMA200 ({len(ma_tren_ema200)} mã):** "
+                + (", ".join(ma_tren_ema200) if ma_tren_ema200 else "không có mã nào")
+            )
+            st.markdown(
+                f"**❌ Mã đang DƯỚI EMA200 ({len(ma_duoi_ema200)} mã):** "
+                + (", ".join(ma_duoi_ema200) if ma_duoi_ema200 else "không có mã nào")
+            )
 
     if all_affected_sectors:
         st.warning(
@@ -2526,7 +2586,7 @@ def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
 
 # Danh sách nhãn các mục (đúng thứ tự hiển thị) — dùng cho menu điều
 # hướng nhanh ở sidebar. Định nghĩa hàm/tham số thực tế nằm trong main()
-# vì cần `storage`/`symbols`/`sectors` đã tính tại thời điểm chạy.
+# vì cần `storage`/`symbols` đã tính tại thời điểm chạy.
 # Tổ chức các mục theo ĐÚNG 3 nhóm trong báo cáo kỹ thuật (Vĩ mô -> Thị
 # trường chung -> Giao dịch cổ phiếu) — tiêu đề nhóm viết HOA, mỗi nhóm có
 # thể MỞ RỘNG/THU HẸP độc lập ở chế độ "Xem tất cả" (dùng st.expander),
@@ -2628,13 +2688,6 @@ def main() -> None:
     with st.sidebar:
         st.header("Cấu hình hiển thị")
 
-
-        sectors_input = st.text_input(
-            "Danh sách ngành cần xem giai đoạn thị trường (cách nhau bởi dấu phẩy)",
-            value="banking,real_estate,securities",
-        )
-        sectors = [s.strip() for s in sectors_input.split(",") if s.strip()]
-
         st.divider()
         st.header("📑 Chuyển nhanh tới mục")
         mode = st.radio(
@@ -2662,7 +2715,7 @@ def main() -> None:
         ("📈 Bảng giá theo dõi (Watchlist)", render_watchlist_section, (storage, symbols)),
         ("🕯️ Biểu đồ nến", render_chart_section, (storage, symbols)),
         ("📒 Nhật ký giao dịch mua/bán", render_trade_journal_section, (storage, symbols)),
-        ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage, sectors)),
+        ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage,)),
         ("🌍 Nhập dữ liệu vĩ mô thủ công", render_manual_macro_data_section, (storage,)),
         ("📋 Báo cáo tổng hợp thị trường chung", render_market_summary_report_section, (storage,)),
         ("📐 Giai đoạn thị trường (3 lớp định lượng)", render_market_regime_quant_section, (storage,)),
