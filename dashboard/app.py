@@ -1957,10 +1957,50 @@ def render_entry_screener_section(storage: Storage) -> None:
     st.caption(report["ghi_chu"])
 
 
+CHARACTER_LABEL_DISPLAY = {
+    # Đổi tên hiển thị (KHÔNG đổi giá trị nội bộ — các module khác như
+    # stock_signal_engine.py, capital_allocator.py vẫn so khớp đúng
+    # chuỗi gốc "BUNG_NO_NGAN", "LINH_XINH"...) để tránh gây hiểu lầm là
+    # khuyến nghị MUA/BÁN hay dự báo xu hướng — đây CHỈ mô tả CÁCH giá đã
+    # vận động trong quá khứ, không phải tín hiệu giao dịch.
+    "DUT_KHOAT_TANG": "Vận động dứt khoát — chiều tăng (Directional Move – Up)",
+    "DUT_KHOAT_GIAM": "Vận động dứt khoát — chiều giảm (Directional Move – Down)",
+    "BUNG_NO_NGAN": "Biến động mạnh, ngắn hạn (Short-term Volatility Spike)",
+    "LINH_XINH": "Dao động hẹp, thiếu xu hướng (Choppy / Range-bound)",
+    "TRUNG_TINH": "Chưa đủ rõ đặc tính (Undetermined)",
+}
+
+CHARACTER_LABEL_EMOJI = {
+    "DUT_KHOAT_TANG": "🟢", "DUT_KHOAT_GIAM": "🔴",
+    "BUNG_NO_NGAN": "🟠", "LINH_XINH": "🟡", "TRUNG_TINH": "⚪",
+}
+
+
+def _dich_canh_bao(canh_bao_list: list[str]) -> str:
+    """Đổi tiền tố SQUAT/CHURNING sang dạng song ngữ "Việt (English)" cho
+    nhất quán với toàn bộ mục — nội dung câu giải thích phía sau giữ
+    nguyên (đã là tiếng Việt đầy đủ)."""
+    ket_qua = []
+    for c in canh_bao_list:
+        c = c.replace("SQUAT —", "Bứt phá giả (Squat) —")
+        c = c.replace("CHURNING —", "Nghi ngờ phân phối ẩn (Churning) —")
+        ket_qua.append(c)
+    return "; ".join(ket_qua) if ket_qua else "—"
+
+
+@st.cache_data(ttl=600, show_spinner="Đang đếm số lần lịch sử có đặc tính tương tự...")
+def _dem_lich_su_nhan_cached(df: pd.DataFrame, ma: str, nhan: str) -> dict:
+    """Bọc `dem_lich_su_nhan_tuong_tu()` bằng cache 10 phút — mỗi lần gọi
+    phải "phát lại" thuật toán qua tối đa 250 phiên, có chi phí tính toán
+    đáng kể, không nên chạy lại mỗi lần trang rerun nếu mã không đổi."""
+    from core.stock_character_classifier import dem_lich_su_nhan_tuong_tu
+
+    return dem_lich_su_nhan_tuong_tu(df, nhan, so_phien_kiem_tra=250)
+
+
 def render_stock_character_section(storage: Storage) -> None:
     """Hiển thị báo cáo tính cách giao dịch (`core.stock_character_classifier`)
-    cho toàn bộ mã đã quét — dứt khoát tăng/giảm, bùng nổ ngắn, lình xình,
-    trung tính, kèm cảnh báo SQUAT/CHURNING nếu có.
+    cho toàn bộ mã đã quét.
 
     TỐI ƯU TỐC ĐỘ (29/07/2026): trước đây gọi `get_latest()` RIÊNG cho
     từng mã (N lượt round-trip Supabase). Giờ dùng `get_latest_many()`
@@ -1972,12 +2012,25 @@ def render_stock_character_section(storage: Storage) -> None:
     kèm nút lưu lựa chọn (bền vào storage, riêng theo từng người xem
     qua `?user=...` — giống cơ chế watchlist) và nút xóa lựa chọn đã
     lưu để quay lại xem TOÀN BỘ mã như mặc định.
+
+    NGÔN NGỮ SONG NGỮ + THỐNG KÊ LỊCH SỬ (31/07/2026):
+        1. Toàn bộ nhãn/cột đổi sang "Tiếng Việt (English)" cho dễ hiểu.
+        2. Đổi tên nhãn tính cách (xem CHARACTER_LABEL_DISPLAY) để tránh
+           gây hiểu lầm là khuyến nghị giao dịch — đây thuần túy mô tả
+           CÁCH giá đã vận động, không phải tín hiệu mua/bán.
+        3. Thêm tùy chọn cột "Số lần lịch sử có đặc tính tương tự" — đếm
+           trong 250 phiên gần nhất (~1 năm), mã đó từng có CÙNG nhãn bao
+           nhiêu lần (tính bằng cách phát lại thuật toán tại từng thời
+           điểm trong quá khứ). Mặc định TẮT vì tốn thời gian tính toán
+           nếu bật cho nhiều mã cùng lúc — nên chỉ bật sau khi đã thu hẹp
+           danh sách bằng ô chọn mã bên dưới.
     """
-    st.subheader("🎭 Tính cách giao dịch từng mã")
+    st.subheader("🎭 Tính cách giao dịch từng mã (Trading Character)")
     st.caption(
-        "⚠️ Đây là đặc tính VẬN ĐỘNG nội tại của mã (dựa trên percentile so "
-        "với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị đầu tư, chỉ "
-        "dùng để điều chỉnh độ tin cậy tín hiệu Mua/Bán và phân bổ vốn."
+        "⚠️ Đây là mô tả CÁCH GIÁ ĐÃ VẬN ĐỘNG trong quá khứ của mã (dựa trên "
+        "percentile so với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị "
+        "mua/bán hay dự báo xu hướng tương lai, chỉ dùng để điều chỉnh độ tin "
+        "cậy tín hiệu Mua/Bán và phân bổ vốn."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -2016,10 +2069,16 @@ def render_stock_character_section(storage: Storage) -> None:
     if not selected:
         symbol_ids = render_search_box_if_needed(symbol_ids, key="stock_character_search")
 
-    nhan_emoji = {
-        "DUT_KHOAT_TANG": "🟢", "DUT_KHOAT_GIAM": "🔴",
-        "BUNG_NO_NGAN": "🟠", "LINH_XINH": "🟡", "TRUNG_TINH": "⚪",
-    }
+    hien_cot_lich_su = st.checkbox(
+        "📊 Tính thêm cột \"Số lần lịch sử có đặc tính tương tự\" "
+        "(chỉ nên bật khi đã chọn 1 vài mã cụ thể — có thể CHẬM nếu bật cho nhiều mã)",
+        key="stock_character_show_history_count",
+    )
+    if hien_cot_lich_su and len(symbol_ids) > 30:
+        st.warning(
+            f"Đang hiện {len(symbol_ids)} mã — tính cột lịch sử cho quá nhiều mã "
+            "cùng lúc sẽ RẤT CHẬM. Nên thu hẹp lại bằng ô chọn mã ở trên trước."
+        )
 
     character_map = storage.get_latest_many("stock_character", symbol_ids)
 
@@ -2030,14 +2089,32 @@ def render_stock_character_section(storage: Storage) -> None:
             continue
         data = record["data"]
         nhan = data.get("nhan_tinh_cach")
-        rows.append({
+        nhan_hien_thi = CHARACTER_LABEL_DISPLAY.get(nhan, nhan)
+        emoji = CHARACTER_LABEL_EMOJI.get(nhan, "")
+
+        row = {
             "Mã": sym,
-            "Tính cách": f"{nhan_emoji.get(nhan, '')} {nhan}",
-            "Character Score": data.get("character_score"),
-            "Choppiness Score": data.get("choppiness_score"),
-            "Cảnh báo": "; ".join(data.get("canh_bao", [])) or "—",
-            "Độ tin cậy thấp": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
-        })
+            "Tính cách (Character)": f"{emoji} {nhan_hien_thi}",
+            "Điểm dứt khoát (Character Score)": data.get("character_score"),
+            "Điểm lình xình (Choppiness Score)": data.get("choppiness_score"),
+            "Cảnh báo (Warning)": _dich_canh_bao(data.get("canh_bao", [])),
+            "Độ tin cậy thấp (Low Confidence)": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
+        }
+
+        if hien_cot_lich_su and nhan:
+            df_ma = _load_ohlcv_history_df(storage, sym)
+            if df_ma is not None and not df_ma.empty:
+                try:
+                    dem = _dem_lich_su_nhan_cached(df_ma, sym, nhan)
+                    row["Số lần lịch sử có đặc tính tương tự (trong ~1 năm)"] = (
+                        f"{dem['so_lan_khop']}/{dem['so_phien_da_kiem_tra']} phiên"
+                    )
+                except Exception:  # noqa: BLE001
+                    row["Số lần lịch sử có đặc tính tương tự (trong ~1 năm)"] = "—"
+            else:
+                row["Số lần lịch sử có đặc tính tương tự (trong ~1 năm)"] = "—"
+
+        rows.append(row)
 
     if not rows:
         st.info("Không có mã nào khớp từ khóa tìm kiếm / lựa chọn.")
@@ -2046,8 +2123,8 @@ def render_stock_character_section(storage: Storage) -> None:
     st.dataframe(
         pd.DataFrame(rows), width='stretch', hide_index=True,
         column_config={
-            "Character Score": st.column_config.NumberColumn(format="%.2f"),
-            "Choppiness Score": st.column_config.NumberColumn(format="%.2f"),
+            "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f"),
+            "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f"),
         },
     )
 
