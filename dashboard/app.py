@@ -1373,10 +1373,9 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
             screen_result = pd.DataFrame()
 
         if screen_result.empty:
-            st.info("Không có mã nào trong watchlist thỏa đồng thời cả 3 tiêu chí tại thời điểm này.")
+            st.session_state["screen_display_df"] = pd.DataFrame()
+            st.session_state["screen_match_count"] = 0
         else:
-            st.success(f"Tìm thấy {len(screen_result)} mã thỏa đồng thời cả 3 tiêu chí:")
-
             # Với MỖI mã lọt qua bộ lọc, tính thêm xác suất tăng/giảm sau
             # 3-5-7-10 phiên — dựa trên tần suất các lần TRONG QUÁ KHỨ 3
             # NĂM của CHÍNH mã đó rơi vào tình huống tương tự (tái sử dụng
@@ -1427,12 +1426,33 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
                 rename_map[f"xac_suat_giam_{n_phien}"] = f"Xác suất giảm sau {n_phien} phiên (%)"
 
             display_df = display_df.rename(columns=rename_map)
+
+            # LƯU LẠI vào session_state — giữ nguyên kết quả hiển thị xuyên
+            # suốt các lần rerun tiếp theo (đổi mã ở phần bên dưới, cuộn
+            # trang...), CHỈ mất đi khi bấm "Quét watchlist ngay" lần kế
+            # tiếp. Tránh việc bảng kết quả biến mất ngay khi có bất kỳ
+            # thao tác nào khác trên trang (hành vi mặc định của Streamlit:
+            # st.button() chỉ trả về True ĐÚNG 1 lần tại lượt rerun do
+            # chính nó gây ra).
+            st.session_state["screen_display_df"] = display_df
+            st.session_state["screen_match_count"] = len(screen_result)
+
+    # --- Hiển thị KẾT QUẢ ĐÃ LƯU (nếu có) — độc lập với việc nút bấm có
+    #     được nhấn ở lượt rerun hiện tại hay không ---
+    if "screen_display_df" in st.session_state:
+        saved_df = st.session_state["screen_display_df"]
+        if saved_df.empty:
+            st.info("Không có mã nào trong watchlist thỏa đồng thời cả 3 tiêu chí tại thời điểm này.")
+        else:
+            st.success(f"Tìm thấy {st.session_state['screen_match_count']} mã thỏa đồng thời cả 3 tiêu chí:")
             st.caption(
                 "⚠️ Cột xác suất tăng/giảm là TẦN SUẤT THỰC NGHIỆM từ lịch sử 3 năm của "
                 "chính mã đó — xem kèm \"Số lần quan sát\" và \"Độ tin cậy\": số lần quan "
                 "sát càng ít, độ tin cậy càng thấp, không nên dùng làm căn cứ duy nhất."
             )
-            st.dataframe(display_df, width='stretch', hide_index=True)
+            st.dataframe(saved_df, width='stretch', hide_index=True)
+    else:
+        st.caption("Bấm nút bên trên để bắt đầu quét lần đầu.")
 
     st.divider()
 
