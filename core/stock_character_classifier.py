@@ -476,6 +476,48 @@ def phan_loai_tinh_cach_co_phieu(
     return ket_qua
 
 
+def dem_lich_su_nhan_tuong_tu(
+    df_ohlcv: pd.DataFrame,
+    nhan_hien_tai: str,
+    so_phien_kiem_tra: int = 250,
+    lookback_window: int = DEFAULT_LOOKBACK_WINDOW,
+    history_window: int = DEFAULT_HISTORY_WINDOW,
+) -> dict:
+    """Đếm số lần TRONG QUÁ KHỨ mã này từng được gán CÙNG NHÃN tính cách
+    như hiện tại — bằng cách "phát lại" (replay) đúng thuật toán phân loại
+    (`phan_loai_tinh_cach_co_phieu`) tại TỪNG thời điểm trong quá khứ, chỉ
+    dùng dữ liệu có sẵn TÍNH ĐẾN thời điểm đó (không nhìn trước dữ liệu
+    tương lai — tương tự nguyên tắc chống look-ahead bias đã áp dụng ở
+    module xác suất phục hồi lịch sử).
+
+    Chỉ kiểm tra tối đa `so_phien_kiem_tra` phiên gần nhất (mặc định 250,
+    ~1 năm giao dịch) để giữ thời gian tính toán trong giới hạn hợp lý —
+    đây là ĐẾM TẦN SUẤT LỊCH SỬ, không phải toàn bộ lịch sử của mã.
+
+    Trả về {"so_lan_khop": ..., "so_phien_da_kiem_tra": ...} — số phiên đã
+    kiểm tra có thể ít hơn `so_phien_kiem_tra` nếu mã chưa đủ dữ liệu.
+    """
+    min_rows = max(VELOCITY_N_PHIEN + 1, 30)
+    n = len(df_ohlcv)
+    start = max(min_rows, n - so_phien_kiem_tra)
+
+    so_lan_khop = 0
+    so_phien_da_kiem_tra = 0
+    for i in range(start, n):
+        try:
+            ket_qua = phan_loai_tinh_cach_co_phieu(
+                "_replay", df_ohlcv.iloc[: i + 1],
+                lookback_window=lookback_window, history_window=history_window,
+            )
+        except InsufficientDataError:
+            continue
+        so_phien_da_kiem_tra += 1
+        if ket_qua["nhan_tinh_cach"] == nhan_hien_tai:
+            so_lan_khop += 1
+
+    return {"so_lan_khop": so_lan_khop, "so_phien_da_kiem_tra": so_phien_da_kiem_tra}
+
+
 # ============================================================================
 # 8 — Tiện ích tích hợp với các module khác
 # ============================================================================
