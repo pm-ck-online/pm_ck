@@ -1250,14 +1250,19 @@ def render_pattern_section(storage: Storage, symbols: Optional[list[str]] = None
 
 
 @st.cache_data(ttl=600, show_spinner="Đang quét lịch sử tìm các tình huống tương tự...")
-def _compute_recovery_probability_cached(df: pd.DataFrame, ma: str, dieu_kien_loc: dict) -> dict:
+def _compute_recovery_probability_cached(
+    df: pd.DataFrame, ma: str, dieu_kien_loc: dict,
+    cac_so_phien_du_bao: tuple[int, ...] = (1, 3, 5),
+) -> dict:
     """Bọc `tinh_xac_suat_phuc_hoi_lich_su()` bằng cache 10 phút — việc
     quét toàn bộ lịch sử (750-1250 phiên) có chi phí tính toán đáng kể,
     không nên chạy lại mỗi lần trang rerun nếu mã/điều kiện lọc không đổi.
     """
     from core.historical_recovery_probability import tinh_xac_suat_phuc_hoi_lich_su
 
-    return tinh_xac_suat_phuc_hoi_lich_su(ma, df, dieu_kien_loc=dieu_kien_loc)
+    return tinh_xac_suat_phuc_hoi_lich_su(
+        ma, df, dieu_kien_loc=dieu_kien_loc, cac_so_phien_du_bao=cac_so_phien_du_bao
+    )
 
 
 @st.cache_data(ttl=600, show_spinner="Đang quét toàn bộ watchlist tìm mã đứt gãy vùng nền...")
@@ -1315,7 +1320,7 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
     # vốn quét NGƯỢC quá khứ để tính tần suất) — tìm các mã ĐANG thỏa đồng
     # thời 3 tiêu chí: đứt gãy vùng nền + quá bán + volume đột biến.
     # --------------------------------------------------------------------
-    st.markdown("### 🔎 Bảng tổng hợp: Đứt gãy vùng nền + Quá bán + Volume đột biến")
+    st.markdown("### 📋 Danh sách phục hồi ngắn hạn")
     st.caption(
         "Quét TOÀN BỘ watchlist tại thời điểm hiện tại — khác với phần \"Xác suất "
         "phục hồi lịch sử\" phía dưới (vốn quét ngược quá khứ để tính tần suất). "
@@ -1371,12 +1376,62 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
             st.info("Không có mã nào trong watchlist thỏa đồng thời cả 3 tiêu chí tại thời điểm này.")
         else:
             st.success(f"Tìm thấy {len(screen_result)} mã thỏa đồng thời cả 3 tiêu chí:")
-            display_df = screen_result.rename(columns={
+
+            # Với MỖI mã lọt qua bộ lọc, tính thêm xác suất tăng/giảm sau
+            # 3-5-7-10 phiên — dựa trên tần suất các lần TRONG QUÁ KHỨ 3
+            # NĂM của CHÍNH mã đó rơi vào tình huống tương tự (tái sử dụng
+            # Module 6 — core.historical_recovery_probability — với điều
+            # kiện lọc MẶC ĐỊNH của module đó, độc lập với 3 tiêu chí sàng
+            # lọc ở Module 7 phía trên).
+            cac_moc_phien = (3, 5, 7, 10)
+            xac_suat_rows = []
+            for ma in screen_result["ma"]:
+                df_ma = _load_ohlcv_history_df(storage, ma)
+                if df_ma is None or df_ma.empty:
+                    xac_suat_rows.append({"ma": ma, "so_lan_quan_sat": None, "do_tin_cay": None})
+                    continue
+                try:
+                    prob_result = _compute_recovery_probability_cached(
+                        df_ma, ma, {}, cac_so_phien_du_bao=cac_moc_phien
+                    )
+                except Exception:  # noqa: BLE001
+                    xac_suat_rows.append({"ma": ma, "so_lan_quan_sat": None, "do_tin_cay": None})
+                    continue
+
+                row = {
+                    "ma": ma,
+                    "so_lan_quan_sat": prob_result["so_lan_quan_sat_lich_su"],
+                    "do_tin_cay": prob_result["do_tin_cay_thong_ke"],
+                }
+                for n_phien in cac_moc_phien:
+                    r = prob_result["ket_qua_theo_so_phien_du_bao"].get(f"sau_{n_phien}_phien", {})
+                    xac_suat_tang = r.get("ty_le_phuc_hoi_pct")
+                    row[f"xac_suat_tang_{n_phien}"] = xac_suat_tang
+                    row[f"xac_suat_giam_{n_phien}"] = (
+                        round(100 - xac_suat_tang, 1) if xac_suat_tang is not None else None
+                    )
+                xac_suat_rows.append(row)
+
+            xac_suat_df = pd.DataFrame(xac_suat_rows)
+            display_df = screen_result.merge(xac_suat_df, on="ma", how="left")
+
+            rename_map = {
                 "ma": "Mã", "gia_pivot_ho_tro": "Giá pivot hỗ trợ",
                 "so_phien_vung_nen": "Số phiên vùng nền", "gia_hien_tai": "Giá hiện tại",
                 "pct_giam_tu_pivot": "% giảm từ pivot", "rsi_hien_tai": "RSI(14)",
                 "volume_ratio": "Tỷ lệ KL/TB20",
-            })
+                "so_lan_quan_sat": "Số lần quan sát (3 năm)", "do_tin_cay": "Độ tin cậy",
+            }
+            for n_phien in cac_moc_phien:
+                rename_map[f"xac_suat_tang_{n_phien}"] = f"Xác suất tăng sau {n_phien} phiên (%)"
+                rename_map[f"xac_suat_giam_{n_phien}"] = f"Xác suất giảm sau {n_phien} phiên (%)"
+
+            display_df = display_df.rename(columns=rename_map)
+            st.caption(
+                "⚠️ Cột xác suất tăng/giảm là TẦN SUẤT THỰC NGHIỆM từ lịch sử 3 năm của "
+                "chính mã đó — xem kèm \"Số lần quan sát\" và \"Độ tin cậy\": số lần quan "
+                "sát càng ít, độ tin cậy càng thấp, không nên dùng làm căn cứ duy nhất."
+            )
             st.dataframe(display_df, width='stretch', hide_index=True)
 
     st.divider()
