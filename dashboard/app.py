@@ -890,13 +890,24 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             index=current_index, format_func=lambda k: EVENT_OPTIONS[k], key="event_select",
         )
         event_note = st.text_area("Ghi chú (tùy chọn)", key="event_note")
-        if st.button("Cập nhật trạng thái sự kiện", key="update_event_btn"):
-            storage.save("manual_macro_setting", "geopolitical_event", {
-                "event_key": selected_event, "note": event_note,
-                "updated_date": date_cls.today().isoformat(),
-            })
-            st.success(f"Đã cập nhật: {EVENT_OPTIONS[selected_event]}.")
-            st.rerun()
+
+        col_update, col_delete = st.columns(2)
+        with col_update:
+            if st.button("Cập nhật trạng thái sự kiện", key="update_event_btn"):
+                storage.save("manual_macro_setting", "geopolitical_event", {
+                    "event_key": selected_event, "note": event_note,
+                    "updated_date": date_cls.today().isoformat(),
+                })
+                st.success(f"Đã cập nhật: {EVENT_OPTIONS[selected_event]}.")
+                st.rerun()
+        with col_delete:
+            if current_event_record and st.button(
+                "🗑️ Xóa sự kiện đã nhập", key="delete_event_btn",
+                help="Xóa hẳn dữ liệu đã nhập, đặt lại về mặc định — dùng khi nhập nhầm.",
+            ):
+                storage.delete_key("manual_macro_setting", "geopolitical_event")
+                st.success(f"Đã xóa. Đặt lại về mặc định: {EVENT_OPTIONS['none']}.")
+                st.rerun()
 
         if current_event_record:
             st.info(
