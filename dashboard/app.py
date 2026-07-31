@@ -643,6 +643,43 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
 # PHẦN 2 — GIAI ĐOẠN THỊ TRƯỜNG HIỆN TẠI
 # ==============================================================================
 
+# Tên ngành song ngữ — khớp ĐÚNG các khóa tiếng Anh trong config.yaml
+# (watchlist.symbols). Dùng để hiển thị dạng "Tiếng Việt (english_key)"
+# thay vì chỉ hiện khóa tiếng Anh trần trụi.
+SECTOR_LABELS = {
+    "agriculture": "Nông nghiệp",
+    "banking": "Ngân hàng",
+    "energy": "Năng lượng",
+    "fertilizer_chemical": "Phân bón - Hóa chất",
+    "industrial_real_estate": "Bất động sản khu công nghiệp",
+    "insurance": "Bảo hiểm",
+    "oil_gas": "Dầu khí",
+    "pharma": "Dược phẩm",
+    "public_investment": "Đầu tư công",
+    "real_estate": "Bất động sản",
+    "retail_consumer": "Bán lẻ - Tiêu dùng",
+    "seafood_textile": "Thủy sản - Dệt may",
+    "securities": "Chứng khoán",
+    "shipping_port": "Cảng biển - Vận tải biển",
+    "steel": "Thép",
+    "technology": "Công nghệ",
+    "vn30_other": "VN30 khác",
+}
+
+
+def _nhan_nganh(sector_key: str) -> str:
+    """Trả về nhãn hiển thị song ngữ "Tiếng Việt (khóa_tiếng_anh)" cho 1
+    khóa ngành — dùng SECTOR_LABELS ở trên. Nếu khóa không nằm trong bảng
+    (thường là do dữ liệu CŨ còn sót lại trong Supabase từ giai đoạn phát
+    triển trước, lưu trực tiếp tên tiếng Việt thay vì khóa tiếng Anh chuẩn
+    hóa theo config.yaml hiện tại) -> hiện nguyên văn kèm cảnh báo, KHÔNG
+    tự đoán ghép cặp vì có thể gán sai ngành.
+    """
+    if sector_key in SECTOR_LABELS:
+        return f"{SECTOR_LABELS[sector_key]} ({sector_key})"
+    return f"{sector_key} ⚠️ (dữ liệu cũ, chưa chuẩn hóa)"
+
+
 def render_market_regime_section(storage: Storage) -> None:
     """Hiển thị giai đoạn thị trường (định tính) — ĐÃ CẬP NHẬT (31/07/2026):
         1. Thêm chỉ số VNINDEX (vị trí so với EMA200) hiển thị riêng ở đầu.
@@ -662,8 +699,8 @@ def render_market_regime_section(storage: Storage) -> None:
             "❌ Dưới EMA200" if tren_ema is False else "— Chưa đủ dữ liệu"
         )
         col_v1, col_v2, col_v3 = st.columns(3)
-        col_v1.metric("VNINDEX", f"{vdata.get('close', '—')}")
-        col_v2.metric("EMA200", f"{vdata.get('ema200', '—')}")
+        col_v1.metric("VNINDEX", _fmt_number(vdata.get("close")) or "—")
+        col_v2.metric("EMA200", _fmt_number(vdata.get("ema200")) or "—")
         col_v3.metric("Vị trí so với EMA200", trang_thai)
     else:
         st.info("Chưa có dữ liệu VNINDEX. Chạy `update_indices.py` hoặc `main.py` trước.")
@@ -689,6 +726,18 @@ def render_market_regime_section(storage: Storage) -> None:
         st.info("Chưa có dữ liệu ngành nào.")
         return
 
+    nganh_chua_chuan_hoa = [s for s in all_sectors if s not in SECTOR_LABELS]
+    if nganh_chua_chuan_hoa:
+        st.warning(
+            "⚠️ Phát hiện "
+            + str(len(nganh_chua_chuan_hoa))
+            + " ngành CHƯA khớp với danh sách chuẩn trong `config.yaml` hiện tại: "
+            + ", ".join(nganh_chua_chuan_hoa)
+            + " — đây thường là dữ liệu ngành CŨ còn sót lại trong Supabase từ trước "
+            "khi chuẩn hóa theo `config.yaml`. Chạy lại `run_full_market.py` cho các mã "
+            "liên quan sẽ ghi đè bằng dữ liệu ngành mới, khắc phục dứt điểm."
+        )
+
     regime_emoji = {"uptrend": "🟢", "downtrend": "🔴", "sideway": "🟡"}
     all_affected_sectors: set[str] = set()
 
@@ -711,7 +760,7 @@ def render_market_regime_section(storage: Storage) -> None:
         emoji = regime_emoji.get(regime, "⚪")
 
         with st.expander(
-            f"{emoji} {sector}: {regime or 'chưa xác định'} "
+            f"{emoji} {_nhan_nganh(sector)}: {regime or 'chưa xác định'} "
             f"(độ tin cậy {confidence * 100:.0f}%) — {len(ma_tren_ema200)}/{len(symbols_trong_nganh)} mã trên EMA200"
         ):
             if record:
@@ -2412,11 +2461,11 @@ def render_watchlist_manager_section(storage: Storage) -> None:
         disabled=[c for c in detail_df.columns if c != "🗑️ Xóa"],
         column_config={
             "Giá": st.column_config.NumberColumn(format="%.2f"),
-            "MA20": st.column_config.NumberColumn(format="%.2f"),
-            "EMA50": st.column_config.NumberColumn(format="%.2f"),
-            "EMA200": st.column_config.NumberColumn(format="%.2f"),
+            "MA20": st.column_config.NumberColumn(format="%.0f"),
+            "EMA50": st.column_config.NumberColumn(format="%.0f"),
+            "EMA200": st.column_config.NumberColumn(format="%.0f"),
             "Khối lượng": st.column_config.NumberColumn(format="%.0f"),
-            "Mô hình (%)": st.column_config.NumberColumn(format="%d%%"),
+            "Mô hình (%)": st.column_config.NumberColumn(format="%.1f%%"),
             "🗑️ Xóa": st.column_config.CheckboxColumn(help="Tick để xóa mã khỏi watchlist"),
         },
         key="watchlist_detail_editor",
