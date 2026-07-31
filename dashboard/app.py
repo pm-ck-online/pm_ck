@@ -2123,8 +2123,19 @@ def render_stock_character_section(storage: Storage) -> None:
     st.dataframe(
         pd.DataFrame(rows), width='stretch', hide_index=True,
         column_config={
-            "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f"),
-            "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f"),
+            # Cột "Mã" và các cột TỪ "Điểm dứt khoát" trở đi đều đặt
+            # width="small" — buộc tiêu đề dài (VD: "Điểm dứt khoát
+            # (Character Score)") tự XUỐNG DÒNG bên trong ô tiêu đề thay
+            # vì kéo giãn cả cột ra rất rộng theo chiều ngang. Cột "Tính
+            # cách (Character)" CHỦ Ý không thu hẹp vì bản thân NỘI DUNG
+            # (không chỉ tiêu đề) đã là câu mô tả dài, thu hẹp sẽ làm mất
+            # chữ, khó đọc.
+            "Mã": st.column_config.TextColumn(width="small"),
+            "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "Cảnh báo (Warning)": st.column_config.TextColumn(width="small"),
+            "Độ tin cậy thấp (Low Confidence)": st.column_config.TextColumn(width="small"),
+            "Số lần lịch sử có đặc tính tương tự (trong ~1 năm)": st.column_config.TextColumn(width="small"),
         },
     )
 
