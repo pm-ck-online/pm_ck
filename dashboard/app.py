@@ -2385,25 +2385,36 @@ def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
 # Danh sách nhãn các mục (đúng thứ tự hiển thị) — dùng cho menu điều
 # hướng nhanh ở sidebar. Định nghĩa hàm/tham số thực tế nằm trong main()
 # vì cần `storage`/`symbols`/`sectors` đã tính tại thời điểm chạy.
-DASHBOARD_SECTIONS = {
-    "📋 Watchlist (thêm/xóa mã)": None,
-    "📈 Bảng giá theo dõi (Watchlist)": None,
-    "🕯️ Biểu đồ nến": None,
-    "📒 Nhật ký giao dịch mua/bán": None,
-    "🌐 Giai đoạn thị trường (định tính)": None,
-    "🌍 Nhập dữ liệu vĩ mô thủ công": None,
-    "📋 Báo cáo tổng hợp thị trường chung": None,
-    "📐 Giai đoạn thị trường (3 lớp định lượng)": None,
-    "📦 Khuyến nghị phân bổ vốn (đơn giản)": None,
-    "📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)": None,
-    "🔎 Mã có mô hình thu hẹp biên độ": None,
-    "🚦 Báo cáo tín hiệu Mua/Bán": None,
-    "🎭 Tính cách giao dịch từng mã": None,
-    "📊 Xác suất phục hồi lịch sử": None,
-    "🔍 Rà soát danh sách vào lệnh ngắn hạn": None,
-    "⏱️ Tiêu chí ngắn hạn": None,
-    "💼 Danh mục mô phỏng": None,
-}
+# Tổ chức các mục theo ĐÚNG 3 nhóm trong báo cáo kỹ thuật (Vĩ mô -> Thị
+# trường chung -> Giao dịch cổ phiếu) — tiêu đề nhóm viết HOA, mỗi nhóm có
+# thể MỞ RỘNG/THU HẸP độc lập ở chế độ "Xem tất cả" (dùng st.expander),
+# và ở chế độ "Chỉ xem 1 mục" thì chọn NHÓM trước rồi mới chọn mục trong
+# nhóm đó — giúp danh sách lựa chọn gọn hơn thay vì liệt kê phẳng cả 17 mục.
+DASHBOARD_GROUPS = [
+    ("NHÓM 1 — VĨ MÔ (THẾ GIỚI + VIỆT NAM)", [
+        "🌍 Nhập dữ liệu vĩ mô thủ công",
+    ]),
+    ("NHÓM 2 — THỊ TRƯỜNG CHUNG", [
+        "🌐 Giai đoạn thị trường (định tính)",
+        "📋 Báo cáo tổng hợp thị trường chung",
+        "📐 Giai đoạn thị trường (3 lớp định lượng)",
+    ]),
+    ("NHÓM 3 — GIAO DỊCH CỔ PHIẾU", [
+        "📋 Watchlist (thêm/xóa mã)",
+        "📈 Bảng giá theo dõi (Watchlist)",
+        "🕯️ Biểu đồ nến",
+        "📒 Nhật ký giao dịch mua/bán",
+        "📦 Khuyến nghị phân bổ vốn (đơn giản)",
+        "📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)",
+        "🔎 Mã có mô hình thu hẹp biên độ",
+        "🚦 Báo cáo tín hiệu Mua/Bán",
+        "🎭 Tính cách giao dịch từng mã",
+        "📊 Xác suất phục hồi lịch sử",
+        "🔍 Rà soát danh sách vào lệnh ngắn hạn",
+        "⏱️ Tiêu chí ngắn hạn",
+        "💼 Danh mục mô phỏng",
+    ]),
+]
 
 
 def require_login() -> None:
@@ -2490,9 +2501,17 @@ def main() -> None:
         )
         selected_section = None
         if mode == "Chỉ xem 1 mục":
+            selected_group_title = st.radio(
+                "Chọn nhóm", [group_title for group_title, _ in DASHBOARD_GROUPS],
+                key="dashboard_selected_group",
+            )
+            labels_trong_nhom = next(
+                labels for group_title, labels in DASHBOARD_GROUPS
+                if group_title == selected_group_title
+            )
             selected_section = st.radio(
-                "Chọn mục muốn xem", list(DASHBOARD_SECTIONS.keys()),
-                key="dashboard_selected_section",
+                "Chọn mục trong nhóm", labels_trong_nhom,
+                key=f"dashboard_selected_section__{selected_group_title}",
             )
 
     # --- Danh sách mục theo đúng thứ tự hiển thị, kèm hàm + tham số riêng ---
@@ -2516,21 +2535,28 @@ def main() -> None:
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
     ]
 
+    # --- Tra cứu nhanh render_fn + args theo label, dùng chung cho cả 2 chế độ ---
+    sections_map = {label: (render_fn, args) for label, render_fn, args in sections_to_call}
+
     if selected_section is not None:
         # --- Chế độ CHỈ XEM 1 MỤC — không cuộn, chỉ hiện đúng mục đã chọn ---
         # LƯU Ý: KHÔNG thêm tiêu đề markdown ở đây — mỗi hàm render_* bên
         # dưới đã tự gọi st.subheader() với đúng tên mục rồi, thêm tiêu đề
         # ở ngoài nữa sẽ làm tiêu đề hiện lặp lại 2 lần trên trang.
-        for label, render_fn, args in sections_to_call:
-            if label == selected_section:
-                render_fn(*args)
-                break
+        render_fn, args = sections_map[selected_section]
+        render_fn(*args)
     else:
-        # --- Chế độ xem TẤT CẢ (hành vi cũ, cuộn từ trên xuống) ---
-        for i, (label, render_fn, args) in enumerate(sections_to_call):
-            if i > 0:
-                st.divider()
-            render_fn(*args)
+        # --- Chế độ xem TẤT CẢ — chia theo 3 NHÓM (khớp báo cáo kỹ thuật),
+        #     mỗi nhóm bọc trong st.expander để người xem tự MỞ RỘNG hoặc
+        #     THU HẸP cho gọn, không bắt buộc phải cuộn qua toàn bộ 17 mục
+        #     cùng lúc. Tiêu đề nhóm viết HOA. ---
+        for group_title, labels in DASHBOARD_GROUPS:
+            with st.expander(f"🔽 {group_title}", expanded=True):
+                for i, label in enumerate(labels):
+                    if i > 0:
+                        st.divider()
+                    render_fn, args = sections_map[label]
+                    render_fn(*args)
 
 
 main()
