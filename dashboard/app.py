@@ -46,26 +46,43 @@ from core.storage import Storage
 
 _MAU_XANH_TANG = "color: #16a34a; font-weight: 600;"
 _MAU_DO_GIAM = "color: #dc2626; font-weight: 600;"
+_MAU_DEN_MAC_DINH = "color: #000000;"
 
 
 def style_tang_giam(
     df: pd.DataFrame,
     cot_theo_ten: bool = True,
     cot_theo_dau: Optional[list[str]] = None,
+    dinh_dang_so: Optional[dict[str, str]] = None,
 ):
     """Trả về `pandas.Styler` (dùng trực tiếp cho `st.dataframe`) tô màu:
         - XANH LÁ cho các ô ở cột có chữ "tăng" trong tên (ví dụ cột
           "Xác suất tăng sau 3 phiên (%)").
         - ĐỎ cho các ô ở cột có chữ "giảm" trong tên (ví dụ cột "Xác suất
           giảm sau 3 phiên (%)", "% giảm từ pivot").
+        - ĐEN (mặc định) cho MỌI ô còn lại — tránh màu xám nhạt do theme,
+          chỉ ô tăng/giảm mới có màu riêng.
 
     `cot_theo_dau`: danh sách thêm các cột % không có chữ "tăng"/"giảm"
     trong tên (ví dụ "% thay đổi TB", "Tỷ lệ phục hồi (%)") — tô màu THEO
-    DẤU giá trị: dương -> xanh, âm -> đỏ, bằng 0/NaN -> giữ nguyên.
+    DẤU giá trị: dương -> xanh, âm -> đỏ, bằng 0/NaN -> giữ đen.
+
+    `dinh_dang_so`: dict {tên_cột: chuỗi_định_dạng} để RÚT GỌN số thập
+    phân hiển thị (ví dụ {"Giá hiện tại": "{:.1f}"}) — mặc định pandas
+    Styler hiện đủ 6 chữ số thập phân nếu không chỉ định, rất rối mắt.
 
     An toàn nếu cột không tồn tại trong `df` (tự động bỏ qua, không lỗi).
     """
     styler = df.style
+
+    # Màu đen mặc định cho TOÀN BỘ bảng trước — các bước tô xanh/đỏ bên
+    # dưới sẽ ghi đè lên đúng những ô cần thiết.
+    styler = styler.set_properties(**{"color": "#000000"})
+
+    if dinh_dang_so:
+        cot_hop_le_dinh_dang = {k: v for k, v in dinh_dang_so.items() if k in df.columns}
+        if cot_hop_le_dinh_dang:
+            styler = styler.format(cot_hop_le_dinh_dang, na_rep="—")
 
     if cot_theo_ten:
         cot_xanh = [c for c in df.columns if "tăng" in c.lower()]
@@ -80,12 +97,12 @@ def style_tang_giam(
 
         def _theo_dau(v):
             if pd.isna(v):
-                return ""
+                return _MAU_DEN_MAC_DINH
             if v > 0:
                 return _MAU_XANH_TANG
             if v < 0:
                 return _MAU_DO_GIAM
-            return ""
+            return _MAU_DEN_MAC_DINH
 
         if cot_hop_le:
             styler = styler.map(_theo_dau, subset=cot_hop_le)
@@ -1499,7 +1516,19 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
                 "chính mã đó — xem kèm \"Số lần quan sát\" và \"Độ tin cậy\": số lần quan "
                 "sát càng ít, độ tin cậy càng thấp, không nên dùng làm căn cứ duy nhất."
             )
-            st.dataframe(style_tang_giam(saved_df), width='stretch', hide_index=True)
+            dinh_dang_screen = {
+                "Giá pivot hỗ trợ": "{:.1f}", "Giá hiện tại": "{:.1f}",
+                "% giảm từ pivot": "{:.1f}", "RSI(14)": "{:.1f}", "Tỷ lệ KL/TB20": "{:.1f}",
+                "Số phiên vùng nền": "{:.0f}", "Số lần quan sát (3 năm)": "{:.0f}",
+            }
+            for n_phien in (3, 5, 7, 10):
+                dinh_dang_screen[f"Xác suất tăng sau {n_phien} phiên (%)"] = "{:.1f}"
+                dinh_dang_screen[f"Xác suất giảm sau {n_phien} phiên (%)"] = "{:.1f}"
+
+            st.dataframe(
+                style_tang_giam(saved_df, dinh_dang_so=dinh_dang_screen),
+                width='stretch', hide_index=True,
+            )
     else:
         st.caption("Bấm nút bên trên để bắt đầu quét lần đầu.")
 
@@ -1601,6 +1630,11 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
                 detail_df,
                 cot_theo_ten=False,
                 cot_theo_dau=["% thay đổi TB", "% thay đổi trung vị", "Min (%)", "Max (%)"],
+                dinh_dang_so={
+                    "Tỷ lệ phục hồi (%)": "{:.1f}", "% thay đổi TB": "{:.1f}",
+                    "% thay đổi trung vị": "{:.1f}", "Min (%)": "{:.1f}", "Max (%)": "{:.1f}",
+                    "Độ lệch chuẩn": "{:.1f}", "Số lần quan sát": "{:.0f}", "Số lần phục hồi": "{:.0f}",
+                },
             ),
             width='stretch', hide_index=True,
         )
