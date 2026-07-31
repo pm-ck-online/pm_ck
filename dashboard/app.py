@@ -44,6 +44,55 @@ if _PROJECT_ROOT not in sys.path:
 from core.storage import Storage
 
 
+_MAU_XANH_TANG = "color: #16a34a; font-weight: 600;"
+_MAU_DO_GIAM = "color: #dc2626; font-weight: 600;"
+
+
+def style_tang_giam(
+    df: pd.DataFrame,
+    cot_theo_ten: bool = True,
+    cot_theo_dau: Optional[list[str]] = None,
+):
+    """Trả về `pandas.Styler` (dùng trực tiếp cho `st.dataframe`) tô màu:
+        - XANH LÁ cho các ô ở cột có chữ "tăng" trong tên (ví dụ cột
+          "Xác suất tăng sau 3 phiên (%)").
+        - ĐỎ cho các ô ở cột có chữ "giảm" trong tên (ví dụ cột "Xác suất
+          giảm sau 3 phiên (%)", "% giảm từ pivot").
+
+    `cot_theo_dau`: danh sách thêm các cột % không có chữ "tăng"/"giảm"
+    trong tên (ví dụ "% thay đổi TB", "Tỷ lệ phục hồi (%)") — tô màu THEO
+    DẤU giá trị: dương -> xanh, âm -> đỏ, bằng 0/NaN -> giữ nguyên.
+
+    An toàn nếu cột không tồn tại trong `df` (tự động bỏ qua, không lỗi).
+    """
+    styler = df.style
+
+    if cot_theo_ten:
+        cot_xanh = [c for c in df.columns if "tăng" in c.lower()]
+        cot_do = [c for c in df.columns if "giảm" in c.lower()]
+        if cot_xanh:
+            styler = styler.map(lambda v: _MAU_XANH_TANG, subset=cot_xanh)
+        if cot_do:
+            styler = styler.map(lambda v: _MAU_DO_GIAM, subset=cot_do)
+
+    if cot_theo_dau:
+        cot_hop_le = [c for c in cot_theo_dau if c in df.columns]
+
+        def _theo_dau(v):
+            if pd.isna(v):
+                return ""
+            if v > 0:
+                return _MAU_XANH_TANG
+            if v < 0:
+                return _MAU_DO_GIAM
+            return ""
+
+        if cot_hop_le:
+            styler = styler.map(_theo_dau, subset=cot_hop_le)
+
+    return styler
+
+
 def filter_symbols_by_search(symbols: list[str], search_text: str) -> list[str]:
     """Lọc danh sách mã theo từ khóa tìm kiếm (không phân biệt hoa/thường,
     khớp một phần chuỗi con — ví dụ gõ "HP" khớp "HPG"). Trả về nguyên
@@ -1450,7 +1499,7 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
                 "chính mã đó — xem kèm \"Số lần quan sát\" và \"Độ tin cậy\": số lần quan "
                 "sát càng ít, độ tin cậy càng thấp, không nên dùng làm căn cứ duy nhất."
             )
-            st.dataframe(saved_df, width='stretch', hide_index=True)
+            st.dataframe(style_tang_giam(saved_df), width='stretch', hide_index=True)
     else:
         st.caption("Bấm nút bên trên để bắt đầu quét lần đầu.")
 
@@ -1546,9 +1595,15 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
                 "Max (%)": r.get("pct_thay_doi_max"),
                 "Độ lệch chuẩn": r.get("do_lech_chuan"),
             })
-        st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-
-    st.warning(result["canh_bao_phap_ly"])
+        detail_df = pd.DataFrame(rows)
+        st.dataframe(
+            style_tang_giam(
+                detail_df,
+                cot_theo_ten=False,
+                cot_theo_dau=["% thay đổi TB", "% thay đổi trung vị", "Min (%)", "Max (%)"],
+            ),
+            width='stretch', hide_index=True,
+        )
 
 
 # ==============================================================================
