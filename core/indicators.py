@@ -74,6 +74,34 @@ def calculate_ema(df: pd.DataFrame, period: int, column: str = "close") -> pd.Se
     return df[column].ewm(span=period, adjust=False, min_periods=period).mean()
 
 
+def calculate_bollinger_bands(
+    df: pd.DataFrame, period: int = 20, num_std: float = 2.0, column: str = "close"
+) -> tuple[pd.Series, pd.Series, pd.Series]:
+    """Tính dải Bollinger Band (Bollinger Bands).
+
+    Dùng để đo độ "đi ngang"/tích lũy của giá (Bollinger Band Width thấp
+    = sideway) — phục vụ module xác định vùng nền (base/consolidation
+    zone) trong `core/base_breakdown_screener.py`.
+
+    Công thức:
+        Middle Band = SMA(period)
+        Upper Band  = Middle Band + num_std * độ lệch chuẩn(period)
+        Lower Band  = Middle Band - num_std * độ lệch chuẩn(period)
+
+    Trả về tuple (upper, middle, lower), mỗi phần tử là pd.Series cùng
+    độ dài với `df`. `period` phiên đầu tiên sẽ là NaN (chưa đủ dữ liệu).
+    """
+    _validate_df(df, min_rows=period)
+    if column not in df.columns:
+        raise ValueError(f"Cột '{column}' không tồn tại trong DataFrame.")
+
+    middle = df[column].rolling(window=period, min_periods=period).mean()
+    std = df[column].rolling(window=period, min_periods=period).std()
+    upper = middle + num_std * std
+    lower = middle - num_std * std
+    return upper, middle, lower
+
+
 def calculate_volume_ma(df: pd.DataFrame, period: int) -> pd.Series:
     """Tính trung bình động đơn giản của khối lượng giao dịch (volume).
 

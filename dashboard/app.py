@@ -44,6 +44,72 @@ if _PROJECT_ROOT not in sys.path:
 from core.storage import Storage
 
 
+_MAU_XANH_TANG = "color: #16a34a; font-weight: 600;"
+_MAU_DO_GIAM = "color: #dc2626; font-weight: 600;"
+_MAU_DEN_MAC_DINH = "color: #000000;"
+
+
+def style_tang_giam(
+    df: pd.DataFrame,
+    cot_theo_ten: bool = True,
+    cot_theo_dau: Optional[list[str]] = None,
+    dinh_dang_so: Optional[dict[str, str]] = None,
+):
+    """Trả về `pandas.Styler` (dùng trực tiếp cho `st.dataframe`) tô màu:
+        - XANH LÁ cho các ô ở cột có chữ "tăng" trong tên (ví dụ cột
+          "Xác suất tăng sau 3 phiên (%)").
+        - ĐỎ cho các ô ở cột có chữ "giảm" trong tên (ví dụ cột "Xác suất
+          giảm sau 3 phiên (%)", "% giảm từ pivot").
+        - ĐEN (mặc định) cho MỌI ô còn lại — tránh màu xám nhạt do theme,
+          chỉ ô tăng/giảm mới có màu riêng.
+
+    `cot_theo_dau`: danh sách thêm các cột % không có chữ "tăng"/"giảm"
+    trong tên (ví dụ "% thay đổi TB", "Tỷ lệ phục hồi (%)") — tô màu THEO
+    DẤU giá trị: dương -> xanh, âm -> đỏ, bằng 0/NaN -> giữ đen.
+
+    `dinh_dang_so`: dict {tên_cột: chuỗi_định_dạng} để RÚT GỌN số thập
+    phân hiển thị (ví dụ {"Giá hiện tại": "{:.1f}"}) — mặc định pandas
+    Styler hiện đủ 6 chữ số thập phân nếu không chỉ định, rất rối mắt.
+
+    An toàn nếu cột không tồn tại trong `df` (tự động bỏ qua, không lỗi).
+    """
+    styler = df.style
+
+    # Màu đen mặc định cho TOÀN BỘ bảng trước — các bước tô xanh/đỏ bên
+    # dưới sẽ ghi đè lên đúng những ô cần thiết.
+    styler = styler.set_properties(**{"color": "#000000"})
+
+    if dinh_dang_so:
+        cot_hop_le_dinh_dang = {k: v for k, v in dinh_dang_so.items() if k in df.columns}
+        if cot_hop_le_dinh_dang:
+            styler = styler.format(cot_hop_le_dinh_dang, na_rep="—")
+
+    if cot_theo_ten:
+        cot_xanh = [c for c in df.columns if "tăng" in c.lower()]
+        cot_do = [c for c in df.columns if "giảm" in c.lower()]
+        if cot_xanh:
+            styler = styler.map(lambda v: _MAU_XANH_TANG, subset=cot_xanh)
+        if cot_do:
+            styler = styler.map(lambda v: _MAU_DO_GIAM, subset=cot_do)
+
+    if cot_theo_dau:
+        cot_hop_le = [c for c in cot_theo_dau if c in df.columns]
+
+        def _theo_dau(v):
+            if pd.isna(v):
+                return _MAU_DEN_MAC_DINH
+            if v > 0:
+                return _MAU_XANH_TANG
+            if v < 0:
+                return _MAU_DO_GIAM
+            return _MAU_DEN_MAC_DINH
+
+        if cot_hop_le:
+            styler = styler.map(_theo_dau, subset=cot_hop_le)
+
+    return styler
+
+
 def filter_symbols_by_search(symbols: list[str], search_text: str) -> list[str]:
     """Lọc danh sách mã theo từ khóa tìm kiếm (không phân biệt hoa/thường,
     khớp một phần chuỗi con — ví dụ gõ "HP" khớp "HPG"). Trả về nguyên
@@ -577,32 +643,141 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
 # PHẦN 2 — GIAI ĐOẠN THỊ TRƯỜNG HIỆN TẠI
 # ==============================================================================
 
-def render_market_regime_section(storage: Storage, sectors: list[str]) -> None:
+# Tên ngành song ngữ — khớp ĐÚNG các khóa tiếng Anh trong config.yaml
+# (watchlist.symbols). Dùng để hiển thị dạng "Tiếng Việt (english_key)"
+# thay vì chỉ hiện khóa tiếng Anh trần trụi.
+SECTOR_LABELS = {
+    "agriculture": "Nông nghiệp",
+    "banking": "Ngân hàng",
+    "energy": "Năng lượng",
+    "fertilizer_chemical": "Phân bón - Hóa chất",
+    "industrial_real_estate": "Bất động sản khu công nghiệp",
+    "insurance": "Bảo hiểm",
+    "oil_gas": "Dầu khí",
+    "pharma": "Dược phẩm",
+    "public_investment": "Đầu tư công",
+    "real_estate": "Bất động sản",
+    "retail_consumer": "Bán lẻ - Tiêu dùng",
+    "seafood_textile": "Thủy sản - Dệt may",
+    "securities": "Chứng khoán",
+    "shipping_port": "Cảng biển - Vận tải biển",
+    "steel": "Thép",
+    "technology": "Công nghệ",
+    "vn30_other": "VN30 khác",
+}
+
+
+def _nhan_nganh(sector_key: str) -> str:
+    """Trả về nhãn hiển thị song ngữ "Tiếng Việt (khóa_tiếng_anh)" cho 1
+    khóa ngành — dùng SECTOR_LABELS ở trên. Nếu khóa không nằm trong bảng
+    (thường là do dữ liệu CŨ còn sót lại trong Supabase từ giai đoạn phát
+    triển trước, lưu trực tiếp tên tiếng Việt thay vì khóa tiếng Anh chuẩn
+    hóa theo config.yaml hiện tại) -> hiện nguyên văn kèm cảnh báo, KHÔNG
+    tự đoán ghép cặp vì có thể gán sai ngành.
+    """
+    if sector_key in SECTOR_LABELS:
+        return f"{SECTOR_LABELS[sector_key]} ({sector_key})"
+    return f"{sector_key} ⚠️ (dữ liệu cũ, chưa chuẩn hóa)"
+
+
+def render_market_regime_section(storage: Storage) -> None:
+    """Hiển thị giai đoạn thị trường (định tính) — ĐÃ CẬP NHẬT (31/07/2026):
+        1. Thêm chỉ số VNINDEX (vị trí so với EMA200) hiển thị riêng ở đầu.
+        2. Tự động lấy TẤT CẢ ngành hiện có dữ liệu (không cần người dùng
+           gõ tay danh sách ngành ở sidebar như thiết kế cũ).
+        3. Với mỗi ngành, hiện rõ DANH SÁCH MÃ đang ở TRÊN đường EMA200
+           (và danh sách mã đang dưới, để đối chiếu).
+    """
     st.subheader("📊 Giai đoạn thị trường hiện tại")
 
-    if not sectors:
-        st.info("Chưa có dữ liệu giai đoạn thị trường cho ngành nào.")
+    # --- VNINDEX — hiển thị riêng, luôn ở đầu mục ---
+    vnindex_record = storage.get_latest("indicator_snapshot", "VNINDEX")
+    if vnindex_record:
+        vdata = vnindex_record["data"]
+        tren_ema = vdata.get("price_above_ema200")
+        trang_thai = "✅ Trên EMA200" if tren_ema is True else (
+            "❌ Dưới EMA200" if tren_ema is False else "— Chưa đủ dữ liệu"
+        )
+        col_v1, col_v2, col_v3 = st.columns(3)
+        col_v1.metric("VNINDEX", _fmt_number(vdata.get("close")) or "—")
+        col_v2.metric("EMA200", _fmt_number(vdata.get("ema200")) or "—")
+        col_v3.metric("Vị trí so với EMA200", trang_thai)
+    else:
+        st.info("Chưa có dữ liệu VNINDEX. Chạy `update_indices.py` hoặc `main.py` trước.")
+
+    st.divider()
+
+    # --- Tự động lấy TOÀN BỘ ngành hiện có dữ liệu (không phụ thuộc danh
+    #     sách gõ tay) — dựa trên bảng ánh xạ mã -> ngành đã có sẵn. ---
+    all_symbol_sector_keys = storage.query_all_keys("symbol_sector")
+    if not all_symbol_sector_keys:
+        st.info("Chưa có dữ liệu ngành nào. Chạy `main.py` hoặc `run_full_market.py` trước.")
         return
+
+    sector_map = storage.get_latest_many("symbol_sector", all_symbol_sector_keys)
+    symbols_by_sector: dict[str, list[str]] = {}
+    for sym, record in sector_map.items():
+        sector = record["data"].get("sector")
+        if sector:
+            symbols_by_sector.setdefault(sector, []).append(sym)
+
+    all_sectors = sorted(symbols_by_sector.keys())
+    if not all_sectors:
+        st.info("Chưa có dữ liệu ngành nào.")
+        return
+
+    nganh_chua_chuan_hoa = [s for s in all_sectors if s not in SECTOR_LABELS]
+    if nganh_chua_chuan_hoa:
+        st.warning(
+            "⚠️ Phát hiện "
+            + str(len(nganh_chua_chuan_hoa))
+            + " ngành CHƯA khớp với danh sách chuẩn trong `config.yaml` hiện tại: "
+            + ", ".join(nganh_chua_chuan_hoa)
+            + " — đây thường là dữ liệu ngành CŨ còn sót lại trong Supabase từ trước "
+            "khi chuẩn hóa theo `config.yaml`. Chạy lại `run_full_market.py` cho các mã "
+            "liên quan sẽ ghi đè bằng dữ liệu ngành mới, khắc phục dứt điểm."
+        )
 
     regime_emoji = {"uptrend": "🟢", "downtrend": "🔴", "sideway": "🟡"}
     all_affected_sectors: set[str] = set()
 
-    for sector in sectors:
-        record = storage.get_latest("market_regime", sector)
-        if record is None:
-            continue
+    for sector in all_sectors:
+        symbols_trong_nganh = sorted(symbols_by_sector.get(sector, []))
+        snapshot_map = storage.get_latest_many("indicator_snapshot", symbols_trong_nganh)
 
-        data = record["data"]
-        regime = data.get("regime")
-        confidence = data.get("confidence", 0.0)
+        ma_tren_ema200 = sorted(
+            sym for sym in symbols_trong_nganh
+            if snapshot_map.get(sym) and snapshot_map[sym]["data"].get("price_above_ema200") is True
+        )
+        ma_duoi_ema200 = sorted(
+            sym for sym in symbols_trong_nganh
+            if snapshot_map.get(sym) and snapshot_map[sym]["data"].get("price_above_ema200") is False
+        )
+
+        record = storage.get_latest("market_regime", sector)
+        regime = record["data"].get("regime") if record else None
+        confidence = record["data"].get("confidence", 0.0) if record else 0.0
         emoji = regime_emoji.get(regime, "⚪")
 
-        with st.expander(f"{emoji} {sector}: {regime or 'chưa xác định'} "
-                          f"(độ tin cậy {confidence * 100:.0f}%)"):
-            for reason in data.get("reasoning", []):
-                st.write(f"- {reason}")
+        with st.expander(
+            f"{emoji} {_nhan_nganh(sector)}: {regime or 'chưa xác định'} "
+            f"(độ tin cậy {confidence * 100:.0f}%) — {len(ma_tren_ema200)}/{len(symbols_trong_nganh)} mã trên EMA200"
+        ):
+            if record:
+                for reason in record["data"].get("reasoning", []):
+                    st.write(f"- {reason}")
+                all_affected_sectors.update(record["data"].get("affected_sectors", []))
+            else:
+                st.write("Chưa có dữ liệu giai đoạn thị trường cho ngành này.")
 
-        all_affected_sectors.update(data.get("affected_sectors", []))
+            st.markdown(
+                f"**✅ Mã đang TRÊN EMA200 ({len(ma_tren_ema200)} mã):** "
+                + (", ".join(ma_tren_ema200) if ma_tren_ema200 else "không có mã nào")
+            )
+            st.markdown(
+                f"**❌ Mã đang DƯỚI EMA200 ({len(ma_duoi_ema200)} mã):** "
+                + (", ".join(ma_duoi_ema200) if ma_duoi_ema200 else "không có mã nào")
+            )
 
     if all_affected_sectors:
         st.warning(
@@ -631,6 +806,50 @@ EVENT_OPTIONS = {
     "positive_resolution": "Sự kiện tích cực xác nhận, rủi ro giải tỏa",
 }
 
+GEOPOLITICAL_EVENT_LOG_CATEGORY = "geopolitical_event_entry"
+
+
+def _sync_current_geopolitical_event(storage: Storage) -> None:
+    """Đồng bộ trạng thái "sự kiện ĐANG ÁP DỤNG" (đọc bởi
+    `core/macro_score_engine.py` qua khóa cũ `manual_macro_setting` /
+    `geopolitical_event` — dùng chung bởi `main.py`, `check_macro_score.py`
+    và dashboard) — LUÔN lấy theo sự kiện có NGÀY BẮT ĐẦU GẦN NHẤT trong
+    danh sách log `geopolitical_event_entry`.
+
+    Gọi hàm này ngay sau khi thêm/sửa/xóa bất kỳ sự kiện nào trong danh
+    sách, để khóa "trạng thái hiện tại" luôn khớp với sự kiện mới nhất —
+    KHÔNG cần sửa main.py/check_macro_score.py, 2 script đó vẫn đọc đúng
+    1 khóa cũ như trước, chỉ khác là giờ khóa đó được cập nhật tự động
+    thay vì nhập tay trực tiếp.
+
+    Nếu danh sách rỗng (đã xóa hết sự kiện) -> xóa luôn trạng thái hiện
+    tại, macro engine sẽ tự dùng mặc định "none" (không có sự kiện).
+    """
+    event_ids = storage.query_all_keys(GEOPOLITICAL_EVENT_LOG_CATEGORY)
+    if not event_ids:
+        storage.delete_key("manual_macro_setting", "geopolitical_event")
+        return
+
+    entries = []
+    for eid in event_ids:
+        record = storage.get_latest(GEOPOLITICAL_EVENT_LOG_CATEGORY, eid)
+        if record:
+            entries.append({"id": eid, **record["data"]})
+
+    if not entries:
+        storage.delete_key("manual_macro_setting", "geopolitical_event")
+        return
+
+    # Sự kiện có NGÀY BẮT ĐẦU (start_date, định dạng YYYY-MM-DD) MỚI NHẤT
+    # được coi là đang chi phối bối cảnh hiện tại.
+    moi_nhat = max(entries, key=lambda e: e["start_date"])
+    storage.save("manual_macro_setting", "geopolitical_event", {
+        "event_key": moi_nhat["event_key"],
+        "note": moi_nhat.get("note", ""),
+        "updated_date": moi_nhat["start_date"],
+        "source_entry_id": moi_nhat["id"],
+    })
+
 
 def load_macro_series(storage: Storage, series_key: str) -> list[dict]:
     record = storage.get_latest("manual_macro_series", series_key)
@@ -652,6 +871,7 @@ def render_manual_macro_data_section(storage: Storage) -> None:
     )
 
     from datetime import date as date_cls
+    import uuid
 
     from core.manual_macro_data import (
         add_cpi_us_entry,
@@ -805,38 +1025,135 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             st.rerun()
         st.metric("Mục tiêu hiện tại", f"{current_target}%/năm")
 
-    # --- TAB 4: Sự kiện địa chính trị (chọn 1 trong 5 mức, không phải chuỗi) ---
+    # --- TAB 4: Sự kiện địa chính trị — DANH SÁCH nhiều sự kiện, mỗi sự
+    #     kiện có ngày bắt đầu riêng để tính "mốc ảnh hưởng" (số ngày đã
+    #     trôi qua), sửa/xóa được TỪNG sự kiện riêng lẻ (không xóa cả
+    #     danh sách như thiết kế cũ) ---
     with tab_event:
         st.caption(
             "Đây là điểm DUY NHẤT có thể ghi đè (override) toàn bộ Macro Score "
             "về mức rất âm bất kể các chỉ số khác — cập nhật ngay khi có tin tức "
-            "quan trọng, không chờ dữ liệu kinh tế phản ánh (luôn trễ hơn thị trường)."
+            "quan trọng, không chờ dữ liệu kinh tế phản ánh (luôn trễ hơn thị trường). "
+            "Hệ thống tự động lấy sự kiện có **ngày bắt đầu gần nhất** trong danh "
+            "sách dưới đây làm trạng thái áp dụng cho tính điểm vĩ mô."
         )
-        current_event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
-        current_event_key = (
-            current_event_record["data"]["event_key"] if current_event_record else "none"
-        )
-        event_keys = list(EVENT_OPTIONS.keys())
-        current_index = event_keys.index(current_event_key) if current_event_key in event_keys else 0
 
-        selected_event = st.selectbox(
-            "Mức độ sự kiện hiện tại", event_keys,
-            index=current_index, format_func=lambda k: EVENT_OPTIONS[k], key="event_select",
-        )
-        event_note = st.text_area("Ghi chú (tùy chọn)", key="event_note")
-        if st.button("Cập nhật trạng thái sự kiện", key="update_event_btn"):
-            storage.save("manual_macro_setting", "geopolitical_event", {
-                "event_key": selected_event, "note": event_note,
-                "updated_date": date_cls.today().isoformat(),
+        # --- Đọc toàn bộ danh sách sự kiện đã nhập ---
+        event_ids = storage.query_all_keys(GEOPOLITICAL_EVENT_LOG_CATEGORY)
+        events = []
+        for eid in event_ids:
+            record = storage.get_latest(GEOPOLITICAL_EVENT_LOG_CATEGORY, eid)
+            if record:
+                events.append({"id": eid, **record["data"]})
+        events.sort(key=lambda e: e["start_date"], reverse=True)
+
+        # --- Trạng thái ĐANG ÁP DỤNG (tự động lấy theo sự kiện mới nhất) ---
+        current_event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
+        if current_event_record:
+            current_data = current_event_record["data"]
+            st.info(
+                f"📌 Đang áp dụng cho tính điểm vĩ mô: "
+                f"**{EVENT_OPTIONS.get(current_data['event_key'], current_data['event_key'])}** "
+                f"(bắt đầu {current_data.get('updated_date', '—')}) — "
+                f"tự động lấy theo sự kiện có ngày bắt đầu gần nhất bên dưới."
+            )
+        else:
+            st.info("📌 Chưa có sự kiện nào được nhập — đang dùng mặc định: Không có sự kiện rủi ro nổi bật.")
+
+        st.markdown("#### ➕ Thêm sự kiện mới")
+        col_new1, col_new2 = st.columns(2)
+        with col_new1:
+            new_event_key = st.selectbox(
+                "Mức độ sự kiện", list(EVENT_OPTIONS.keys()),
+                format_func=lambda k: EVENT_OPTIONS[k], key="new_event_key",
+            )
+        with col_new2:
+            new_event_start_date = st.date_input(
+                "Ngày bắt đầu sự kiện", value=date_cls.today(), key="new_event_start_date",
+            )
+        new_event_note = st.text_area("Ghi chú (tùy chọn)", key="new_event_note")
+
+        if st.button("➕ Thêm sự kiện mới", key="add_event_btn"):
+            new_id = f"evt_{uuid.uuid4().hex[:12]}"
+            storage.save(GEOPOLITICAL_EVENT_LOG_CATEGORY, new_id, {
+                "event_key": new_event_key,
+                "start_date": new_event_start_date.isoformat(),
+                "note": new_event_note,
+                "created_at": date_cls.today().isoformat(),
             })
-            st.success(f"Đã cập nhật: {EVENT_OPTIONS[selected_event]}.")
+            _sync_current_geopolitical_event(storage)
+            st.success(f"Đã thêm sự kiện: {EVENT_OPTIONS[new_event_key]} (bắt đầu {new_event_start_date.isoformat()}).")
             st.rerun()
 
-        if current_event_record:
-            st.info(
-                f"Trạng thái hiện tại: **{EVENT_OPTIONS[current_event_key]}** "
-                f"(cập nhật lần cuối: {current_event_record['data'].get('updated_date', '—')})"
+        st.divider()
+        st.markdown("#### 📋 Danh sách sự kiện đã nhập")
+
+        if not events:
+            st.info("Chưa có sự kiện nào trong danh sách.")
+        else:
+            today = date_cls.today()
+            rows = []
+            for e in events:
+                try:
+                    so_ngay = (today - date_cls.fromisoformat(e["start_date"])).days
+                except ValueError:
+                    so_ngay = None
+                rows.append({
+                    "Ngày bắt đầu": e["start_date"],
+                    "Mức độ": EVENT_OPTIONS.get(e["event_key"], e["event_key"]),
+                    "Ghi chú": e.get("note") or "—",
+                    "Số ngày đã trôi qua (mốc ảnh hưởng)": so_ngay,
+                })
+            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+
+            st.markdown("#### ✏️ Sửa / 🗑️ Xóa 1 sự kiện cụ thể")
+            options_nhan = {
+                e["id"]: f"{e['start_date']} — {EVENT_OPTIONS.get(e['event_key'], e['event_key'])}"
+                for e in events
+            }
+            selected_id = st.selectbox(
+                "Chọn sự kiện cần sửa/xóa", list(options_nhan.keys()),
+                format_func=lambda eid: options_nhan[eid], key="edit_event_select",
             )
+            selected_event_data = next(e for e in events if e["id"] == selected_id)
+
+            col_edit1, col_edit2 = st.columns(2)
+            with col_edit1:
+                edit_event_key = st.selectbox(
+                    "Mức độ sự kiện", list(EVENT_OPTIONS.keys()),
+                    index=list(EVENT_OPTIONS.keys()).index(selected_event_data["event_key"])
+                    if selected_event_data["event_key"] in EVENT_OPTIONS else 0,
+                    format_func=lambda k: EVENT_OPTIONS[k], key=f"edit_event_key_{selected_id}",
+                )
+            with col_edit2:
+                edit_start_date = st.date_input(
+                    "Ngày bắt đầu sự kiện",
+                    value=date_cls.fromisoformat(selected_event_data["start_date"]),
+                    key=f"edit_event_date_{selected_id}",
+                )
+            edit_note = st.text_area(
+                "Ghi chú (tùy chọn)", value=selected_event_data.get("note", ""),
+                key=f"edit_event_note_{selected_id}",
+            )
+
+            col_save, col_del = st.columns(2)
+            with col_save:
+                if st.button("💾 Lưu thay đổi cho sự kiện này", key=f"save_event_btn_{selected_id}"):
+                    storage.save(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id, {
+                        "event_key": edit_event_key,
+                        "start_date": edit_start_date.isoformat(),
+                        "note": edit_note,
+                        "created_at": selected_event_data.get("created_at", date_cls.today().isoformat()),
+                    })
+                    _sync_current_geopolitical_event(storage)
+                    st.success("Đã lưu thay đổi.")
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️ Xóa sự kiện này", key=f"delete_event_btn_{selected_id}"):
+                    storage.delete_key(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id)
+                    _sync_current_geopolitical_event(storage)
+                    st.success("Đã xóa sự kiện này.")
+                    st.rerun()
 
         st.divider()
         st.markdown("##### Sự kiện Tài chính - Tiền tệ Toàn cầu (Nhóm B — mới bổ sung)")
@@ -1310,6 +1627,331 @@ def render_pattern_section(storage: Storage, symbols: Optional[list[str]] = None
     st.dataframe(df, width='stretch', hide_index=True)
 
 
+@st.cache_data(ttl=600, show_spinner="Đang quét lịch sử tìm các tình huống tương tự...")
+def _compute_recovery_probability_cached(
+    df: pd.DataFrame, ma: str, dieu_kien_loc: dict,
+    cac_so_phien_du_bao: tuple[int, ...] = (1, 3, 5),
+) -> dict:
+    """Bọc `tinh_xac_suat_phuc_hoi_lich_su()` bằng cache 10 phút — việc
+    quét toàn bộ lịch sử (750-1250 phiên) có chi phí tính toán đáng kể,
+    không nên chạy lại mỗi lần trang rerun nếu mã/điều kiện lọc không đổi.
+    """
+    from core.historical_recovery_probability import tinh_xac_suat_phuc_hoi_lich_su
+
+    return tinh_xac_suat_phuc_hoi_lich_su(
+        ma, df, dieu_kien_loc=dieu_kien_loc, cac_so_phien_du_bao=cac_so_phien_du_bao
+    )
+
+
+@st.cache_data(ttl=600, show_spinner="Đang quét toàn bộ watchlist tìm mã đứt gãy vùng nền...")
+def _compute_base_breakdown_scan_cached(
+    _storage: Storage, symbols: tuple[str, ...], params: dict
+) -> pd.DataFrame:
+    """Bọc `quet_co_phieu_dut_gay_qua_ban()` (Module 7) bằng cache 10
+    phút — quét TOÀN BỘ watchlist mỗi mã đều tốn chi phí O(n^2) tìm vùng
+    nền, không nên chạy lại mỗi lần trang rerun nếu watchlist/ngưỡng lọc
+    không đổi. Tham số `_storage` có dấu gạch dưới để Streamlit KHÔNG cố
+    hash đối tượng kết nối DB (không hashable) khi tính cache key.
+    """
+    from core.base_breakdown_screener import quet_co_phieu_dut_gay_qua_ban
+
+    return quet_co_phieu_dut_gay_qua_ban(
+        list(symbols),
+        lambda ma: _load_ohlcv_history_df(_storage, ma),
+        lookback_vung_nen=params["lookback_vung_nen"],
+        min_ngay_vung_nen=params["min_ngay_vung_nen"],
+        nguong_giam_toi_thieu_pct=params["nguong_giam_toi_thieu_pct"],
+        nguong_rsi=params["nguong_rsi"],
+        nguong_volume_ratio=params["nguong_volume_ratio"],
+    )
+
+
+def render_historical_recovery_probability_section(storage: Storage) -> None:
+    """Hiển thị XÁC SUẤT TẦN SUẤT LỊCH SỬ (empirical) mà 1 mã phục hồi sau
+    khi rơi vào tình huống "giảm mạnh + quá bán + volume đột biến + đóng
+    cửa yếu" — dựa trên `core.historical_recovery_probability` (Module 6).
+
+    ĐÂY LÀ THỐNG KÊ TẦN SUẤT QUÁ KHỨ, KHÔNG PHẢI DỰ BÁO — luôn hiển thị
+    kèm cỡ mẫu và mức độ tin cậy thống kê để người xem tự đánh giá.
+    """
+    from core.historical_recovery_probability import DIEU_KIEN_MAC_DINH
+
+    st.subheader("📊 Xác suất phục hồi lịch sử")
+    st.caption(
+        "⚠️ Đây là TẦN SUẤT THỰC NGHIỆM tính từ chính lịch sử giá của mã đó — "
+        "KHÔNG phải xác suất dự báo tương lai được đảm bảo. Quá khứ không chắc "
+        "lặp lại; cỡ mẫu càng nhỏ thì độ tin cậy càng thấp. Luôn xem kèm cỡ mẫu "
+        "và mức độ tin cậy thống kê bên dưới trước khi tham khảo."
+    )
+
+    available_symbols = sorted(storage.query_all_keys("ohlcv_history"))
+    if not available_symbols:
+        st.info(
+            "Chưa có dữ liệu lịch sử OHLCV. Chạy `main.py` hoặc "
+            "`run_full_market.py` trước để có dữ liệu tính toán."
+        )
+        return
+
+    # --------------------------------------------------------------------
+    # BẢNG TỔNG HỢP SÀNG LỌC (Module 7 — core.base_breakdown_screener):
+    # quét TOÀN BỘ watchlist tại THỜI ĐIỂM HIỆN TẠI (khác Module 6 ở trên,
+    # vốn quét NGƯỢC quá khứ để tính tần suất) — tìm các mã ĐANG thỏa đồng
+    # thời 3 tiêu chí: đứt gãy vùng nền + quá bán + volume đột biến.
+    # --------------------------------------------------------------------
+    st.markdown("### 📋 Danh sách phục hồi ngắn hạn")
+    st.caption(
+        "Quét TOÀN BỘ watchlist tại thời điểm hiện tại — khác với phần \"Xác suất "
+        "phục hồi lịch sử\" phía dưới (vốn quét ngược quá khứ để tính tần suất). "
+        "Đây là bộ lọc kỹ thuật RÚT GỌN (chỉ 3 tiêu chí cốt lõi), KHÔNG phải tín "
+        "hiệu mua/bán. Mã lọt qua bộ lọc nên được xem tiếp mục \"Tính cách giao "
+        "dịch từng mã\" và \"Xác suất phục hồi lịch sử\" cho riêng mã đó trước khi "
+        "cân nhắc bất kỳ quyết định nào."
+    )
+
+    with st.expander("⚙️ Tùy chỉnh ngưỡng sàng lọc"):
+        scol1, scol2, scol3 = st.columns(3)
+        with scol1:
+            s_giam_pct = st.number_input(
+                "Giảm tối thiểu từ pivot (%)", value=15.0, min_value=5.0, max_value=80.0,
+                step=1.0, key="screen_giam_pct",
+            )
+            s_lookback = st.number_input(
+                "Số phiên tra ngược tìm vùng nền", value=60, min_value=20, max_value=250,
+                step=5, key="screen_lookback",
+            )
+        with scol2:
+            s_rsi = st.number_input(
+                "RSI(14) tối đa (quá bán)", value=30.0, min_value=5.0, max_value=50.0,
+                step=1.0, key="screen_rsi",
+            )
+            s_min_ngay = st.number_input(
+                "Số phiên tối thiểu để công nhận vùng nền", value=10, min_value=5, max_value=60,
+                step=1, key="screen_min_ngay",
+            )
+        with scol3:
+            s_vol_ratio = st.number_input(
+                "Tỷ lệ khối lượng tối thiểu (x TB20)", value=1.5, min_value=1.0, max_value=5.0,
+                step=0.1, key="screen_vol_ratio",
+            )
+
+    if st.button("🔍 Quét watchlist ngay", key="screen_scan_btn"):
+        screen_params = {
+            "lookback_vung_nen": int(s_lookback),
+            "min_ngay_vung_nen": int(s_min_ngay),
+            "nguong_giam_toi_thieu_pct": s_giam_pct,
+            "nguong_rsi": s_rsi,
+            "nguong_volume_ratio": s_vol_ratio,
+        }
+        try:
+            screen_result = _compute_base_breakdown_scan_cached(
+                storage, tuple(available_symbols), screen_params
+            )
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"⚠️ Lỗi khi quét: {exc}")
+            screen_result = pd.DataFrame()
+
+        if screen_result.empty:
+            st.session_state["screen_display_df"] = pd.DataFrame()
+            st.session_state["screen_match_count"] = 0
+        else:
+            # Với MỖI mã lọt qua bộ lọc, tính thêm xác suất tăng/giảm sau
+            # 3-5-7-10 phiên — dựa trên tần suất các lần TRONG QUÁ KHỨ 3
+            # NĂM của CHÍNH mã đó rơi vào tình huống tương tự (tái sử dụng
+            # Module 6 — core.historical_recovery_probability — với điều
+            # kiện lọc MẶC ĐỊNH của module đó, độc lập với 3 tiêu chí sàng
+            # lọc ở Module 7 phía trên).
+            cac_moc_phien = (3, 5, 7, 10)
+            xac_suat_rows = []
+            for ma in screen_result["ma"]:
+                df_ma = _load_ohlcv_history_df(storage, ma)
+                if df_ma is None or df_ma.empty:
+                    xac_suat_rows.append({"ma": ma, "so_lan_quan_sat": None, "do_tin_cay": None})
+                    continue
+                try:
+                    prob_result = _compute_recovery_probability_cached(
+                        df_ma, ma, {}, cac_so_phien_du_bao=cac_moc_phien
+                    )
+                except Exception:  # noqa: BLE001
+                    xac_suat_rows.append({"ma": ma, "so_lan_quan_sat": None, "do_tin_cay": None})
+                    continue
+
+                row = {
+                    "ma": ma,
+                    "so_lan_quan_sat": prob_result["so_lan_quan_sat_lich_su"],
+                    "do_tin_cay": prob_result["do_tin_cay_thong_ke"],
+                }
+                for n_phien in cac_moc_phien:
+                    r = prob_result["ket_qua_theo_so_phien_du_bao"].get(f"sau_{n_phien}_phien", {})
+                    xac_suat_tang = r.get("ty_le_phuc_hoi_pct")
+                    row[f"xac_suat_tang_{n_phien}"] = xac_suat_tang
+                    row[f"xac_suat_giam_{n_phien}"] = (
+                        round(100 - xac_suat_tang, 1) if xac_suat_tang is not None else None
+                    )
+                xac_suat_rows.append(row)
+
+            xac_suat_df = pd.DataFrame(xac_suat_rows)
+            display_df = screen_result.merge(xac_suat_df, on="ma", how="left")
+
+            rename_map = {
+                "ma": "Mã", "gia_pivot_ho_tro": "Giá pivot hỗ trợ",
+                "so_phien_vung_nen": "Số phiên vùng nền", "gia_hien_tai": "Giá hiện tại",
+                "pct_giam_tu_pivot": "% giảm từ pivot", "rsi_hien_tai": "RSI(14)",
+                "volume_ratio": "Tỷ lệ KL/TB20",
+                "so_lan_quan_sat": "Số lần quan sát (3 năm)", "do_tin_cay": "Độ tin cậy",
+            }
+            for n_phien in cac_moc_phien:
+                rename_map[f"xac_suat_tang_{n_phien}"] = f"Xác suất tăng sau {n_phien} phiên (%)"
+                rename_map[f"xac_suat_giam_{n_phien}"] = f"Xác suất giảm sau {n_phien} phiên (%)"
+
+            display_df = display_df.rename(columns=rename_map)
+
+            # LƯU LẠI vào session_state — giữ nguyên kết quả hiển thị xuyên
+            # suốt các lần rerun tiếp theo (đổi mã ở phần bên dưới, cuộn
+            # trang...), CHỈ mất đi khi bấm "Quét watchlist ngay" lần kế
+            # tiếp. Tránh việc bảng kết quả biến mất ngay khi có bất kỳ
+            # thao tác nào khác trên trang (hành vi mặc định của Streamlit:
+            # st.button() chỉ trả về True ĐÚNG 1 lần tại lượt rerun do
+            # chính nó gây ra).
+            st.session_state["screen_display_df"] = display_df
+            st.session_state["screen_match_count"] = len(screen_result)
+
+    # --- Hiển thị KẾT QUẢ ĐÃ LƯU (nếu có) — độc lập với việc nút bấm có
+    #     được nhấn ở lượt rerun hiện tại hay không ---
+    if "screen_display_df" in st.session_state:
+        saved_df = st.session_state["screen_display_df"]
+        if saved_df.empty:
+            st.info("Không có mã nào trong watchlist thỏa đồng thời cả 3 tiêu chí tại thời điểm này.")
+        else:
+            st.success(f"Tìm thấy {st.session_state['screen_match_count']} mã thỏa đồng thời cả 3 tiêu chí:")
+            st.caption(
+                "⚠️ Cột xác suất tăng/giảm là TẦN SUẤT THỰC NGHIỆM từ lịch sử 3 năm của "
+                "chính mã đó — xem kèm \"Số lần quan sát\" và \"Độ tin cậy\": số lần quan "
+                "sát càng ít, độ tin cậy càng thấp, không nên dùng làm căn cứ duy nhất."
+            )
+            dinh_dang_screen = {
+                "Giá pivot hỗ trợ": "{:.1f}", "Giá hiện tại": "{:.1f}",
+                "% giảm từ pivot": "{:.1f}", "RSI(14)": "{:.1f}", "Tỷ lệ KL/TB20": "{:.1f}",
+                "Số phiên vùng nền": "{:.0f}", "Số lần quan sát (3 năm)": "{:.0f}",
+            }
+            for n_phien in (3, 5, 7, 10):
+                dinh_dang_screen[f"Xác suất tăng sau {n_phien} phiên (%)"] = "{:.1f}"
+                dinh_dang_screen[f"Xác suất giảm sau {n_phien} phiên (%)"] = "{:.1f}"
+
+            st.dataframe(
+                style_tang_giam(saved_df, dinh_dang_so=dinh_dang_screen),
+                width='stretch', hide_index=True,
+            )
+    else:
+        st.caption("Bấm nút bên trên để bắt đầu quét lần đầu.")
+
+    st.divider()
+
+    # --------------------------------------------------------------------
+    # TÍNH TOÁN CHO 1 MÃ ĐƠN LẺ (Module 6 — xem lại tần suất lịch sử)
+    # --------------------------------------------------------------------
+    selected_symbol = st.selectbox(
+        "Chọn mã để tính xác suất phục hồi", available_symbols,
+        key="recovery_prob_symbol",
+    )
+
+    with st.expander("⚙️ Tùy chỉnh điều kiện lọc \"tình huống giảm\" (để mặc định nếu không chắc)"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            giam_toi_thieu_pct = st.number_input(
+                "Giảm tối thiểu (%)", value=float(DIEU_KIEN_MAC_DINH["giam_toi_thieu_pct"]),
+                min_value=1.0, max_value=50.0, step=0.5, key="recovery_giam_pct",
+            )
+            so_phien_toi_da = st.number_input(
+                "Trong tối đa (phiên)", value=int(DIEU_KIEN_MAC_DINH["so_phien_toi_da"]),
+                min_value=1, max_value=10, step=1, key="recovery_so_phien",
+            )
+        with col2:
+            rsi_toi_da = st.number_input(
+                "RSI(14) tối đa (quá bán)", value=float(DIEU_KIEN_MAC_DINH["rsi_toi_da"]),
+                min_value=5.0, max_value=50.0, step=1.0, key="recovery_rsi",
+            )
+            volume_ratio_toi_thieu = st.number_input(
+                "Tỷ lệ khối lượng tối thiểu (x TB20)", value=float(DIEU_KIEN_MAC_DINH["volume_ratio_toi_thieu"]),
+                min_value=1.0, max_value=5.0, step=0.1, key="recovery_vol_ratio",
+            )
+        with col3:
+            so_phien_giam_lien_tiep = st.number_input(
+                "Số phiên giảm liên tiếp tối thiểu", value=int(DIEU_KIEN_MAC_DINH["so_phien_giam_lien_tiep_toi_thieu"]),
+                min_value=1, max_value=10, step=1, key="recovery_streak",
+            )
+            closing_strength_toi_da = st.number_input(
+                "Đóng cửa yếu tối đa (closing strength)", value=float(DIEU_KIEN_MAC_DINH["closing_strength_toi_da"]),
+                min_value=0.0, max_value=1.0, step=0.05, key="recovery_closing_strength",
+            )
+
+    dieu_kien_loc = {
+        "giam_toi_thieu_pct": giam_toi_thieu_pct,
+        "so_phien_toi_da": int(so_phien_toi_da),
+        "rsi_toi_da": rsi_toi_da,
+        "volume_ratio_toi_thieu": volume_ratio_toi_thieu,
+        "so_phien_giam_lien_tiep_toi_thieu": int(so_phien_giam_lien_tiep),
+        "closing_strength_toi_da": closing_strength_toi_da,
+    }
+
+    df = _load_ohlcv_history_df(storage, selected_symbol)
+    if df is None or df.empty:
+        st.warning(f"Không có dữ liệu lịch sử OHLCV cho mã {selected_symbol}.")
+        return
+
+    try:
+        result = _compute_recovery_probability_cached(df, selected_symbol, dieu_kien_loc)
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"⚠️ Lỗi khi tính toán: {exc}")
+        return
+
+    so_lan = result["so_lan_quan_sat_lich_su"]
+    do_tin_cay = result["do_tin_cay_thong_ke"]
+    do_tin_cay_emoji = {
+        "RAT_THAP": "🔴", "THAP": "🟠", "TRUNG_BINH": "🟡", "KHA_CAO": "🟢",
+    }.get(do_tin_cay, "")
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Số lần quan sát trong lịch sử", so_lan)
+    col_b.metric("Tổng số phiên dữ liệu", result["tong_so_phien_du_lieu_dau_vao"])
+    col_c.metric("Độ tin cậy thống kê", f"{do_tin_cay_emoji} {do_tin_cay}")
+
+    st.caption(result["ghi_chu_do_tin_cay"])
+
+    if so_lan == 0:
+        st.info("Không tìm thấy tình huống nào khớp điều kiện lọc trong lịch sử dữ liệu hiện có.")
+    else:
+        rows = []
+        for key, label in [
+            ("sau_1_phien", "Sau 1 phiên"), ("sau_3_phien", "Sau 3 phiên"), ("sau_5_phien", "Sau 5 phiên"),
+        ]:
+            r = result["ket_qua_theo_so_phien_du_bao"].get(key, {})
+            rows.append({
+                "Mốc thời gian": label,
+                "Số lần quan sát": r.get("so_lan_quan_sat"),
+                "Số lần phục hồi": r.get("so_lan_phuc_hoi"),
+                "Tỷ lệ phục hồi (%)": r.get("ty_le_phuc_hoi_pct"),
+                "% thay đổi TB": r.get("pct_thay_doi_trung_binh"),
+                "% thay đổi trung vị": r.get("pct_thay_doi_trung_vi"),
+                "Min (%)": r.get("pct_thay_doi_min"),
+                "Max (%)": r.get("pct_thay_doi_max"),
+                "Độ lệch chuẩn": r.get("do_lech_chuan"),
+            })
+        detail_df = pd.DataFrame(rows)
+        st.dataframe(
+            style_tang_giam(
+                detail_df,
+                cot_theo_ten=False,
+                cot_theo_dau=["% thay đổi TB", "% thay đổi trung vị", "Min (%)", "Max (%)"],
+                dinh_dang_so={
+                    "Tỷ lệ phục hồi (%)": "{:.1f}", "% thay đổi TB": "{:.1f}",
+                    "% thay đổi trung vị": "{:.1f}", "Min (%)": "{:.1f}", "Max (%)": "{:.1f}",
+                    "Độ lệch chuẩn": "{:.1f}", "Số lần quan sát": "{:.0f}", "Số lần phục hồi": "{:.0f}",
+                },
+            ),
+            width='stretch', hide_index=True,
+        )
+
+
 # ==============================================================================
 # PHẦN 5 — HIỆU SUẤT DANH MỤC MÔ PHỎNG
 # ==============================================================================
@@ -1376,10 +2018,50 @@ def render_entry_screener_section(storage: Storage) -> None:
     st.caption(report["ghi_chu"])
 
 
+CHARACTER_LABEL_DISPLAY = {
+    # Đổi tên hiển thị (KHÔNG đổi giá trị nội bộ — các module khác như
+    # stock_signal_engine.py, capital_allocator.py vẫn so khớp đúng
+    # chuỗi gốc "BUNG_NO_NGAN", "LINH_XINH"...) để tránh gây hiểu lầm là
+    # khuyến nghị MUA/BÁN hay dự báo xu hướng — đây CHỈ mô tả CÁCH giá đã
+    # vận động trong quá khứ, không phải tín hiệu giao dịch.
+    "DUT_KHOAT_TANG": "Vận động dứt khoát — chiều tăng (Directional Move – Up)",
+    "DUT_KHOAT_GIAM": "Vận động dứt khoát — chiều giảm (Directional Move – Down)",
+    "BUNG_NO_NGAN": "Biến động mạnh, ngắn hạn (Short-term Volatility Spike)",
+    "LINH_XINH": "Dao động hẹp, thiếu xu hướng (Choppy / Range-bound)",
+    "TRUNG_TINH": "Chưa đủ rõ đặc tính (Undetermined)",
+}
+
+CHARACTER_LABEL_EMOJI = {
+    "DUT_KHOAT_TANG": "🟢", "DUT_KHOAT_GIAM": "🔴",
+    "BUNG_NO_NGAN": "🟠", "LINH_XINH": "🟡", "TRUNG_TINH": "⚪",
+}
+
+
+def _dich_canh_bao(canh_bao_list: list[str]) -> str:
+    """Đổi tiền tố SQUAT/CHURNING sang dạng song ngữ "Việt (English)" cho
+    nhất quán với toàn bộ mục — nội dung câu giải thích phía sau giữ
+    nguyên (đã là tiếng Việt đầy đủ)."""
+    ket_qua = []
+    for c in canh_bao_list:
+        c = c.replace("SQUAT —", "Bứt phá giả (Squat) —")
+        c = c.replace("CHURNING —", "Nghi ngờ phân phối ẩn (Churning) —")
+        ket_qua.append(c)
+    return "; ".join(ket_qua) if ket_qua else "—"
+
+
+@st.cache_data(ttl=600, show_spinner="Đang đếm số lần lịch sử có đặc tính tương tự...")
+def _dem_lich_su_nhan_cached(df: pd.DataFrame, ma: str, nhan: str) -> dict:
+    """Bọc `dem_lich_su_nhan_tuong_tu()` bằng cache 10 phút — mỗi lần gọi
+    phải "phát lại" thuật toán qua tối đa 250 phiên, có chi phí tính toán
+    đáng kể, không nên chạy lại mỗi lần trang rerun nếu mã không đổi."""
+    from core.stock_character_classifier import dem_lich_su_nhan_tuong_tu
+
+    return dem_lich_su_nhan_tuong_tu(df, nhan, so_phien_kiem_tra=250)
+
+
 def render_stock_character_section(storage: Storage) -> None:
     """Hiển thị báo cáo tính cách giao dịch (`core.stock_character_classifier`)
-    cho toàn bộ mã đã quét — dứt khoát tăng/giảm, bùng nổ ngắn, lình xình,
-    trung tính, kèm cảnh báo SQUAT/CHURNING nếu có.
+    cho toàn bộ mã đã quét.
 
     TỐI ƯU TỐC ĐỘ (29/07/2026): trước đây gọi `get_latest()` RIÊNG cho
     từng mã (N lượt round-trip Supabase). Giờ dùng `get_latest_many()`
@@ -1391,12 +2073,25 @@ def render_stock_character_section(storage: Storage) -> None:
     kèm nút lưu lựa chọn (bền vào storage, riêng theo từng người xem
     qua `?user=...` — giống cơ chế watchlist) và nút xóa lựa chọn đã
     lưu để quay lại xem TOÀN BỘ mã như mặc định.
+
+    NGÔN NGỮ SONG NGỮ + THỐNG KÊ LỊCH SỬ (31/07/2026):
+        1. Toàn bộ nhãn/cột đổi sang "Tiếng Việt (English)" cho dễ hiểu.
+        2. Đổi tên nhãn tính cách (xem CHARACTER_LABEL_DISPLAY) để tránh
+           gây hiểu lầm là khuyến nghị giao dịch — đây thuần túy mô tả
+           CÁCH giá đã vận động, không phải tín hiệu mua/bán.
+        3. Thêm tùy chọn cột "Số lần lịch sử có đặc tính tương tự" — đếm
+           trong 250 phiên gần nhất (~1 năm), mã đó từng có CÙNG nhãn bao
+           nhiêu lần (tính bằng cách phát lại thuật toán tại từng thời
+           điểm trong quá khứ). Mặc định TẮT vì tốn thời gian tính toán
+           nếu bật cho nhiều mã cùng lúc — nên chỉ bật sau khi đã thu hẹp
+           danh sách bằng ô chọn mã bên dưới.
     """
-    st.subheader("🎭 Tính cách giao dịch từng mã")
+    st.subheader("🎭 Tính cách giao dịch từng mã (Trading Character)")
     st.caption(
-        "⚠️ Đây là đặc tính VẬN ĐỘNG nội tại của mã (dựa trên percentile so "
-        "với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị đầu tư, chỉ "
-        "dùng để điều chỉnh độ tin cậy tín hiệu Mua/Bán và phân bổ vốn."
+        "⚠️ Đây là mô tả CÁCH GIÁ ĐÃ VẬN ĐỘNG trong quá khứ của mã (dựa trên "
+        "percentile so với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị "
+        "mua/bán hay dự báo xu hướng tương lai, chỉ dùng để điều chỉnh độ tin "
+        "cậy tín hiệu Mua/Bán và phân bổ vốn."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -1435,10 +2130,16 @@ def render_stock_character_section(storage: Storage) -> None:
     if not selected:
         symbol_ids = render_search_box_if_needed(symbol_ids, key="stock_character_search")
 
-    nhan_emoji = {
-        "DUT_KHOAT_TANG": "🟢", "DUT_KHOAT_GIAM": "🔴",
-        "BUNG_NO_NGAN": "🟠", "LINH_XINH": "🟡", "TRUNG_TINH": "⚪",
-    }
+    hien_cot_lich_su = st.checkbox(
+        "📊 Tính thêm cột \"Số lần lịch sử có đặc tính tương tự\" "
+        "(chỉ nên bật khi đã chọn 1 vài mã cụ thể — có thể CHẬM nếu bật cho nhiều mã)",
+        key="stock_character_show_history_count",
+    )
+    if hien_cot_lich_su and len(symbol_ids) > 30:
+        st.warning(
+            f"Đang hiện {len(symbol_ids)} mã — tính cột lịch sử cho quá nhiều mã "
+            "cùng lúc sẽ RẤT CHẬM. Nên thu hẹp lại bằng ô chọn mã ở trên trước."
+        )
 
     character_map = storage.get_latest_many("stock_character", symbol_ids)
 
@@ -1449,14 +2150,32 @@ def render_stock_character_section(storage: Storage) -> None:
             continue
         data = record["data"]
         nhan = data.get("nhan_tinh_cach")
-        rows.append({
+        nhan_hien_thi = CHARACTER_LABEL_DISPLAY.get(nhan, nhan)
+        emoji = CHARACTER_LABEL_EMOJI.get(nhan, "")
+
+        row = {
             "Mã": sym,
-            "Tính cách": f"{nhan_emoji.get(nhan, '')} {nhan}",
-            "Character Score": data.get("character_score"),
-            "Choppiness Score": data.get("choppiness_score"),
-            "Cảnh báo": "; ".join(data.get("canh_bao", [])) or "—",
-            "Độ tin cậy thấp": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
-        })
+            "Tính cách (Character)": f"{emoji} {nhan_hien_thi}",
+            "Điểm dứt khoát (Character Score)": data.get("character_score"),
+            "Điểm lình xình (Choppiness Score)": data.get("choppiness_score"),
+            "Cảnh báo (Warning)": _dich_canh_bao(data.get("canh_bao", [])),
+            "Độ tin cậy thấp (Low Confidence)": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
+        }
+
+        if hien_cot_lich_su and nhan:
+            df_ma = _load_ohlcv_history_df(storage, sym)
+            if df_ma is not None and not df_ma.empty:
+                try:
+                    dem = _dem_lich_su_nhan_cached(df_ma, sym, nhan)
+                    row["Số lần lịch sử có đặc tính tương tự (trong ~1 năm)"] = (
+                        f"{dem['so_lan_khop']}/{dem['so_phien_da_kiem_tra']} phiên"
+                    )
+                except Exception:  # noqa: BLE001
+                    row["Số lần lịch sử có đặc tính tương tự (trong ~1 năm)"] = "—"
+            else:
+                row["Số lần lịch sử có đặc tính tương tự (trong ~1 năm)"] = "—"
+
+        rows.append(row)
 
     if not rows:
         st.info("Không có mã nào khớp từ khóa tìm kiếm / lựa chọn.")
@@ -1465,8 +2184,19 @@ def render_stock_character_section(storage: Storage) -> None:
     st.dataframe(
         pd.DataFrame(rows), width='stretch', hide_index=True,
         column_config={
-            "Character Score": st.column_config.NumberColumn(format="%.2f"),
-            "Choppiness Score": st.column_config.NumberColumn(format="%.2f"),
+            # Cột "Mã" và các cột TỪ "Điểm dứt khoát" trở đi đều đặt
+            # width="small" — buộc tiêu đề dài (VD: "Điểm dứt khoát
+            # (Character Score)") tự XUỐNG DÒNG bên trong ô tiêu đề thay
+            # vì kéo giãn cả cột ra rất rộng theo chiều ngang. Cột "Tính
+            # cách (Character)" CHỦ Ý không thu hẹp vì bản thân NỘI DUNG
+            # (không chỉ tiêu đề) đã là câu mô tả dài, thu hẹp sẽ làm mất
+            # chữ, khó đọc.
+            "Mã": st.column_config.TextColumn(width="small"),
+            "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "Cảnh báo (Warning)": st.column_config.TextColumn(width="small"),
+            "Độ tin cậy thấp (Low Confidence)": st.column_config.TextColumn(width="small"),
+            "Số lần lịch sử có đặc tính tương tự (trong ~1 năm)": st.column_config.TextColumn(width="small"),
         },
     )
 
@@ -1880,11 +2610,11 @@ def render_watchlist_manager_section(storage: Storage) -> None:
         disabled=[c for c in detail_df.columns if c != "🗑️ Xóa"],
         column_config={
             "Giá": st.column_config.NumberColumn(format="%.2f"),
-            "MA20": st.column_config.NumberColumn(format="%.2f"),
-            "EMA50": st.column_config.NumberColumn(format="%.2f"),
-            "EMA200": st.column_config.NumberColumn(format="%.2f"),
+            "MA20": st.column_config.NumberColumn(format="%.0f"),
+            "EMA50": st.column_config.NumberColumn(format="%.0f"),
+            "EMA200": st.column_config.NumberColumn(format="%.0f"),
             "Khối lượng": st.column_config.NumberColumn(format="%.0f"),
-            "Mô hình (%)": st.column_config.NumberColumn(format="%d%%"),
+            "Mô hình (%)": st.column_config.NumberColumn(format="%.1f%%"),
             "🗑️ Xóa": st.column_config.CheckboxColumn(help="Tick để xóa mã khỏi watchlist"),
         },
         key="watchlist_detail_editor",
@@ -2054,25 +2784,37 @@ def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
 
 # Danh sách nhãn các mục (đúng thứ tự hiển thị) — dùng cho menu điều
 # hướng nhanh ở sidebar. Định nghĩa hàm/tham số thực tế nằm trong main()
-# vì cần `storage`/`symbols`/`sectors` đã tính tại thời điểm chạy.
-DASHBOARD_SECTIONS = {
-    "📋 Watchlist (thêm/xóa mã)": None,
-    "📈 Bảng giá theo dõi (Watchlist)": None,
-    "🕯️ Biểu đồ nến": None,
-    "📒 Nhật ký giao dịch mua/bán": None,
-    "🌐 Giai đoạn thị trường (định tính)": None,
-    "🌍 Nhập dữ liệu vĩ mô thủ công": None,
-    "📋 Báo cáo tổng hợp thị trường chung": None,
-    "📐 Giai đoạn thị trường (3 lớp định lượng)": None,
-    "📦 Khuyến nghị phân bổ vốn (đơn giản)": None,
-    "📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)": None,
-    "🔎 Mã có mô hình thu hẹp biên độ": None,
-    "🚦 Báo cáo tín hiệu Mua/Bán": None,
-    "🎭 Tính cách giao dịch từng mã": None,
-    "🔍 Rà soát danh sách vào lệnh ngắn hạn": None,
-    "⏱️ Tiêu chí ngắn hạn": None,
-    "💼 Danh mục mô phỏng": None,
-}
+# vì cần `storage`/`symbols` đã tính tại thời điểm chạy.
+# Tổ chức các mục theo ĐÚNG 3 nhóm trong báo cáo kỹ thuật (Vĩ mô -> Thị
+# trường chung -> Giao dịch cổ phiếu) — tiêu đề nhóm viết HOA, mỗi nhóm có
+# thể MỞ RỘNG/THU HẸP độc lập ở chế độ "Xem tất cả" (dùng st.expander),
+# và ở chế độ "Chỉ xem 1 mục" thì chọn NHÓM trước rồi mới chọn mục trong
+# nhóm đó — giúp danh sách lựa chọn gọn hơn thay vì liệt kê phẳng cả 17 mục.
+DASHBOARD_GROUPS = [
+    ("NHÓM 1 — VĨ MÔ (THẾ GIỚI + VIỆT NAM)", [
+        "🌍 Nhập dữ liệu vĩ mô thủ công",
+    ]),
+    ("NHÓM 2 — THỊ TRƯỜNG CHUNG", [
+        "🌐 Giai đoạn thị trường (định tính)",
+        "📋 Báo cáo tổng hợp thị trường chung",
+        "📐 Giai đoạn thị trường (3 lớp định lượng)",
+    ]),
+    ("NHÓM 3 — GIAO DỊCH CỔ PHIẾU", [
+        "📋 Watchlist (thêm/xóa mã)",
+        "📈 Bảng giá theo dõi (Watchlist)",
+        "🕯️ Biểu đồ nến",
+        "📒 Nhật ký giao dịch mua/bán",
+        "📦 Khuyến nghị phân bổ vốn (đơn giản)",
+        "📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)",
+        "🔎 Mã có mô hình thu hẹp biên độ",
+        "🚦 Báo cáo tín hiệu Mua/Bán",
+        "🎭 Tính cách giao dịch từng mã",
+        "📊 Xác suất phục hồi lịch sử",
+        "🔍 Rà soát danh sách vào lệnh ngắn hạn",
+        "⏱️ Tiêu chí ngắn hạn",
+        "💼 Danh mục mô phỏng",
+    ]),
+]
 
 
 def require_login() -> None:
@@ -2144,13 +2886,6 @@ def main() -> None:
     with st.sidebar:
         st.header("Cấu hình hiển thị")
 
-
-        sectors_input = st.text_input(
-            "Danh sách ngành cần xem giai đoạn thị trường (cách nhau bởi dấu phẩy)",
-            value="banking,real_estate,securities",
-        )
-        sectors = [s.strip() for s in sectors_input.split(",") if s.strip()]
-
         st.divider()
         st.header("📑 Chuyển nhanh tới mục")
         mode = st.radio(
@@ -2159,9 +2894,17 @@ def main() -> None:
         )
         selected_section = None
         if mode == "Chỉ xem 1 mục":
+            selected_group_title = st.radio(
+                "Chọn nhóm", [group_title for group_title, _ in DASHBOARD_GROUPS],
+                key="dashboard_selected_group",
+            )
+            labels_trong_nhom = next(
+                labels for group_title, labels in DASHBOARD_GROUPS
+                if group_title == selected_group_title
+            )
             selected_section = st.radio(
-                "Chọn mục muốn xem", list(DASHBOARD_SECTIONS.keys()),
-                key="dashboard_selected_section",
+                "Chọn mục trong nhóm", labels_trong_nhom,
+                key=f"dashboard_selected_section__{selected_group_title}",
             )
 
     # --- Danh sách mục theo đúng thứ tự hiển thị, kèm hàm + tham số riêng ---
@@ -2170,7 +2913,7 @@ def main() -> None:
         ("📈 Bảng giá theo dõi (Watchlist)", render_watchlist_section, (storage, symbols)),
         ("🕯️ Biểu đồ nến", render_chart_section, (storage, symbols)),
         ("📒 Nhật ký giao dịch mua/bán", render_trade_journal_section, (storage, symbols)),
-        ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage, sectors)),
+        ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage,)),
         ("🌍 Nhập dữ liệu vĩ mô thủ công", render_manual_macro_data_section, (storage,)),
         ("📋 Báo cáo tổng hợp thị trường chung", render_market_summary_report_section, (storage,)),
         ("📐 Giai đoạn thị trường (3 lớp định lượng)", render_market_regime_quant_section, (storage,)),
@@ -2179,26 +2922,34 @@ def main() -> None:
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
         ("🚦 Báo cáo tín hiệu Mua/Bán", render_stock_signal_report_section, (storage,)),
         ("🎭 Tính cách giao dịch từng mã", render_stock_character_section, (storage,)),
+        ("📊 Xác suất phục hồi lịch sử", render_historical_recovery_probability_section, (storage,)),
         ("🔍 Rà soát danh sách vào lệnh ngắn hạn", render_entry_screener_section, (storage,)),
         ("⏱️ Tiêu chí ngắn hạn", render_short_term_signal_section, (storage,)),
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
     ]
+
+    # --- Tra cứu nhanh render_fn + args theo label, dùng chung cho cả 2 chế độ ---
+    sections_map = {label: (render_fn, args) for label, render_fn, args in sections_to_call}
 
     if selected_section is not None:
         # --- Chế độ CHỈ XEM 1 MỤC — không cuộn, chỉ hiện đúng mục đã chọn ---
         # LƯU Ý: KHÔNG thêm tiêu đề markdown ở đây — mỗi hàm render_* bên
         # dưới đã tự gọi st.subheader() với đúng tên mục rồi, thêm tiêu đề
         # ở ngoài nữa sẽ làm tiêu đề hiện lặp lại 2 lần trên trang.
-        for label, render_fn, args in sections_to_call:
-            if label == selected_section:
-                render_fn(*args)
-                break
+        render_fn, args = sections_map[selected_section]
+        render_fn(*args)
     else:
-        # --- Chế độ xem TẤT CẢ (hành vi cũ, cuộn từ trên xuống) ---
-        for i, (label, render_fn, args) in enumerate(sections_to_call):
-            if i > 0:
-                st.divider()
-            render_fn(*args)
+        # --- Chế độ xem TẤT CẢ — chia theo 3 NHÓM (khớp báo cáo kỹ thuật),
+        #     mỗi nhóm bọc trong st.expander để người xem tự MỞ RỘNG hoặc
+        #     THU HẸP cho gọn, không bắt buộc phải cuộn qua toàn bộ 17 mục
+        #     cùng lúc. Tiêu đề nhóm viết HOA. ---
+        for group_title, labels in DASHBOARD_GROUPS:
+            with st.expander(f"🔽 {group_title}", expanded=True):
+                for i, label in enumerate(labels):
+                    if i > 0:
+                        st.divider()
+                    render_fn, args = sections_map[label]
+                    render_fn(*args)
 
 
 main()
