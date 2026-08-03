@@ -467,6 +467,138 @@ class VnstockDataSource(DataSource):
         return dict(zip(df["symbol"], df["industry_name"]))
 
 
+class BinanceDataSource(DataSource):
+    """Adapter dữ liệu THẬT cho tài sản quốc tế qua Binance Public API
+    (https://api.binance.com/api/v3/klines) — dùng cho module rà soát mô
+    hình co hẹp biên độ (`core/volatility_contraction_scanner.py`), áp
+    dụng cho XAUUSD và BTC/USD.
+
+    ÁNH XẠ TÊN GỌI THÂN THIỆN -> CẶP GIAO DỊCH BINANCE THẬT (`SYMBOL_MAP`):
+        - "XAUUSD" -> "PAXGUSDT" (PAX Gold — token bảo chứng 1:1 bằng vàng
+          vật chất, giá bám rất sát XAUUSD giao ngay quốc tế — xem lý do
+          chọn hướng này trong docstring module `volatility_contraction_scanner`).
+        - "BTCUSD" -> "BTCUSDT" (chênh lệch USDT/USD thực tế thường <0,1%).
+
+    LƯU Ý QUAN TRỌNG VỀ `timeframe`: khác với `VnstockDataSource` ở trên
+    (dùng từ vựng chuẩn hóa "day"/"week" của dự án), adapter này nhận
+    THẲNG mã khung thời gian gốc của Binance (chữ thường: "1h", "4h",
+    "1d", "1w"...) — vì module gọi adapter này (volatility_contraction_scanner)
+    cần TỰ THỬ NHIỀU khung thời gian khác nhau theo đúng từ vựng Binance,
+    không đi qua tầng chuẩn hóa "day"/"week" dùng chung cho cổ phiếu VN.
+
+    KHÔNG cần API key cho endpoint `klines` (dữ liệu thị trường công khai).
+    Giới hạn rate limit: 1200 request/phút/IP (weight-based) — với tần
+    suất rà soát định kỳ (vài lần/ngày) hoàn toàn không đáng lo, nhưng vẫn
+    nên giãn cách nhỏ nếu quét nhiều symbol/khung thời gian liên tiếp.
+
+    GIỚI HẠN ĐÃ BIẾT:
+        - `fetch_fundamentals` / `fetch_news` / `fetch_macro_data`: KHÔNG
+          áp dụng được cho vàng/Bitcoin theo đúng nghĩa "dữ liệu cơ bản
+          doanh nghiệp" — trả về giá trị RỖNG/mặc định để không làm gãy
+          pipeline (nếu lỡ được gọi từ nơi khác), không phải lỗi.
+        - PAXG là tài sản giao dịch 24/7 trên Binance, trong khi XAUUSD
+          giao ngay có giờ nghỉ cuối tuần theo thị trường liên ngân hàng
+          London/New York — có thể có chênh lệch nhỏ (basis) vào các thời
+          điểm thị trường vàng truyền thống đóng cửa. Chấp nhận được cho
+          mục đích rà soát mẫu hình kỹ thuật, không dùng làm giá giao dịch
+          thực tế chính xác tuyệt đối.
+    """
+
+    name = "binance"
+    is_paid_source = False
+
+    BASE_URL = "https://api.binance.com/api/v3/klines"
+    SYMBOL_MAP = {
+        "XAUUSD": "PAXGUSDT",
+        "BTCUSD": "BTCUSDT",
+    }
+
+    def __init__(self, max_attempts: int = 3, backoff_seconds: float = 2.0, timeout_seconds: float = 10.0):
+        self._max_attempts = max_attempts
+        self._backoff_seconds = backoff_seconds
+        self._timeout_seconds = timeout_seconds
+
+    def _resolve_symbol(self, symbol: str) -> str:
+        return self.SYMBOL_MAP.get(symbol.upper(), symbol.upper())
+
+    def fetch_ohlcv(self, symbol: str, timeframe: str = "1d") -> pd.DataFrame:
+        import requests
+
+        binance_symbol = self._resolve_symbol(symbol)
+
+        def _goi_api() -> pd.DataFrame:
+            try:
+                resp = requests.get(
+                    self.BASE_URL,
+                    params={"symbol": binance_symbol, "interval": timeframe, "limit": 1000},
+                    timeout=self._timeout_seconds,
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+            except Exception as exc:  # noqa: BLE001 — bọc mọi lỗi thành DataSourceError thống nhất
+                raise DataSourceError(
+                    f"Lỗi khi lấy OHLCV từ Binance cho '{symbol}' ({binance_symbol}): {exc}"
+                ) from exc
+
+            if not isinstance(raw, list) or not raw:
+                raise DataSourceError(
+                    f"Binance trả về dữ liệu rỗng/không hợp lệ cho '{binance_symbol}' "
+                    f"(interval={timeframe}) — kiểm tra lại tên symbol/khung thời gian."
+                )
+
+            df = pd.DataFrame(raw, columns=[
+                "open_time", "open", "high", "low", "close", "volume",
+                "close_time", "quote_asset_volume", "n_trades",
+                "taker_buy_base", "taker_buy_quote", "ignore",
+            ])
+            df["date"] = pd.to_datetime(df["open_time"], unit="ms")
+            for col in ("open", "high", "low", "close", "volume"):
+                df[col] = df[col].astype(float)
+
+            return df[["date", "open", "high", "low", "close", "volume"]].reset_index(drop=True)
+
+        return _call_with_retry(_goi_api, self._max_attempts, self._backoff_seconds)
+
+    def fetch_realtime_price(self, symbol: str) -> dict:
+        import requests
+
+        binance_symbol = self._resolve_symbol(symbol)
+
+        def _goi_api() -> dict:
+            try:
+                resp = requests.get(
+                    "https://api.binance.com/api/v3/ticker/price",
+                    params={"symbol": binance_symbol},
+                    timeout=self._timeout_seconds,
+                )
+                resp.raise_for_status()
+                raw = resp.json()
+            except Exception as exc:  # noqa: BLE001
+                raise DataSourceError(
+                    f"Lỗi khi lấy giá thời gian thực từ Binance cho '{symbol}': {exc}"
+                ) from exc
+
+            return {
+                "symbol": symbol,
+                "price": float(raw["price"]),
+                "volume": None,
+                "timestamp": datetime.now(),
+            }
+
+        return _call_with_retry(_goi_api, self._max_attempts, self._backoff_seconds)
+
+    def fetch_fundamentals(self, symbol: str) -> FundamentalData:
+        # KHÔNG áp dụng cho vàng/Bitcoin — trả về cấu trúc rỗng hợp lệ,
+        # không phải lỗi, để không làm gãy pipeline nếu bị gọi nhầm.
+        return FundamentalData(symbol=symbol)
+
+    def fetch_news(self, symbol: Optional[str] = None) -> list[NewsItem]:
+        return []
+
+    def fetch_macro_data(self) -> list[MacroDataPoint]:
+        return []
+
+
 # ==============================================================================
 # TIỆN ÍCH: RETRY
 # ==============================================================================
