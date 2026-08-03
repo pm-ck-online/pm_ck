@@ -21,6 +21,12 @@ SQLAlchemy>=2.0
 # --- Gọi API / thu thập dữ liệu ---
 requests>=2.31
 
+# --- Dữ liệu chứng khoán Việt Nam thật (bắt buộc khi data_source.adapter
+#     trong config.yaml là "vnstock" — trước đây chỉ cài tay trên máy cá
+#     nhân, CHƯA từng khai báo ở đây, khiến máy mới/GitHub Actions không
+#     tự cài được, gây lỗi "Chưa cài đặt thư viện 'vnstock'") ---
+vnstock
+
 # --- Thông báo Telegram ---
 python-telegram-bot>=21.0
 
