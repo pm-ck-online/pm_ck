@@ -226,12 +226,15 @@ def tu_chon_khung_thoi_gian(
     for khung in khung_ung_vien:
         df = lay_ohlcv_fn(symbol, timeframe=khung)
         so_nen = max(1, int(so_ngay_tham_chieu * _he_so_nen_theo_khung(khung)))
-        df_scope = df.tail(so_nen)
+        df_scope = df.tail(so_nen).reset_index(drop=True)
 
         diem = tim_dinh_day_cuc_bo(df_scope)
         chu_ky = tinh_bien_do_tung_chu_ky(diem)
         xac_nhan = xac_nhan_chuoi_co_hep(chu_ky, so_chu_ky_toi_thieu, dung_sai_pct)
-        ket_qua_theo_khung[khung] = {**xac_nhan, "chu_ky_chi_tiet": chu_ky}
+        ket_qua_theo_khung[khung] = {
+            **xac_nhan, "chu_ky_chi_tiet": chu_ky,
+            "diem_dinh_day": diem, "du_lieu_gia": df_scope,
+        }
 
     hop_le = {k: v for k, v in ket_qua_theo_khung.items() if v.get("hop_le")}
     if hop_le:
@@ -288,6 +291,17 @@ def rao_soat_mo_hinh_co_hep(
         for b in ket_qua_khung.get("chuoi_bien_do", [])
     ]
 
+    # Chuyển DataFrame giá (dùng để tìm đỉnh/đáy ở khung ĐÃ CHỌN) thành
+    # list[dict] JSON-hóa được — để dashboard vẽ lại biểu đồ nến KHÔNG
+    # cần gọi lại Binance API (tránh phụ thuộc mạng khi hiển thị, và
+    # tránh rủi ro bị chặn 451 nếu Streamlit Cloud cũng đặt máy chủ ở Mỹ).
+    du_lieu_gia_df = ket_qua_khung.get("du_lieu_gia")
+    du_lieu_gia = (
+        du_lieu_gia_df.assign(date=du_lieu_gia_df["date"].astype(str)).to_dict("records")
+        if du_lieu_gia_df is not None else []
+    )
+    diem_dinh_day = ket_qua_khung.get("diem_dinh_day", [])
+
     return {
         "symbol": symbol,
         "khung_thoi_gian_da_chon": ket_qua_khung["khung_da_chon"],
@@ -298,6 +312,8 @@ def rao_soat_mo_hinh_co_hep(
         "doi_chieu_ma20": ma20_info,
         "canh_bao": ket_qua_khung.get("canh_bao"),
         "chi_tiet_chu_ky": ket_qua_khung.get("chu_ky_chi_tiet"),
+        "diem_dinh_day": diem_dinh_day,
+        "du_lieu_gia": du_lieu_gia,
         "ngay_danh_gia": _dt.date.today().isoformat(),
         "canh_bao_phap_ly": (
             "Đây là công cụ rà soát mẫu hình kỹ thuật tham khảo, KHÔNG phải "
