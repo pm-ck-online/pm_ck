@@ -1288,8 +1288,72 @@ def render_vcp_scan_section(storage: Storage) -> None:
                         name="Đáy cục bộ",
                     ))
 
+                # --- Chú thích CHÍNH XÁC các chu kỳ dùng để tính "Tỷ lệ
+                #     giảm biên độ tổng thể" — để người xem thấy TẬN MẮT
+                #     đâu là chu kỳ ĐẦU và chu kỳ CUỐI đang được so sánh,
+                #     không chỉ đọc 1 con số trừu tượng. ---
+                chuoi_bien_do_pct = data.get("chuoi_bien_do_pct") or []
+                chi_tiet_chu_ky = data.get("chi_tiet_chu_ky") or []
+                if chuoi_bien_do_pct and chi_tiet_chu_ky and diem_dinh_day:
+                    so_chu_ky = len(chuoi_bien_do_pct)
+                    chu_ky_da_xet = chi_tiet_chu_ky[-so_chu_ky:]
+
+                    # Tra giá theo ngày (chuỗi ISO) từ danh sách điểm đỉnh/đáy.
+                    gia_theo_ngay = {
+                        pd.Timestamp(p["date"]): p["gia"] for p in diem_dinh_day
+                    }
+
+                    mau_chu_ky = ["#7e57c2", "#26a69a", "#ffa726", "#42a5f5", "#ec407a", "#8d6e63"]
+                    for i, ck in enumerate(chu_ky_da_xet):
+                        tu_ngay = pd.Timestamp(ck["tu_ngay"])
+                        den_ngay = pd.Timestamp(ck["den_ngay"])
+                        gia_tu = gia_theo_ngay.get(tu_ngay)
+                        gia_den = gia_theo_ngay.get(den_ngay)
+                        if gia_tu is None or gia_den is None:
+                            continue
+
+                        la_dau = i == 0
+                        la_cuoi = i == len(chu_ky_da_xet) - 1
+                        mau = "#d32f2f" if la_dau else ("#2e7d32" if la_cuoi else mau_chu_ky[i % len(mau_chu_ky)])
+                        do_day = 3 if (la_dau or la_cuoi) else 1.5
+
+                        fig.add_trace(go.Scatter(
+                            x=[tu_ngay, den_ngay], y=[gia_tu, gia_den],
+                            mode="lines+text",
+                            line=dict(color=mau, width=do_day, dash="dot"),
+                            text=[f"Chu kỳ {i + 1}: {ck['bien_do_pct']:.2f}%", ""],
+                            textposition="top center",
+                            name=(
+                                f"Chu kỳ {i + 1} (ĐẦU — {ck['bien_do_pct']:.2f}%)" if la_dau else
+                                f"Chu kỳ {i + 1} (CUỐI — {ck['bien_do_pct']:.2f}%)" if la_cuoi else
+                                f"Chu kỳ {i + 1} ({ck['bien_do_pct']:.2f}%)"
+                            ),
+                            showlegend=True,
+                        ))
+
+                    # Vùng bao quanh toàn bộ N chu kỳ đang xét.
+                    fig.add_vrect(
+                        x0=pd.Timestamp(chu_ky_da_xet[0]["tu_ngay"]),
+                        x1=pd.Timestamp(chu_ky_da_xet[-1]["den_ngay"]),
+                        fillcolor="#9575cd", opacity=0.08, line_width=0,
+                        annotation_text=f"Vùng xét {so_chu_ky} chu kỳ gần nhất",
+                        annotation_position="top left",
+                    )
+
+                    ty_le_giam = data.get("ty_le_giam_tong_the_pct")
+                    if ty_le_giam is not None:
+                        st.caption(
+                            f"🔴 Đường ĐỎ = chu kỳ ĐẦU tiên trong nhóm {so_chu_ky} chu kỳ gần nhất "
+                            f"(biên độ {chu_ky_da_xet[0]['bien_do_pct']:.2f}%) · "
+                            f"🟢 Đường XANH LÁ = chu kỳ CUỐI/gần nhất "
+                            f"(biên độ {chu_ky_da_xet[-1]['bien_do_pct']:.2f}%) · "
+                            f"Tỷ lệ giảm = ({chu_ky_da_xet[0]['bien_do_pct']:.2f} − "
+                            f"{chu_ky_da_xet[-1]['bien_do_pct']:.2f}) / {chu_ky_da_xet[0]['bien_do_pct']:.2f} "
+                            f"× 100 = **{ty_le_giam:.1f}%**"
+                        )
+
                 fig.update_layout(
-                    height=380, margin=dict(l=10, r=10, t=10, b=10),
+                    height=420, margin=dict(l=10, r=10, t=10, b=10),
                     xaxis_rangeslider_visible=False,
                     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
                 )
