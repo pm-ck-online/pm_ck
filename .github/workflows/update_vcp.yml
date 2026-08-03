@@ -1,0 +1,31 @@
+name: Cập nhật rà soát mô hình co hẹp (XAUUSD/BTC, 1 lần/ngày)
+
+on:
+  schedule:
+    # Chạy 1 lần/ngày lúc 3h00 UTC (~10h sáng giờ Việt Nam) — mô hình co
+    # hẹp biên độ biến động chậm, không cần cập nhật thường xuyên như giá
+    # cổ phiếu trong workflow "update_market_data.yml".
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  update-vcp:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cài đặt thư viện
+        run: pip install -r requirements.txt
+
+      - name: Rà soát mô hình co hẹp XAUUSD/BTC
+        env:
+          PM_CK_DB_PATH: ${{ secrets.PM_CK_DB_PATH }}
+        run: python update_vcp.py
