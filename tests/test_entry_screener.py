@@ -15,6 +15,7 @@ from core.entry_screener import (
     kiem_tra_tich_luy_dai_han,
     quet_danh_sach_cho,
     quet_mot_ma,
+    tinh_thong_ke_tang_giam_lich_su,
     xep_hang_uu_tien_theo_ema200,
 )
 
@@ -293,3 +294,60 @@ class TestQuetDanhSachCho:
         # Đảm bảo TIEU_CHI_KHA_DUNG không tự mâu thuẫn với logic validate
         for key in TIEU_CHI_KHA_DUNG:
             quet_danh_sach_cho([], tieu_chi_da_chon=[key])  # không raise
+
+
+class TestTinhThongKeTangGiamLichSu:
+    def _make_realistic_df(self, n=400, seed=5):
+        import numpy as np
+        np.random.seed(seed)
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        closes = [100.0]
+        for i in range(1, n):
+            closes.append(closes[-1] * (1 + np.random.normal(0.0003, 0.004)))
+        closes = np.array(closes)
+        for start in range(250, 350, 30):
+            if start + 30 < n:
+                closes[start + 30:] *= 1.08
+        return pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.005, "low": closes * 0.995,
+            "close": closes, "volume": np.random.randint(1000, 2000, n).astype(float),
+        })
+
+    def test_computes_distribution_for_fast_criteria(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=30, so_phien_kiem_tra=250,
+        )
+        assert result["so_lan_quan_sat"] > 0
+        assert set(result["phan_bo"].keys()) == {
+            "giam_tren_15", "giam_10_15", "giam_5_10", "giam_0_5",
+            "tang_0_5", "tang_5_10", "tang_10_15", "tang_tren_15",
+        }
+        tong_ty_le = sum(v["ty_le_pct"] for v in result["phan_bo"].values())
+        assert tong_ty_le == pytest.approx(100.0, abs=0.5)
+
+    def test_returns_zero_when_only_slow_criteria(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_lich_su(df, ["dao_dong_tat_dan"])
+        assert result["so_lan_quan_sat"] == 0
+        assert "KHÔNG được phát lại" in result["ghi_chu"]
+
+    def test_returns_zero_when_history_too_short(self):
+        df = pd.DataFrame({
+            "date": pd.bdate_range("2024-01-01", periods=50),
+            "close": [100.0] * 50,
+        })
+        result = tinh_thong_ke_tang_giam_lich_su(df, ["dieu_kien_nen_ema200"])
+        assert result["so_lan_quan_sat"] == 0
+
+    def test_returns_zero_for_empty_df(self):
+        result = tinh_thong_ke_tang_giam_lich_su(pd.DataFrame(), ["dieu_kien_nen_ema200"])
+        assert result["so_lan_quan_sat"] == 0
+
+    def test_combines_both_fast_criteria(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200", "tich_luy_dai_han"], so_phien_du_bao=30,
+        )
+        assert result["so_lan_quan_sat"] > 0
+        assert "Tích lũy" in result["ghi_chu"] or "EMA200" in result["ghi_chu"]
