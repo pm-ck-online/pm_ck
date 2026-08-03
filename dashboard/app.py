@@ -2086,6 +2086,18 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
 # PHẦN 5 — HIỆU SUẤT DANH MỤC MÔ PHỎNG
 # ==============================================================================
 
+@st.cache_data(ttl=600, show_spinner="Đang tính thống kê tăng/giảm lịch sử...")
+def _tinh_thong_ke_tang_giam_cached(
+    df: pd.DataFrame, ma: str, tieu_chi_dat: tuple[str, ...], so_phien_du_bao: int
+) -> dict:
+    """Bọc `tinh_thong_ke_tang_giam_lich_su()` bằng cache 10 phút."""
+    from core.entry_screener import tinh_thong_ke_tang_giam_lich_su
+
+    return tinh_thong_ke_tang_giam_lich_su(
+        df, list(tieu_chi_dat), so_phien_du_bao=so_phien_du_bao
+    )
+
+
 def render_entry_screener_section(storage: Storage) -> None:
     """Hiển thị báo cáo rà soát danh sách vào lệnh ngắn hạn
     (`core.entry_screener`) — cho phép lọc lại theo tiêu chí mong muốn
@@ -2163,9 +2175,18 @@ def render_entry_screener_section(storage: Storage) -> None:
         return
 
     uu_tien_emoji = {"UU_TIEN_CAO": "🟢", "UU_TIEN_TRUNG_BINH": "🟡", "KHONG_DAT": "⚪"}
+    ten_cot_bac = [
+        "Giảm >15% (%)", "Giảm 10-15% (%)", "Giảm 5-10% (%)", "Giảm 0-5% (%)",
+        "Tăng 0-5% (%)", "Tăng 5-10% (%)", "Tăng 10-15% (%)", "Tăng >15% (%)",
+    ]
+    khoa_bac = [
+        "giam_tren_15", "giam_10_15", "giam_5_10", "giam_0_5",
+        "tang_0_5", "tang_5_10", "tang_10_15", "tang_tren_15",
+    ]
+
     rows = []
     for m in danh_sach_loc:
-        rows.append({
+        row = {
             "Mã": m["ma"],
             "Ưu tiên": f"{uu_tien_emoji.get(m['xep_hang_uu_tien'], '')} {m['xep_hang_uu_tien']}",
             "Độ lệch EMA200": f"{m['do_lech_ema200_pct']:+.1f}%" if m["do_lech_ema200_pct"] is not None else "—",
@@ -2173,8 +2194,44 @@ def render_entry_screener_section(storage: Storage) -> None:
             "Tiêu chí đạt": ", ".join(TIEU_CHI_KHA_DUNG.get(t, t) for t in m["tieu_chi_dat"]),
             "Sắp breakout": "🔶 Có" if m["sap_breakout"] else "—",
             "Mẫu hình": m["mau_hinh_kich_hoat"] or "—",
-        })
-    st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        }
+
+        # --- Thống kê xác suất tăng/giảm theo bậc %, dựa trên tình huống
+        #     tương tự trong quá khứ của CHÍNH mã đó (30 phiên tới, ~1,5
+        #     tháng) — chỉ phát lại được với 2 tiêu chí tính nhanh, xem
+        #     docstring `tinh_thong_ke_tang_giam_lich_su` để biết giới hạn. ---
+        df_ma = _load_ohlcv_history_df(storage, m["ma"])
+        if df_ma is not None and not df_ma.empty:
+            try:
+                thong_ke = _tinh_thong_ke_tang_giam_cached(
+                    df_ma, m["ma"], tuple(m["tieu_chi_dat"]), 30,
+                )
+            except Exception:  # noqa: BLE001
+                thong_ke = {"so_lan_quan_sat": 0, "phan_bo": {}}
+        else:
+            thong_ke = {"so_lan_quan_sat": 0, "phan_bo": {}}
+
+        row["Số lần quan sát (lịch sử)"] = thong_ke.get("so_lan_quan_sat", 0)
+        phan_bo = thong_ke.get("phan_bo", {})
+        for ten_cot, khoa in zip(ten_cot_bac, khoa_bac):
+            row[ten_cot] = phan_bo.get(khoa, {}).get("ty_le_pct") if phan_bo else None
+
+        rows.append(row)
+
+    display_df = pd.DataFrame(rows)
+    dinh_dang_screen = {c: "{:.1f}" for c in ten_cot_bac}
+    st.caption(
+        "📊 8 cột cuối: xác suất tăng/giảm (%) sau 30 phiên (~1,5 tháng), dựa trên "
+        "TẦN SUẤT các lần trong quá khứ CHÍNH mã đó từng thỏa 2 tiêu chí tính nhanh "
+        "(Giá so EMA200, Tích lũy dài hạn) — nếu mã CHỈ đạt tiêu chí Mô hình thu hẹp "
+        "biên độ / Khối lượng breakout, cột này sẽ trống (không phát lại được 2 tiêu "
+        "chí đó vì quá chậm). Xem cột \"Số lần quan sát\" để đánh giá độ tin cậy — "
+        "quá ít lần quan sát thì không nên dùng làm căn cứ."
+    )
+    st.dataframe(
+        style_tang_giam(display_df, dinh_dang_so=dinh_dang_screen),
+        width='stretch', hide_index=True,
+    )
     st.caption(report["ghi_chu"])
 
 
