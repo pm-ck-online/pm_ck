@@ -1250,6 +1250,53 @@ def render_vcp_scan_section(storage: Storage) -> None:
                 xu_huong = ma20.get("ma20_xu_huong") or "—"
                 st.metric("Xu hướng MA20", xu_huong)
 
+            # --- Biểu đồ nến kèm đánh dấu các đỉnh/đáy đã phát hiện ---
+            # Dùng dữ liệu giá ĐÃ LƯU SẴN từ lần chạy update_vcp.py (KHÔNG
+            # gọi lại Binance API trực tiếp từ dashboard) — Streamlit
+            # Cloud có thể ĐẶT MÁY CHỦ TẠI MỸ như GitHub Actions, cũng có
+            # nguy cơ bị Binance chặn (lỗi 451) nếu gọi API sống ở đây.
+            du_lieu_gia = data.get("du_lieu_gia") or []
+            if du_lieu_gia:
+                df_gia = pd.DataFrame(du_lieu_gia)
+                df_gia["date"] = pd.to_datetime(df_gia["date"])
+
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=df_gia["date"], open=df_gia["open"], high=df_gia["high"],
+                    low=df_gia["low"], close=df_gia["close"], name=symbol,
+                    increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+                    increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
+                ))
+
+                diem_dinh_day = data.get("diem_dinh_day") or []
+                if diem_dinh_day:
+                    df_diem = pd.DataFrame(diem_dinh_day)
+                    df_diem["date"] = pd.to_datetime(df_diem["date"])
+                    dinh = df_diem[df_diem["loai"] == "dinh"]
+                    day = df_diem[df_diem["loai"] == "day"]
+
+                    fig.add_trace(go.Scatter(
+                        x=dinh["date"], y=dinh["gia"], mode="markers+text",
+                        marker=dict(symbol="triangle-down", size=11, color="#ef5350"),
+                        text=["Đỉnh"] * len(dinh), textposition="top center",
+                        name="Đỉnh cục bộ",
+                    ))
+                    fig.add_trace(go.Scatter(
+                        x=day["date"], y=day["gia"], mode="markers+text",
+                        marker=dict(symbol="triangle-up", size=11, color="#26a69a"),
+                        text=["Đáy"] * len(day), textposition="bottom center",
+                        name="Đáy cục bộ",
+                    ))
+
+                fig.update_layout(
+                    height=380, margin=dict(l=10, r=10, t=10, b=10),
+                    xaxis_rangeslider_visible=False,
+                    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+                )
+                st.plotly_chart(fig, width='stretch', key=f"vcp_chart_{symbol}")
+            else:
+                st.caption("Chưa có dữ liệu giá chi tiết để vẽ biểu đồ (cần chạy lại `update_vcp.py` bản mới nhất).")
+
             ngay_danh_gia = data.get("ngay_danh_gia", "—")
             st.caption(f"Ngày đánh giá: {ngay_danh_gia}")
             if data.get("canh_bao_phap_ly"):
