@@ -702,6 +702,32 @@ def render_market_regime_section(storage: Storage) -> None:
         col_v1.metric("VNINDEX", _fmt_number(vdata.get("close")) or "—")
         col_v2.metric("EMA200", _fmt_number(vdata.get("ema200")) or "—")
         col_v3.metric("Vị trí so với EMA200", trang_thai)
+
+        # Hiện rõ thời điểm cập nhật lần cuối — để tự kiểm tra dữ liệu có
+        # bị cũ hay không (VD: pipeline tự động chưa chạy kịp hôm nay),
+        # không cần đoán hoặc hỏi lại.
+        # LƯU Ý: timestamp lưu theo giờ MÁY CHẠY SCRIPT lúc ghi dữ liệu —
+        # GitHub Actions chạy theo giờ UTC, còn chạy tay trên máy cá nhân
+        # thường theo giờ hệ thống (thường là giờ VN). Vì không biết chắc
+        # nguồn nào ghi lần cuối, chỉ hiện số phút đã trôi qua (tính theo
+        # giờ UTC hiện tại, đúng với nguồn tự động chính là GitHub
+        # Actions) kèm giờ gốc y nguyên để đối chiếu thủ công nếu cần.
+        raw_ts = vnindex_record.get("timestamp")
+        if raw_ts:
+            try:
+                ts = pd.Timestamp(raw_ts)
+                so_phut_truoc = int((pd.Timestamp.now(tz=None) - ts).total_seconds() // 60)
+                canh_bao_cu = (
+                    " ⚠️ **Đã lâu chưa cập nhật (tính theo giờ UTC) — kiểm tra lại pipeline tự động.**"
+                    if so_phut_truoc > 90 else ""
+                )
+                st.caption(
+                    f"🕒 Cập nhật lần cuối (giờ ghi nhận trên máy chạy script): "
+                    f"{ts.strftime('%d/%m/%Y %H:%M')} — khoảng {so_phut_truoc} phút trước "
+                    f"(so với giờ UTC hiện tại).{canh_bao_cu}"
+                )
+            except Exception:  # noqa: BLE001
+                st.caption(f"🕒 Cập nhật lần cuối: {raw_ts}")
     else:
         st.info("Chưa có dữ liệu VNINDEX. Chạy `update_indices.py` hoặc `main.py` trước.")
 
@@ -2095,6 +2121,35 @@ def render_entry_screener_section(storage: Storage) -> None:
         if set(m["tieu_chi_dat"]) & set(tieu_chi_chon)
     ]
 
+    # --- Lọc thêm theo khối lượng trung bình 20 phiên (bổ sung 01/08/2026):
+    #     loại bỏ các mã thanh khoản quá thấp — dữ liệu lấy từ
+    #     indicator_snapshot đã tính sẵn (KHÔNG cần chạy lại pipeline). ---
+    nguong_volume_toi_thieu = st.number_input(
+        "Khối lượng TB 20 phiên tối thiểu (cổ phiếu/phiên)",
+        value=500_000, min_value=0, step=50_000,
+        key="entry_screener_min_volume",
+        help="Loại bỏ khỏi danh sách các mã có khối lượng giao dịch trung bình "
+             "20 phiên THẤP HƠN ngưỡng này — tránh mã thanh khoản quá thấp, khó "
+             "vào/ra lệnh với khối lượng lớn.",
+    )
+    ma_can_kiem_tra_volume = [m["ma"] for m in danh_sach_loc]
+    volume_map = storage.get_latest_many("indicator_snapshot", ma_can_kiem_tra_volume)
+
+    danh_sach_sau_loc_volume = []
+    for m in danh_sach_loc:
+        snap = volume_map.get(m["ma"])
+        volume_ma20 = snap["data"].get("volume_ma_20") if snap else None
+        if volume_ma20 is not None and volume_ma20 >= nguong_volume_toi_thieu:
+            danh_sach_sau_loc_volume.append({**m, "volume_ma_20": volume_ma20})
+    so_bi_loai_vi_volume = len(danh_sach_loc) - len(danh_sach_sau_loc_volume)
+    danh_sach_loc = danh_sach_sau_loc_volume
+
+    if so_bi_loai_vi_volume > 0:
+        st.caption(
+            f"🔻 Đã loại {so_bi_loai_vi_volume} mã có khối lượng TB 20 phiên "
+            f"dưới {nguong_volume_toi_thieu:,.0f} cổ phiếu/phiên."
+        )
+
     danh_sach_ma_hien_co = [m["ma"] for m in danh_sach_loc]
     ma_da_loc_theo_tim_kiem = render_search_box_if_needed(
         danh_sach_ma_hien_co, key="entry_screener_search",
@@ -2114,6 +2169,7 @@ def render_entry_screener_section(storage: Storage) -> None:
             "Mã": m["ma"],
             "Ưu tiên": f"{uu_tien_emoji.get(m['xep_hang_uu_tien'], '')} {m['xep_hang_uu_tien']}",
             "Độ lệch EMA200": f"{m['do_lech_ema200_pct']:+.1f}%" if m["do_lech_ema200_pct"] is not None else "—",
+            "Volume TB 20 phiên": f"{m['volume_ma_20']:,.0f}" if m.get("volume_ma_20") is not None else "—",
             "Tiêu chí đạt": ", ".join(TIEU_CHI_KHA_DUNG.get(t, t) for t in m["tieu_chi_dat"]),
             "Sắp breakout": "🔶 Có" if m["sap_breakout"] else "—",
             "Mẫu hình": m["mau_hinh_kich_hoat"] or "—",
