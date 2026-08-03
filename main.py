@@ -44,7 +44,7 @@ import pandas as pd
 
 from backtest.backtest_engine import Trade  # noqa: F401 (tham chiếu cho phát triển sau)
 from core.capital_allocator import get_allocation_recommendation
-from core.data_collector import DataCollector, MockDataSource, VnstockDataSource
+from core.data_collector import BinanceDataSource, DataCollector, MockDataSource, VnstockDataSource
 from core.indicators import get_indicator_snapshot
 from core.market_regime_detector import detect_market_regime
 from core.notifier import Notifier, RealTelegramClient
@@ -92,6 +92,9 @@ def build_data_collector(config: dict) -> DataCollector:
     `data_source.adapter` trong config.yaml:
         - "mock"    -> dữ liệu giả lập (mặc định, an toàn, không cần mạng)
         - "vnstock" -> dữ liệu THẬT qua thư viện vnstock (cần: pip install vnstock)
+        - "binance" -> dữ liệu THẬT qua Binance Public API (cho XAUUSD/BTCUSD,
+          dùng bởi core/volatility_contraction_scanner.py — KHÔNG dùng cho
+          cổ phiếu Việt Nam, xem core/data_collector.py::BinanceDataSource)
 
     Muốn chuyển sang dữ liệu thật, sửa trong config.yaml:
         data_source:
@@ -104,11 +107,13 @@ def build_data_collector(config: dict) -> DataCollector:
         source = MockDataSource()
     elif adapter_name == "vnstock":
         source = VnstockDataSource()
+    elif adapter_name == "binance":
+        source = BinanceDataSource()
     else:
         raise ValueError(
             f"adapter '{adapter_name}' không được hỗ trợ. Chỉ chấp nhận "
-            f"'mock' hoặc 'vnstock'. Xem core/data_collector.py để thêm "
-            f"adapter mới."
+            f"'mock', 'vnstock' hoặc 'binance'. Xem core/data_collector.py "
+            f"để thêm adapter mới."
         )
 
     return DataCollector(source, config=data_source_cfg)
