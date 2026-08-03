@@ -4,7 +4,7 @@ on:
   schedule:
     # Chạy mỗi 30 phút, từ 2h00 đến 8h00 UTC (= 9h00-15h00 giờ Việt Nam),
     # CHỈ vào Thứ 2 - Thứ 6 (bỏ qua cuối tuần vì thị trường không giao dịch).
-    - cron: "*/30 2-8 * * 1-5"
+    - cron: "7,37 2-8 * * 1-5"
   # Cho phép bấm chạy TAY từ tab "Actions" trên GitHub để test thử ngay,
   # không cần đợi tới đúng lịch.
   workflow_dispatch:
