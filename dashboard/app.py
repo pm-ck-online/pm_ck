@@ -1,6 +1,6 @@
 """
 dashboard/app.py
-====
+==================
 [Giai đoạn 5 — Giao diện]
 
 Dashboard Streamlit hiển thị toàn cảnh hệ thống theo dõi & mô phỏng giao
@@ -189,18 +189,18 @@ def _resolve_db_path() -> str:
 DB_PATH = _resolve_db_path()
 
 
-# =
+# ==============================================================================
 # KẾT NỐI STORAGE (cache để không mở lại kết nối mỗi lần rerun)
-# =
+# ==============================================================================
 
 @st.cache_resource
 def load_storage(db_path: str = DB_PATH) -> Storage:
     return Storage(db_path=db_path)
 
 
-# =
+# ==============================================================================
 # PHẦN 1 — BẢNG GIÁ THEO DÕI (WATCHLIST) + CHỈ BÁO CHÍNH
-# =
+# ==============================================================================
 
 def _fmt_price(value) -> Optional[str]:
     """Định dạng giá cổ phiếu: 2 chữ số thập phân, có dấu phẩy phân cách
@@ -274,9 +274,9 @@ def render_watchlist_section(storage: Storage, symbols: list[str]) -> None:
     )
 
 
-# =
+# ==============================================================================
 # PHẦN 2 — BIỂU ĐỒ NẾN NHẬT + MA/EMA + KHỐI LƯỢNG
-# =
+# ==============================================================================
 
 def _load_ohlcv_history_df(storage: Storage, symbol: str) -> Optional[pd.DataFrame]:
     """Đọc lại lịch sử OHLCV đã lưu (từ main.py / run_full_market.py) và
@@ -639,9 +639,9 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
     )
 
 
-# =
+# ==============================================================================
 # PHẦN 2 — GIAI ĐOẠN THỊ TRƯỜNG HIỆN TẠI
-# =
+# ==============================================================================
 
 # Tên ngành song ngữ — khớp ĐÚNG các khóa tiếng Anh trong config.yaml
 # (watchlist.symbols). Dùng để hiển thị dạng "Tiếng Việt (english_key)"
@@ -786,9 +786,9 @@ def render_market_regime_section(storage: Storage) -> None:
         )
 
 
-# =
+# ==============================================================================
 # NHẬP DỮ LIỆU VĨ MÔ THỦ CÔNG (Fed Funds Rate / Tỷ giá USD-VND)
-# =
+# ==============================================================================
 
 MACRO_SERIES_LABELS = {
     "fed_rate": "1. Lãi suất Fed Funds Rate (%)",
@@ -1114,7 +1114,6 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             selected_id = st.selectbox(
                 "Chọn sự kiện cần sửa/xóa", list(options_nhan.keys()),
                 format_func=lambda eid: options_nhan[eid], key="edit_event_select",
-
             )
             selected_event_data = next(e for e in events if e["id"] == selected_id)
 
@@ -1156,53 +1155,10 @@ def render_manual_macro_data_section(storage: Storage) -> None:
                     st.success("Đã xóa sự kiện này.")
                     st.rerun()
 
-        st.divider()
-        st.markdown("##### Sự kiện Tài chính - Tiền tệ Toàn cầu (Nhóm B — mới bổ sung)")
-        st.caption(
-            "Dùng cho rủi ro KHÁC xung đột quân sự — vd: can thiệp tỷ giá lớn, "
-            "nguy cơ carry-trade unwind, khủng hoảng ngân hàng khu vực. Có thể "
-            "TỒN TẠI ĐỒNG THỜI với sự kiện địa chính trị ở trên — hệ thống sẽ tự "
-            "lấy mức XẤU NHẤT giữa 2 nhóm, không cộng dồn."
-        )
-        FINANCIAL_EVENT_OPTIONS = {
-            "binh_thuong": "Bình thường — không có rủi ro nổi bật",
-            "canh_bao_som": "Cảnh báo sớm (đang có biện pháp ngăn chặn)",
-            "dau_hieu_unwind": "Bắt đầu có dấu hiệu rút vốn/unwind thực tế",
-            "khung_hoang_toan_dien": "Khủng hoảng toàn diện đã xảy ra",
-            "can_thiep_thanh_cong": "Can thiệp thành công, ổn định trở lại",
-            "giai_toa_xac_nhan": "Rủi ro giải tỏa hoàn toàn, đã xác nhận",
-        }
-        current_fin_record = storage.get_latest("manual_macro_setting", "financial_event")
-        current_fin_key = (
-            current_fin_record["data"]["muc_do"] if current_fin_record else "binh_thuong"
-        )
-        fin_keys = list(FINANCIAL_EVENT_OPTIONS.keys())
-        fin_index = fin_keys.index(current_fin_key) if current_fin_key in fin_keys else 0
-
-        selected_fin_event = st.selectbox(
-            "Mức độ sự kiện tài chính-tiền tệ hiện tại", fin_keys,
-            index=fin_index, format_func=lambda k: FINANCIAL_EVENT_OPTIONS[k], key="fin_event_select",
-        )
-        fin_event_note = st.text_area("Ghi chú (tùy chọn)", key="fin_event_note")
-        if st.button("Cập nhật sự kiện tài chính-tiền tệ", key="update_fin_event_btn"):
-            storage.save("manual_macro_setting", "financial_event", {
-                "muc_do": selected_fin_event, "note": fin_event_note,
-                "updated_date": date_cls.today().isoformat(),
-            })
-            st.success(f"Đã cập nhật: {FINANCIAL_EVENT_OPTIONS[selected_fin_event]}.")
-            st.rerun()
-
-        if current_fin_record:
-            st.info(
-                f"Trạng thái hiện tại: **{FINANCIAL_EVENT_OPTIONS[current_fin_key]}** "
-                f"(cập nhật lần cuối: {current_fin_record['data'].get('updated_date', '—')})"
-            )
-
     # --- Rà soát: hiển thị chi tiết công thức tính điểm vĩ mô ---
     with st.expander("🔍 Rà soát chi tiết công thức tính điểm vĩ mô"):
         from core.macro_score_engine import DEFAULT_WEIGHTS
-        from core.macro_score_event_bridge import calculate_macro_score_v2, su_kien_dia_chinh_tri_tu_nhan_cu
-        from core.event_risk_classifier import SuKien, NHOM_TAI_CHINH_TIEN_TE
+        from core.macro_score_engine import calculate_macro_score as calc_macro_v2
         from core.manual_macro_data import build_full_macro_score_engine_input
 
         def _load(key):
@@ -1211,15 +1167,8 @@ def render_manual_macro_data_section(storage: Storage) -> None:
 
         target_record = storage.get_latest("manual_macro_setting", "cpi_vn_target")
         muc_tieu = target_record["data"]["value"] if target_record else None
-
-        geo_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
-        geo_key_current = geo_record["data"]["event_key"] if geo_record else "none"
-        fin_record = storage.get_latest("manual_macro_setting", "financial_event")
-        fin_muc_do_current = fin_record["data"]["muc_do"] if fin_record else "binh_thuong"
-
-        cac_su_kien = [su_kien_dia_chinh_tri_tu_nhan_cu(geo_key_current)]
-        if fin_muc_do_current != "binh_thuong":
-            cac_su_kien.append(SuKien(nhom=NHOM_TAI_CHINH_TIEN_TE, muc_do=fin_muc_do_current))
+        event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
+        event_key_current = event_record["data"]["event_key"] if event_record else None
 
         macro_input = build_full_macro_score_engine_input(
             _load("fed_rate"), _load("usdvnd_rate"),
@@ -1227,9 +1176,9 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             muc_tieu_cpi_vn=muc_tieu,
             interbank_overnight_series=_load("interbank_overnight"),
             interbank_3m_series=_load("interbank_3m"),
-            event_key="none",
+            event_key=event_key_current,
         )
-        result = calculate_macro_score_v2(macro_input, cac_su_kien=cac_su_kien)
+        result = calc_macro_v2(macro_input)
 
         st.markdown("**Input đã tổng hợp** (nhóm chưa nhập dùng giá trị trung tính mặc định):")
         st.json(macro_input, expanded=False)
@@ -1251,6 +1200,60 @@ def render_manual_macro_data_section(storage: Storage) -> None:
         st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
         st.metric("Macro Score tổng", f"{result['macro_score']:+.3f}", result["nhan"])
+
+
+def render_vcp_scan_section(storage: Storage) -> None:
+    """Hiển thị kết quả rà soát mô hình co hẹp biên độ (Volatility
+    Contraction Pattern — VCP) cho XAUUSD (qua PAXGUSDT) và BTC/USD (qua
+    BTCUSDT) — `core.volatility_contraction_scanner`, dữ liệu do
+    `update_vcp.py` tính và lưu định kỳ.
+
+    CHỈ RÀ SOÁT MẪU HÌNH KỸ THUẬT THAM KHẢO — KHÔNG phải tín hiệu giao
+    dịch hay khuyến nghị đầu tư.
+    """
+    st.subheader("📉 Rà soát mô hình co hẹp (XAUUSD/BTC)")
+    st.caption(
+        "⚠️ Rà soát mẫu hình kỹ thuật THAM KHẢO cho vàng thế giới (qua PAXGUSDT — "
+        "token bảo chứng 1:1 bằng vàng vật chất trên Binance) và Bitcoin (qua "
+        "BTCUSDT) — KHÔNG phải tín hiệu giao dịch hay khuyến nghị đầu tư. Vàng và "
+        "Bitcoin đều là tài sản biến động mạnh, mô hình co hẹp không đảm bảo "
+        "hướng breakout sẽ xảy ra theo chiều nào."
+    )
+
+    for symbol, ten_hien_thi in [("XAUUSD", "🥇 Vàng thế giới (XAUUSD)"), ("BTCUSD", "₿ Bitcoin (BTC/USD)")]:
+        record = storage.get_latest("vcp_scan_result", symbol)
+        if record is None:
+            st.info(f"{ten_hien_thi}: chưa có dữ liệu. Chạy `update_vcp.py` trước.")
+            continue
+
+        data = record["data"]
+        xac_nhan = data.get("xac_nhan_co_hep")
+        icon = "🟢" if xac_nhan else "⚪"
+
+        with st.expander(
+            f"{icon} {ten_hien_thi} — khung {data.get('khung_thoi_gian_da_chon', '—')} "
+            f"— {'XÁC NHẬN co hẹp' if xac_nhan else 'chưa xác nhận co hẹp'}"
+        ):
+            if data.get("canh_bao"):
+                st.warning(data["canh_bao"])
+
+            chuoi_bac = data.get("chuoi_bac_bien_do") or []
+            if chuoi_bac:
+                st.markdown("**Chuỗi biên độ (cũ → mới):** " + " → ".join(chuoi_bac))
+
+            col1, col2 = st.columns(2)
+            with col1:
+                ty_le_giam = data.get("ty_le_giam_tong_the_pct")
+                st.metric("Tỷ lệ giảm biên độ tổng thể", f"{ty_le_giam:.1f}%" if ty_le_giam is not None else "—")
+            with col2:
+                ma20 = data.get("doi_chieu_ma20", {}) or {}
+                xu_huong = ma20.get("ma20_xu_huong") or "—"
+                st.metric("Xu hướng MA20", xu_huong)
+
+            ngay_danh_gia = data.get("ngay_danh_gia", "—")
+            st.caption(f"Ngày đánh giá: {ngay_danh_gia}")
+            if data.get("canh_bao_phap_ly"):
+                st.caption(data["canh_bao_phap_ly"])
 
 
 def _assess_sub_score(sub_score: float) -> tuple[str, str]:
@@ -1275,8 +1278,7 @@ def render_market_summary_report_section(storage: Storage) -> None:
 
     from core.capital_allocation_engine import ALLOCATION_TABLE, calculate_stock_allocation_pct
     from core.macro_score_engine import DEFAULT_WEIGHTS
-    from core.macro_score_event_bridge import calculate_macro_score_v2, su_kien_dia_chinh_tri_tu_nhan_cu
-    from core.event_risk_classifier import SuKien, NHOM_TAI_CHINH_TIEN_TE
+    from core.macro_score_engine import calculate_macro_score as calc_macro_v2
     from core.manual_macro_data import build_full_macro_score_engine_input
     from core.market_breadth import aggregate_layer3_indicators_for_group, calculate_ema200_breadth
     from core.market_regime_detector import detect_market_regime_quant
@@ -1288,18 +1290,9 @@ def render_market_summary_report_section(storage: Storage) -> None:
 
     target_record = storage.get_latest("manual_macro_setting", "cpi_vn_target")
     muc_tieu = target_record["data"]["value"] if target_record else None
-
-    geo_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
-    geo_key_current = geo_record["data"]["event_key"] if geo_record else "none"
-    geo_note = geo_record["data"].get("note", "") if geo_record else ""
-
-    fin_record = storage.get_latest("manual_macro_setting", "financial_event")
-    fin_muc_do_current = fin_record["data"]["muc_do"] if fin_record else "binh_thuong"
-    fin_note = fin_record["data"].get("note", "") if fin_record else ""
-
-    cac_su_kien = [su_kien_dia_chinh_tri_tu_nhan_cu(geo_key_current)]
-    if fin_muc_do_current != "binh_thuong":
-        cac_su_kien.append(SuKien(nhom=NHOM_TAI_CHINH_TIEN_TE, muc_do=fin_muc_do_current))
+    event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
+    event_key_current = event_record["data"]["event_key"] if event_record else "none"
+    event_note = event_record["data"].get("note", "") if event_record else ""
 
     macro_input = build_full_macro_score_engine_input(
         _load("fed_rate"), _load("usdvnd_rate"),
@@ -1307,10 +1300,9 @@ def render_market_summary_report_section(storage: Storage) -> None:
         muc_tieu_cpi_vn=muc_tieu,
         interbank_overnight_series=_load("interbank_overnight"),
         interbank_3m_series=_load("interbank_3m"),
-        event_key="none",
+        event_key=event_key_current,
     )
-    macro_result = calculate_macro_score_v2(macro_input, cac_su_kien=cac_su_kien)
-    event_note = f"Địa chính trị: {geo_note or '—'} | Tài chính-tiền tệ: {fin_note or '—'}"
+    macro_result = calc_macro_v2(macro_input)
 
     st.markdown("### Lớp 1 — Điểm vĩ mô (Macro Score)")
     rows = []
@@ -1479,9 +1471,9 @@ def render_market_regime_quant_section(storage: Storage) -> None:
     )
 
 
-# =
+# ==============================================================================
 # PHẦN 3 — KHUYẾN NGHỊ PHÂN BỔ VỐN
-# =
+# ==============================================================================
 
 def render_allocation_section(storage: Storage, symbols: list[str]) -> None:
     st.subheader("💰 Khuyến nghị phân bổ vốn")
@@ -1599,9 +1591,9 @@ def render_capital_allocation_v2_section(storage: Storage, symbols: list[str]) -
     )
 
 
-# =
+# ==============================================================================
 # PHẦN 4 — MÃ CÓ MÔ HÌNH THU HẸP BIÊN ĐỘ (sắp xếp theo confidence giảm dần)
-# =
+# ==============================================================================
 
 def render_pattern_section(storage: Storage, symbols: Optional[list[str]] = None) -> None:
     st.subheader("📐 Mã đang có mô hình thu hẹp biên độ")
@@ -1953,9 +1945,9 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
         )
 
 
-# =
+# ==============================================================================
 # PHẦN 5 — HIỆU SUẤT DANH MỤC MÔ PHỎNG
-# =
+# ==============================================================================
 
 def render_entry_screener_section(storage: Storage) -> None:
     """Hiển thị báo cáo rà soát danh sách vào lệnh ngắn hạn
@@ -2412,9 +2404,9 @@ def render_portfolio_section(storage: Storage, portfolio_key: str = "default") -
         st.dataframe(pd.DataFrame(positions), width='stretch', hide_index=True)
 
 
-# =
+# ==============================================================================
 # QUẢN LÝ WATCHLIST (lưu bền qua storage — không cần gõ tay lại mỗi lần)
-# =
+# ==============================================================================
 
 DEFAULT_WATCHLIST = ["HPG", "VNM", "FPT"]
 
@@ -2635,9 +2627,9 @@ def render_watchlist_manager_section(storage: Storage) -> None:
     )
 
 
-# =
+# ==============================================================================
 # NHẬT KÝ GIAO DỊCH MUA/BÁN (mô phỏng)
-# =
+# ==============================================================================
 
 def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
     st.subheader("📒 Nhật ký giao dịch mua/bán (mô phỏng)")
@@ -2779,9 +2771,9 @@ def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
     col3.metric("Số lệnh đang mở", summary["n_open"])
 
 
-# =
+# ==============================================================================
 # MAIN — lắp ráp toàn bộ dashboard
-# =
+# ==============================================================================
 
 # Danh sách nhãn các mục (đúng thứ tự hiển thị) — dùng cho menu điều
 # hướng nhanh ở sidebar. Định nghĩa hàm/tham số thực tế nằm trong main()
@@ -2794,6 +2786,7 @@ def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
 DASHBOARD_GROUPS = [
     ("NHÓM 1 — VĨ MÔ (THẾ GIỚI + VIỆT NAM)", [
         "🌍 Nhập dữ liệu vĩ mô thủ công",
+        "📉 Rà soát mô hình co hẹp (XAUUSD/BTC)",
     ]),
     ("NHÓM 2 — THỊ TRƯỜNG CHUNG", [
         "🌐 Giai đoạn thị trường (định tính)",
@@ -2916,6 +2909,7 @@ def main() -> None:
         ("📒 Nhật ký giao dịch mua/bán", render_trade_journal_section, (storage, symbols)),
         ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage,)),
         ("🌍 Nhập dữ liệu vĩ mô thủ công", render_manual_macro_data_section, (storage,)),
+        ("📉 Rà soát mô hình co hẹp (XAUUSD/BTC)", render_vcp_scan_section, (storage,)),
         ("📋 Báo cáo tổng hợp thị trường chung", render_market_summary_report_section, (storage,)),
         ("📐 Giai đoạn thị trường (3 lớp định lượng)", render_market_regime_quant_section, (storage,)),
         ("📦 Khuyến nghị phân bổ vốn (đơn giản)", render_allocation_section, (storage, symbols)),
