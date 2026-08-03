@@ -838,53 +838,10 @@ def render_manual_macro_data_section(storage: Storage) -> None:
                 f"(cập nhật lần cuối: {current_event_record['data'].get('updated_date', '—')})"
             )
 
-        st.divider()
-        st.markdown("##### Sự kiện Tài chính - Tiền tệ Toàn cầu (Nhóm B — mới bổ sung)")
-        st.caption(
-            "Dùng cho rủi ro KHÁC xung đột quân sự — vd: can thiệp tỷ giá lớn, "
-            "nguy cơ carry-trade unwind, khủng hoảng ngân hàng khu vực. Có thể "
-            "TỒN TẠI ĐỒNG THỜI với sự kiện địa chính trị ở trên — hệ thống sẽ tự "
-            "lấy mức XẤU NHẤT giữa 2 nhóm, không cộng dồn."
-        )
-        FINANCIAL_EVENT_OPTIONS = {
-            "binh_thuong": "Bình thường — không có rủi ro nổi bật",
-            "canh_bao_som": "Cảnh báo sớm (đang có biện pháp ngăn chặn)",
-            "dau_hieu_unwind": "Bắt đầu có dấu hiệu rút vốn/unwind thực tế",
-            "khung_hoang_toan_dien": "Khủng hoảng toàn diện đã xảy ra",
-            "can_thiep_thanh_cong": "Can thiệp thành công, ổn định trở lại",
-            "giai_toa_xac_nhan": "Rủi ro giải tỏa hoàn toàn, đã xác nhận",
-        }
-        current_fin_record = storage.get_latest("manual_macro_setting", "financial_event")
-        current_fin_key = (
-            current_fin_record["data"]["muc_do"] if current_fin_record else "binh_thuong"
-        )
-        fin_keys = list(FINANCIAL_EVENT_OPTIONS.keys())
-        fin_index = fin_keys.index(current_fin_key) if current_fin_key in fin_keys else 0
-
-        selected_fin_event = st.selectbox(
-            "Mức độ sự kiện tài chính-tiền tệ hiện tại", fin_keys,
-            index=fin_index, format_func=lambda k: FINANCIAL_EVENT_OPTIONS[k], key="fin_event_select",
-        )
-        fin_event_note = st.text_area("Ghi chú (tùy chọn)", key="fin_event_note")
-        if st.button("Cập nhật sự kiện tài chính-tiền tệ", key="update_fin_event_btn"):
-            storage.save("manual_macro_setting", "financial_event", {
-                "muc_do": selected_fin_event, "note": fin_event_note,
-                "updated_date": date_cls.today().isoformat(),
-            })
-            st.success(f"Đã cập nhật: {FINANCIAL_EVENT_OPTIONS[selected_fin_event]}.")
-            st.rerun()
-
-        if current_fin_record:
-            st.info(
-                f"Trạng thái hiện tại: **{FINANCIAL_EVENT_OPTIONS[current_fin_key]}** "
-                f"(cập nhật lần cuối: {current_fin_record['data'].get('updated_date', '—')})"
-            )
-
     # --- Rà soát: hiển thị chi tiết công thức tính điểm vĩ mô ---
     with st.expander("🔍 Rà soát chi tiết công thức tính điểm vĩ mô"):
         from core.macro_score_engine import DEFAULT_WEIGHTS
-        from core.macro_score_event_bridge import calculate_macro_score_v2, su_kien_dia_chinh_tri_tu_nhan_cu
-        from core.event_risk_classifier import SuKien, NHOM_TAI_CHINH_TIEN_TE
+        from core.macro_score_engine import calculate_macro_score as calc_macro_v2
         from core.manual_macro_data import build_full_macro_score_engine_input
 
         def _load(key):
@@ -893,15 +850,8 @@ def render_manual_macro_data_section(storage: Storage) -> None:
 
         target_record = storage.get_latest("manual_macro_setting", "cpi_vn_target")
         muc_tieu = target_record["data"]["value"] if target_record else None
-
-        geo_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
-        geo_key_current = geo_record["data"]["event_key"] if geo_record else "none"
-        fin_record = storage.get_latest("manual_macro_setting", "financial_event")
-        fin_muc_do_current = fin_record["data"]["muc_do"] if fin_record else "binh_thuong"
-
-        cac_su_kien = [su_kien_dia_chinh_tri_tu_nhan_cu(geo_key_current)]
-        if fin_muc_do_current != "binh_thuong":
-            cac_su_kien.append(SuKien(nhom=NHOM_TAI_CHINH_TIEN_TE, muc_do=fin_muc_do_current))
+        event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
+        event_key_current = event_record["data"]["event_key"] if event_record else None
 
         macro_input = build_full_macro_score_engine_input(
             _load("fed_rate"), _load("usdvnd_rate"),
@@ -909,9 +859,9 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             muc_tieu_cpi_vn=muc_tieu,
             interbank_overnight_series=_load("interbank_overnight"),
             interbank_3m_series=_load("interbank_3m"),
-            event_key="none",
+            event_key=event_key_current,
         )
-        result = calculate_macro_score_v2(macro_input, cac_su_kien=cac_su_kien)
+        result = calc_macro_v2(macro_input)
 
         st.markdown("**Input đã tổng hợp** (nhóm chưa nhập dùng giá trị trung tính mặc định):")
         st.json(macro_input, expanded=False)
@@ -957,8 +907,7 @@ def render_market_summary_report_section(storage: Storage) -> None:
 
     from core.capital_allocation_engine import ALLOCATION_TABLE, calculate_stock_allocation_pct
     from core.macro_score_engine import DEFAULT_WEIGHTS
-    from core.macro_score_event_bridge import calculate_macro_score_v2, su_kien_dia_chinh_tri_tu_nhan_cu
-    from core.event_risk_classifier import SuKien, NHOM_TAI_CHINH_TIEN_TE
+    from core.macro_score_engine import calculate_macro_score as calc_macro_v2
     from core.manual_macro_data import build_full_macro_score_engine_input
     from core.market_breadth import aggregate_layer3_indicators_for_group, calculate_ema200_breadth
     from core.market_regime_detector import detect_market_regime_quant
@@ -970,18 +919,9 @@ def render_market_summary_report_section(storage: Storage) -> None:
 
     target_record = storage.get_latest("manual_macro_setting", "cpi_vn_target")
     muc_tieu = target_record["data"]["value"] if target_record else None
-
-    geo_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
-    geo_key_current = geo_record["data"]["event_key"] if geo_record else "none"
-    geo_note = geo_record["data"].get("note", "") if geo_record else ""
-
-    fin_record = storage.get_latest("manual_macro_setting", "financial_event")
-    fin_muc_do_current = fin_record["data"]["muc_do"] if fin_record else "binh_thuong"
-    fin_note = fin_record["data"].get("note", "") if fin_record else ""
-
-    cac_su_kien = [su_kien_dia_chinh_tri_tu_nhan_cu(geo_key_current)]
-    if fin_muc_do_current != "binh_thuong":
-        cac_su_kien.append(SuKien(nhom=NHOM_TAI_CHINH_TIEN_TE, muc_do=fin_muc_do_current))
+    event_record = storage.get_latest("manual_macro_setting", "geopolitical_event")
+    event_key_current = event_record["data"]["event_key"] if event_record else "none"
+    event_note = event_record["data"].get("note", "") if event_record else ""
 
     macro_input = build_full_macro_score_engine_input(
         _load("fed_rate"), _load("usdvnd_rate"),
@@ -989,10 +929,9 @@ def render_market_summary_report_section(storage: Storage) -> None:
         muc_tieu_cpi_vn=muc_tieu,
         interbank_overnight_series=_load("interbank_overnight"),
         interbank_3m_series=_load("interbank_3m"),
-        event_key="none",
+        event_key=event_key_current,
     )
-    macro_result = calculate_macro_score_v2(macro_input, cac_su_kien=cac_su_kien)
-    event_note = f"Địa chính trị: {geo_note or '—'} | Tài chính-tiền tệ: {fin_note or '—'}"
+    macro_result = calc_macro_v2(macro_input)
 
     st.markdown("### Lớp 1 — Điểm vĩ mô (Macro Score)")
     rows = []
