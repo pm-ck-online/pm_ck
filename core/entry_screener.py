@@ -323,3 +323,132 @@ def quet_danh_sach_cho(danh_sach_ma_info: list[dict], tieu_chi_da_chon: list[str
             "trước khi ra quyết định vào lệnh cụ thể."
         ),
     }
+
+
+# ==============================================================================
+# MỤC 7 (BỔ SUNG 03/08/2026) — THỐNG KÊ XÁC SUẤT TĂNG/GIẢM THEO BẬC %,
+# DỰA TRÊN TÌNH HUỐNG TƯƠNG TỰ TRONG LỊCH SỬ CỦA CHÍNH MÃ ĐÓ
+# ==============================================================================
+
+# Các bậc % dùng để phân loại mức tăng/giảm sau `so_phien_du_bao` phiên.
+BAC_TANG_GIAM = [
+    ("giam_tren_15", -float("inf"), -15.0, "Giảm > 15%"),
+    ("giam_10_15", -15.0, -10.0, "Giảm 10-15%"),
+    ("giam_5_10", -10.0, -5.0, "Giảm 5-10%"),
+    ("giam_0_5", -5.0, 0.0, "Giảm 0-5%"),
+    ("tang_0_5", 0.0, 5.0, "Tăng 0-5%"),
+    ("tang_5_10", 5.0, 10.0, "Tăng 5-10%"),
+    ("tang_10_15", 10.0, 15.0, "Tăng 10-15%"),
+    ("tang_tren_15", 15.0, float("inf"), "Tăng > 15%"),
+]
+
+
+def _xac_dinh_bac(pct_thay_doi: float) -> str:
+    for key, lo, hi, _ in BAC_TANG_GIAM:
+        if lo < pct_thay_doi <= hi or (lo == -float("inf") and pct_thay_doi <= hi):
+            return key
+    return BAC_TANG_GIAM[-1][0]  # fallback: giá trị cực lớn -> "tang_tren_15"
+
+
+def tinh_thong_ke_tang_giam_lich_su(
+    df_ohlcv: pd.DataFrame,
+    tieu_chi_dat: list[str],
+    so_phien_du_bao: int = 30,
+    so_phien_kiem_tra: int = 250,
+) -> dict:
+    """Với CHÍNH mã đang xét, quét lại lịch sử giá để tìm các thời điểm
+    TRONG QUÁ KHỨ mã này từng thỏa CÙNG bộ tiêu chí (`tieu_chi_dat`) như
+    hiện tại — rồi thống kê % thay đổi giá sau đúng `so_phien_du_bao`
+    phiên kể từ mỗi thời điểm đó, phân theo các bậc % (xem `BAC_TANG_GIAM`).
+
+    PHẠM VI ĐÃ THU HẸP CÓ CHỦ Ý: chỉ phát lại 2 tiêu chí tính NHANH
+    ("dieu_kien_nen_ema200", "tich_luy_dai_han") — 2 tiêu chí còn lại
+    ("dao_dong_tat_dan", "volume_breakout") cần quét lại mô hình thu hẹp
+    biên độ trên tới 30 tháng dữ liệu MỖI LẦN gọi
+    (`pattern_detector.detect_narrowing_pattern`), quá chậm nếu phát lại
+    hàng trăm lần trong 1 lượt tính cho dashboard — nên KHÔNG được phát
+    lại ở đây. Nếu mã CHỈ đạt 2 tiêu chí này (không có tiêu chí nhanh
+    nào), hàm trả về cỡ mẫu = 0 kèm ghi chú rõ ràng, KHÔNG suy diễn.
+
+    Đây là TẦN SUẤT THỰC NGHIỆM từ lịch sử, KHÔNG phải xác suất dự báo
+    tương lai được đảm bảo — luôn báo cáo kèm cỡ mẫu.
+    """
+    TIEU_CHI_NHANH = {"dieu_kien_nen_ema200", "tich_luy_dai_han"}
+    tieu_chi_su_dung = [t for t in tieu_chi_dat if t in TIEU_CHI_NHANH]
+
+    if not tieu_chi_su_dung:
+        return {
+            "so_lan_quan_sat": 0,
+            "ghi_chu": (
+                "Mã này chỉ đạt tiêu chí 'Mô hình thu hẹp biên độ' và/hoặc "
+                "'Khối lượng breakout' — 2 tiêu chí này KHÔNG được phát lại "
+                "trong thống kê lịch sử (quá chậm để tính hàng loạt), nên "
+                "không có số liệu thống kê cho mã này."
+            ),
+            "phan_bo": {},
+        }
+
+    if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < 200:
+        return {"so_lan_quan_sat": 0, "ghi_chu": "Chưa đủ dữ liệu lịch sử (cần tối thiểu 200 phiên).", "phan_bo": {}}
+
+    from core.indicators import calculate_ema
+
+    n = len(df_ohlcv)
+    ema200_series = calculate_ema(df_ohlcv, period=200)
+    closes = df_ohlcv["close"]
+
+    start = 200
+    end = n - so_phien_du_bao  # cần đủ dữ liệu TƯƠNG LAI để đo % thay đổi
+    start = min(start, max(0, n - so_phien_kiem_tra))
+
+    ket_qua_tung_lan: list[float] = []
+    for i in range(start, max(start, end)):
+        ema200_i = ema200_series.iloc[i]
+        if pd.isna(ema200_i) or ema200_i <= 0:
+            continue
+        close_i = float(closes.iloc[i])
+
+        dat_dieu_kien = False
+        if "dieu_kien_nen_ema200" in tieu_chi_su_dung:
+            do_lech = (close_i - ema200_i) / ema200_i * 100
+            if do_lech >= -10.0:
+                dat_dieu_kien = True
+
+        if not dat_dieu_kien and "tich_luy_dai_han" in tieu_chi_su_dung:
+            tich_luy = kiem_tra_tich_luy_dai_han(df_ohlcv.iloc[: i + 1])
+            if tich_luy.get("dat"):
+                dat_dieu_kien = True
+
+        if not dat_dieu_kien:
+            continue
+
+        close_sau = float(closes.iloc[i + so_phien_du_bao])
+        pct_thay_doi = (close_sau - close_i) / close_i * 100
+        ket_qua_tung_lan.append(pct_thay_doi)
+
+    so_lan = len(ket_qua_tung_lan)
+    if so_lan == 0:
+        return {
+            "so_lan_quan_sat": 0,
+            "ghi_chu": "Không tìm thấy tình huống tương tự nào trong lịch sử đã quét.",
+            "phan_bo": {},
+        }
+
+    phan_bo = {}
+    for key, _, _, nhan in BAC_TANG_GIAM:
+        so_lan_bac = sum(1 for x in ket_qua_tung_lan if _xac_dinh_bac(x) == key)
+        phan_bo[key] = {
+            "nhan": nhan,
+            "so_lan": so_lan_bac,
+            "ty_le_pct": round(so_lan_bac / so_lan * 100, 1),
+        }
+
+    return {
+        "so_lan_quan_sat": so_lan,
+        "phan_bo": phan_bo,
+        "pct_thay_doi_trung_binh": round(sum(ket_qua_tung_lan) / so_lan, 2),
+        "ghi_chu": (
+            f"Dựa trên {so_lan} lần trong quá khứ mã này thỏa tiêu chí: "
+            + ", ".join(TIEU_CHI_KHA_DUNG.get(t, t) for t in tieu_chi_su_dung)
+        ),
+    }
