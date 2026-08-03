@@ -1,6 +1,6 @@
 """
 dashboard/app.py
-==================
+====
 [Giai đoạn 5 — Giao diện]
 
 Dashboard Streamlit hiển thị toàn cảnh hệ thống theo dõi & mô phỏng giao
@@ -189,18 +189,18 @@ def _resolve_db_path() -> str:
 DB_PATH = _resolve_db_path()
 
 
-# ==============================================================================
+# =
 # KẾT NỐI STORAGE (cache để không mở lại kết nối mỗi lần rerun)
-# ==============================================================================
+# =
 
 @st.cache_resource
 def load_storage(db_path: str = DB_PATH) -> Storage:
     return Storage(db_path=db_path)
 
 
-# ==============================================================================
+# =
 # PHẦN 1 — BẢNG GIÁ THEO DÕI (WATCHLIST) + CHỈ BÁO CHÍNH
-# ==============================================================================
+# =
 
 def _fmt_price(value) -> Optional[str]:
     """Định dạng giá cổ phiếu: 2 chữ số thập phân, có dấu phẩy phân cách
@@ -274,9 +274,9 @@ def render_watchlist_section(storage: Storage, symbols: list[str]) -> None:
     )
 
 
-# ==============================================================================
+# =
 # PHẦN 2 — BIỂU ĐỒ NẾN NHẬT + MA/EMA + KHỐI LƯỢNG
-# ==============================================================================
+# =
 
 def _load_ohlcv_history_df(storage: Storage, symbol: str) -> Optional[pd.DataFrame]:
     """Đọc lại lịch sử OHLCV đã lưu (từ main.py / run_full_market.py) và
@@ -639,9 +639,9 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
     )
 
 
-# ==============================================================================
+# =
 # PHẦN 2 — GIAI ĐOẠN THỊ TRƯỜNG HIỆN TẠI
-# ==============================================================================
+# =
 
 # Tên ngành song ngữ — khớp ĐÚNG các khóa tiếng Anh trong config.yaml
 # (watchlist.symbols). Dùng để hiển thị dạng "Tiếng Việt (english_key)"
@@ -786,9 +786,9 @@ def render_market_regime_section(storage: Storage) -> None:
         )
 
 
-# ==============================================================================
+# =
 # NHẬP DỮ LIỆU VĨ MÔ THỦ CÔNG (Fed Funds Rate / Tỷ giá USD-VND)
-# ==============================================================================
+# =
 
 MACRO_SERIES_LABELS = {
     "fed_rate": "1. Lãi suất Fed Funds Rate (%)",
@@ -1114,6 +1114,7 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             selected_id = st.selectbox(
                 "Chọn sự kiện cần sửa/xóa", list(options_nhan.keys()),
                 format_func=lambda eid: options_nhan[eid], key="edit_event_select",
+
             )
             selected_event_data = next(e for e in events if e["id"] == selected_id)
 
@@ -1195,7 +1196,48 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             st.info(
                 f"Trạng thái hiện tại: **{FINANCIAL_EVENT_OPTIONS[current_fin_key]}** "
                 f"(cập nhật lần cuối: {current_fin_record['data'].get('updated_date', '—')})"
+
+
             )
+            selected_event_data = next(e for e in events if e["id"] == selected_id)
+
+            col_edit1, col_edit2 = st.columns(2)
+            with col_edit1:
+                edit_event_key = st.selectbox(
+                    "Mức độ sự kiện", list(EVENT_OPTIONS.keys()),
+                    index=list(EVENT_OPTIONS.keys()).index(selected_event_data["event_key"])
+                    if selected_event_data["event_key"] in EVENT_OPTIONS else 0,
+                    format_func=lambda k: EVENT_OPTIONS[k], key=f"edit_event_key_{selected_id}",
+                )
+            with col_edit2:
+                edit_start_date = st.date_input(
+                    "Ngày bắt đầu sự kiện",
+                    value=date_cls.fromisoformat(selected_event_data["start_date"]),
+                    key=f"edit_event_date_{selected_id}",
+                )
+            edit_note = st.text_area(
+                "Ghi chú (tùy chọn)", value=selected_event_data.get("note", ""),
+                key=f"edit_event_note_{selected_id}",
+            )
+
+            col_save, col_del = st.columns(2)
+            with col_save:
+                if st.button("💾 Lưu thay đổi cho sự kiện này", key=f"save_event_btn_{selected_id}"):
+                    storage.save(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id, {
+                        "event_key": edit_event_key,
+                        "start_date": edit_start_date.isoformat(),
+                        "note": edit_note,
+                        "created_at": selected_event_data.get("created_at", date_cls.today().isoformat()),
+                    })
+                    _sync_current_geopolitical_event(storage)
+                    st.success("Đã lưu thay đổi.")
+                    st.rerun()
+            with col_del:
+                if st.button("🗑️ Xóa sự kiện này", key=f"delete_event_btn_{selected_id}"):
+                    storage.delete_key(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id)
+                    _sync_current_geopolitical_event(storage)
+                    st.success("Đã xóa sự kiện này.")
+                    st.rerun()
 
     # --- Rà soát: hiển thị chi tiết công thức tính điểm vĩ mô ---
     with st.expander("🔍 Rà soát chi tiết công thức tính điểm vĩ mô"):
@@ -1478,9 +1520,9 @@ def render_market_regime_quant_section(storage: Storage) -> None:
     )
 
 
-# ==============================================================================
+# =
 # PHẦN 3 — KHUYẾN NGHỊ PHÂN BỔ VỐN
-# ==============================================================================
+# =
 
 def render_allocation_section(storage: Storage, symbols: list[str]) -> None:
     st.subheader("💰 Khuyến nghị phân bổ vốn")
@@ -1598,9 +1640,9 @@ def render_capital_allocation_v2_section(storage: Storage, symbols: list[str]) -
     )
 
 
-# ==============================================================================
+# =
 # PHẦN 4 — MÃ CÓ MÔ HÌNH THU HẸP BIÊN ĐỘ (sắp xếp theo confidence giảm dần)
-# ==============================================================================
+# =
 
 def render_pattern_section(storage: Storage, symbols: Optional[list[str]] = None) -> None:
     st.subheader("📐 Mã đang có mô hình thu hẹp biên độ")
@@ -1952,9 +1994,9 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
         )
 
 
-# ==============================================================================
+# =
 # PHẦN 5 — HIỆU SUẤT DANH MỤC MÔ PHỎNG
-# ==============================================================================
+# =
 
 def render_entry_screener_section(storage: Storage) -> None:
     """Hiển thị báo cáo rà soát danh sách vào lệnh ngắn hạn
@@ -2411,9 +2453,9 @@ def render_portfolio_section(storage: Storage, portfolio_key: str = "default") -
         st.dataframe(pd.DataFrame(positions), width='stretch', hide_index=True)
 
 
-# ==============================================================================
+# =
 # QUẢN LÝ WATCHLIST (lưu bền qua storage — không cần gõ tay lại mỗi lần)
-# ==============================================================================
+# =
 
 DEFAULT_WATCHLIST = ["HPG", "VNM", "FPT"]
 
@@ -2634,9 +2676,9 @@ def render_watchlist_manager_section(storage: Storage) -> None:
     )
 
 
-# ==============================================================================
+# =
 # NHẬT KÝ GIAO DỊCH MUA/BÁN (mô phỏng)
-# ==============================================================================
+# =
 
 def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
     st.subheader("📒 Nhật ký giao dịch mua/bán (mô phỏng)")
@@ -2778,9 +2820,9 @@ def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
     col3.metric("Số lệnh đang mở", summary["n_open"])
 
 
-# ==============================================================================
+# =
 # MAIN — lắp ráp toàn bộ dashboard
-# ==============================================================================
+# =
 
 # Danh sách nhãn các mục (đúng thứ tự hiển thị) — dùng cho menu điều
 # hướng nhanh ở sidebar. Định nghĩa hàm/tham số thực tế nằm trong main()
