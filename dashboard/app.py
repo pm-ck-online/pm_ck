@@ -1196,48 +1196,7 @@ def render_manual_macro_data_section(storage: Storage) -> None:
             st.info(
                 f"Trạng thái hiện tại: **{FINANCIAL_EVENT_OPTIONS[current_fin_key]}** "
                 f"(cập nhật lần cuối: {current_fin_record['data'].get('updated_date', '—')})"
-
-
             )
-            selected_event_data = next(e for e in events if e["id"] == selected_id)
-
-            col_edit1, col_edit2 = st.columns(2)
-            with col_edit1:
-                edit_event_key = st.selectbox(
-                    "Mức độ sự kiện", list(EVENT_OPTIONS.keys()),
-                    index=list(EVENT_OPTIONS.keys()).index(selected_event_data["event_key"])
-                    if selected_event_data["event_key"] in EVENT_OPTIONS else 0,
-                    format_func=lambda k: EVENT_OPTIONS[k], key=f"edit_event_key_{selected_id}",
-                )
-            with col_edit2:
-                edit_start_date = st.date_input(
-                    "Ngày bắt đầu sự kiện",
-                    value=date_cls.fromisoformat(selected_event_data["start_date"]),
-                    key=f"edit_event_date_{selected_id}",
-                )
-            edit_note = st.text_area(
-                "Ghi chú (tùy chọn)", value=selected_event_data.get("note", ""),
-                key=f"edit_event_note_{selected_id}",
-            )
-
-            col_save, col_del = st.columns(2)
-            with col_save:
-                if st.button("💾 Lưu thay đổi cho sự kiện này", key=f"save_event_btn_{selected_id}"):
-                    storage.save(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id, {
-                        "event_key": edit_event_key,
-                        "start_date": edit_start_date.isoformat(),
-                        "note": edit_note,
-                        "created_at": selected_event_data.get("created_at", date_cls.today().isoformat()),
-                    })
-                    _sync_current_geopolitical_event(storage)
-                    st.success("Đã lưu thay đổi.")
-                    st.rerun()
-            with col_del:
-                if st.button("🗑️ Xóa sự kiện này", key=f"delete_event_btn_{selected_id}"):
-                    storage.delete_key(GEOPOLITICAL_EVENT_LOG_CATEGORY, selected_id)
-                    _sync_current_geopolitical_event(storage)
-                    st.success("Đã xóa sự kiện này.")
-                    st.rerun()
 
     # --- Rà soát: hiển thị chi tiết công thức tính điểm vĩ mô ---
     with st.expander("🔍 Rà soát chi tiết công thức tính điểm vĩ mô"):
