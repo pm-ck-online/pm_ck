@@ -28,6 +28,7 @@ from core.stock_signal_engine import (
     is_bearish_engulfing,
     is_bullish_engulfing,
     is_pin_bar,
+    tinh_thong_ke_tang_giam_theo_tin_hieu,
 )
 
 
@@ -127,6 +128,17 @@ class TestCheckPullbackPattern:
         result = check_pullback_pattern(df, ema20=100, ema50=101, rsi_series=rsi_series)
         assert result is False
 
+    def test_detects_pullback_even_without_rsi_recovery(self):
+        # CẬP NHẬT (30/07/2026): đã bỏ điều kiện "RSI hồi phục từ vùng
+        # 35-50 đi lên" theo yêu cầu điều chỉnh tiêu chí — giờ chỉ cần
+        # đúng vùng EMA + nến đảo chiều là đủ, bất kể RSI đang giảm.
+        closes = [100] * 20 + [95, 101]
+        opens = [100] * 20 + [100, 94]
+        df = _make_df(closes, opens=opens)
+        rsi_series = pd.Series([70.0] * 19 + [65.0, 60.0])  # RSI cao và đang giảm
+        result = check_pullback_pattern(df, ema20=100, ema50=101, rsi_series=rsi_series)
+        assert result is True
+
 
 # ==============================================================================
 # Test: check_breakout_pattern
@@ -206,10 +218,18 @@ class TestSellTechnicalChecks:
         rsi_series = pd.Series([65.0, 75.0])
         assert check_resistance_overbought(df, resistance_level=105, rsi_series=rsi_series) is True
 
-    def test_resistance_overbought_fails_when_rsi_not_high(self):
+    def test_resistance_overbought_triggers_even_when_rsi_not_high(self):
+        # CẬP NHẬT (30/07/2026): đã bỏ điều kiện "RSI(14) > 70" theo yêu
+        # cầu điều chỉnh tiêu chí — giờ chỉ cần giá chạm kháng cự là đủ
+        # kích hoạt, bất kể RSI đang cao hay thấp.
         df = _make_df(closes=[100, 104])
         rsi_series = pd.Series([65.0, 68.0])
-        assert check_resistance_overbought(df, resistance_level=105, rsi_series=rsi_series) is False
+        assert check_resistance_overbought(df, resistance_level=105, rsi_series=rsi_series) is True
+
+    def test_resistance_overbought_fails_when_price_far_from_resistance(self):
+        df = _make_df(closes=[100, 104])
+        rsi_series = pd.Series([65.0, 75.0])
+        assert check_resistance_overbought(df, resistance_level=200, rsi_series=rsi_series) is False
 
     def test_volume_depletion_detected(self):
         closes = [100, 101, 102, 103, 104, 105]  # giá tăng đều
@@ -377,3 +397,59 @@ class TestBuildSignalSummaryReport:
         report = build_signal_summary_report([])
         assert report["tong_so_ma"] == 0
         assert report["mua"] == []
+
+
+class TestTinhThongKeTangGiamTheoTinHieu:
+    def _make_realistic_df(self, n=900, seed=21):
+        import numpy as np
+        np.random.seed(seed)
+        dates = pd.bdate_range("2022-01-01", periods=n)
+        closes = 50 + np.cumsum(np.random.normal(0.02, 1.0, n))
+        opens = closes * (1 + np.random.normal(0, 0.003, n))
+        highs = np.maximum(opens, closes) * (1 + np.abs(np.random.normal(0, 0.006, n)))
+        lows = np.minimum(opens, closes) * (1 - np.abs(np.random.normal(0, 0.006, n)))
+        volumes = np.random.randint(500_000, 2_000_000, n).astype(float)
+        return pd.DataFrame({
+            "date": dates, "open": opens, "high": highs, "low": lows,
+            "close": closes, "volume": volumes,
+        })
+
+    def test_computes_stats_for_ban(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_theo_tin_hieu(df, "BAN", so_phien_kiem_tra=250)
+        assert result["so_lan_quan_sat"] > 0
+        assert set(result["theo_phien"].keys()) == {10, 20, 40, 60}
+        for sp in (10, 20, 40, 60):
+            entry = result["theo_phien"][sp]
+            assert entry["so_lan"] > 0
+            assert entry["ty_le_tang_pct"] + entry["ty_le_giam_pct"] == pytest.approx(100.0, abs=0.2)
+
+    def test_computes_stats_for_mua(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_theo_tin_hieu(df, "MUA", so_phien_kiem_tra=250)
+        # MUA hiếm hơn nhiều (điều kiện chặt) — chỉ cần chạy không lỗi,
+        # có thể ra 0 hoặc vài lần tùy dữ liệu ngẫu nhiên.
+        assert result["so_lan_quan_sat"] >= 0
+
+    def test_raises_for_invalid_khuyen_nghi(self):
+        df = self._make_realistic_df()
+        with pytest.raises(InvalidStockSignalError):
+            tinh_thong_ke_tang_giam_theo_tin_hieu(df, "GIU", so_phien_kiem_tra=250)
+
+    def test_raises_for_empty_cac_phien_du_bao(self):
+        df = self._make_realistic_df()
+        with pytest.raises(InvalidStockSignalError):
+            tinh_thong_ke_tang_giam_theo_tin_hieu(df, "MUA", cac_phien_du_bao=())
+
+    def test_returns_zero_when_history_too_short(self):
+        df = self._make_realistic_df(n=100)
+        result = tinh_thong_ke_tang_giam_theo_tin_hieu(df, "MUA")
+        assert result["so_lan_quan_sat"] == 0
+
+    def test_custom_phien_du_bao(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_theo_tin_hieu(
+            df, "BAN", cac_phien_du_bao=(5, 15), so_phien_kiem_tra=250,
+        )
+        if result["so_lan_quan_sat"] > 0:
+            assert set(result["theo_phien"].keys()) == {5, 15}
