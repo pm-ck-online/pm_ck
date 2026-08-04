@@ -577,3 +577,130 @@ def tinh_kelly_fraction(phan_bo: dict) -> dict:
             f"(khuyến nghị thực tế nên dùng nửa Kelly {f_sao_cat / 2 * 100:.1f}% để giảm biến động)."
         ),
     }
+
+
+# ==============================================================================
+# MỤC 9 (BỔ SUNG 04/08/2026) — KIỂM ĐỊNH THỐNG KÊ SO SÁNH 2 KHOẢNG ĐỘ LỆCH
+# ==============================================================================
+
+def so_sanh_2_khoang_do_lech(
+    df_ohlcv: pd.DataFrame,
+    khoang_1: tuple[float, float],
+    khoang_2: tuple[float, float],
+    duong_tham_chieu: str = "ma20",
+    so_phien_du_bao: int = 5,
+    so_phien_kiem_tra: int = 250,
+    nguong_y_nghia: float = 0.05,
+) -> dict:
+    """Kiểm định thống kê xem 2 KHOẢNG ĐỘ LỆCH (khoảng cách % giá so với
+    đường tham chiếu EMA200/MA20) có khác biệt CÓ Ý NGHĨA THỐNG KÊ về
+    tỷ lệ thắng hay không — trả lời đúng câu hỏi "khoảng ±5% có khác gì
+    khoảng 5-10% không", KHÔNG chỉ so sánh cảm tính 2 con số %.
+
+    `khoang_1`, `khoang_2`: tuple (từ, đến) tính theo TRỊ TUYỆT ĐỐI độ
+    lệch % (VD: (0, 5) nghĩa là |độ lệch| trong [0%, 5%); (5, 10) nghĩa
+    là |độ lệch| trong [5%, 10%)) — không phân biệt trên/dưới đường
+    tham chiếu, chỉ tính KHOẢNG CÁCH.
+
+    PHƯƠNG PHÁP: kiểm định 2 tỷ lệ (two-proportion z-test) so sánh tỷ lệ
+    THẮNG (giá tăng sau `so_phien_du_bao` phiên) giữa 2 nhóm — trả về
+    trị số z, p-value, và kết luận CÓ/KHÔNG khác biệt ý nghĩa thống kê ở
+    mức `nguong_y_nghia` (mặc định 5%, tức p-value < 0,05 mới coi là có
+    ý nghĩa — quy ước thống kê phổ biến).
+
+    LƯU Ý: đây vẫn là kiểm định trên TẦN SUẤT LỊCH SỬ — p-value nhỏ chỉ
+    cho biết khác biệt QUAN SÁT ĐƯỢC khó xảy ra do ngẫu nhiên thuần túy,
+    KHÔNG chứng minh quan hệ nhân quả hay đảm bảo lặp lại trong tương lai.
+    """
+    from scipy.stats import norm
+
+    if duong_tham_chieu not in ("ema200", "ma20"):
+        raise InvalidEntryScreenerError('duong_tham_chieu phải là "ema200" hoặc "ma20".')
+
+    so_phien_toi_thieu = 200 if duong_tham_chieu == "ema200" else 20
+    if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < so_phien_toi_thieu:
+        return {
+            "hop_le": False,
+            "ghi_chu": f"Chưa đủ dữ liệu lịch sử (cần tối thiểu {so_phien_toi_thieu} phiên).",
+        }
+
+    from core.indicators import calculate_ema, calculate_ma
+
+    n = len(df_ohlcv)
+    duong_series = calculate_ema(df_ohlcv, period=200) if duong_tham_chieu == "ema200" else calculate_ma(df_ohlcv, period=20)
+    closes = df_ohlcv["close"]
+
+    start = min(so_phien_toi_thieu, max(0, n - so_phien_kiem_tra))
+    end = n - so_phien_du_bao
+
+    ket_qua_theo_khoang = {1: [], 2: []}
+    for i in range(start, max(start, end)):
+        duong_i = duong_series.iloc[i]
+        if pd.isna(duong_i) or duong_i <= 0:
+            continue
+        close_i = float(closes.iloc[i])
+        do_lech_tuyet_doi = abs((close_i - duong_i) / duong_i * 100)
+
+        nhom = None
+        if khoang_1[0] <= do_lech_tuyet_doi < khoang_1[1]:
+            nhom = 1
+        elif khoang_2[0] <= do_lech_tuyet_doi < khoang_2[1]:
+            nhom = 2
+        if nhom is None:
+            continue
+
+        close_sau = float(closes.iloc[i + so_phien_du_bao])
+        pct_thay_doi = (close_sau - close_i) / close_i * 100
+        ket_qua_theo_khoang[nhom].append(pct_thay_doi)
+
+    n1, n2 = len(ket_qua_theo_khoang[1]), len(ket_qua_theo_khoang[2])
+    if n1 < 5 or n2 < 5:
+        return {
+            "hop_le": False,
+            "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+            "ghi_chu": (
+                f"Cỡ mẫu quá nhỏ để kiểm định đáng tin cậy (khoảng 1: {n1} lần, "
+                f"khoảng 2: {n2} lần) — cần tối thiểu 5 lần mỗi khoảng, khuyến nghị "
+                f"tối thiểu 30 lần để kết quả kiểm định có ý nghĩa thực tế."
+            ),
+        }
+
+    x1 = sum(1 for v in ket_qua_theo_khoang[1] if v > 0)
+    x2 = sum(1 for v in ket_qua_theo_khoang[2] if v > 0)
+    p1, p2 = x1 / n1, x2 / n2
+
+    p_pool = (x1 + x2) / (n1 + n2)
+    se = (p_pool * (1 - p_pool) * (1 / n1 + 1 / n2)) ** 0.5
+
+    if se == 0:
+        return {
+            "hop_le": False,
+            "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+            "ghi_chu": "Không tính được kiểm định (2 nhóm có tỷ lệ thắng giống hệt nhau, sai số chuẩn bằng 0).",
+        }
+
+    z = (p1 - p2) / se
+    p_value = float(2 * (1 - norm.cdf(abs(z))))
+    co_y_nghia = bool(p_value < nguong_y_nghia)
+
+    return {
+        "hop_le": True,
+        "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+        "xac_suat_thang_khoang_1_pct": round(p1 * 100, 1),
+        "xac_suat_thang_khoang_2_pct": round(p2 * 100, 1),
+        "pct_thay_doi_trung_binh_khoang_1": round(sum(ket_qua_theo_khoang[1]) / n1, 2),
+        "pct_thay_doi_trung_binh_khoang_2": round(sum(ket_qua_theo_khoang[2]) / n2, 2),
+        "z_score": round(z, 3),
+        "p_value": round(p_value, 4),
+        "co_y_nghia_thong_ke": co_y_nghia,
+        "nguong_y_nghia": nguong_y_nghia,
+        "ghi_chu": (
+            f"P-value = {p_value:.4f} {'<' if co_y_nghia else '>='} {nguong_y_nghia} → "
+            + (
+                "CÓ sự khác biệt ý nghĩa thống kê giữa 2 khoảng (khó xảy ra do ngẫu nhiên)."
+                if co_y_nghia else
+                "KHÔNG đủ bằng chứng để kết luận có khác biệt ý nghĩa thống kê — chênh "
+                "lệch quan sát được CÓ THỂ chỉ do ngẫu nhiên."
+            )
+        ),
+    }
