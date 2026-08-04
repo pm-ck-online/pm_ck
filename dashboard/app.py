@@ -2654,6 +2654,222 @@ def render_stock_signal_report_section(storage: Storage) -> None:
             st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
+def render_tong_hop_section(storage: Storage) -> None:
+    """Module "Tổng hợp" (bổ sung 04/08/2026) — rà soát TOÀN DIỆN 1 mã cổ
+    phiếu do người dùng chọn, tích hợp:
+        1. Giá hiện tại do NGƯỜI DÙNG TỰ NHẬP (theo giao dịch thực tế —
+           không phụ thuộc độ trễ của pipeline tự động).
+        2. ATR14 tính MỚI trực tiếp từ dữ liệu OHLCV đã lưu.
+        3. Báo cáo Tín hiệu Mua/Bán (core.stock_signal_engine) của mã đó.
+        4. Vùng entry/stop-loss/chốt lời tính MỚI (core.capital_allocation_engine),
+           dựa trên giá người dùng nhập + ATR14 vừa tính + hỗ trợ/kháng cự.
+        5. Công thức phân bổ vốn theo Kelly Criterion (core.entry_screener.
+           tinh_kelly_fraction), dựa trên tỷ lệ ăn/thua thống kê được ở
+           module "Rà soát danh sách vào lệnh ngắn hạn".
+
+    ĐÂY LÀ CÔNG CỤ TÍNH TOÁN THAM KHẢO — không phải khuyến nghị đầu tư cá
+    nhân hóa. Người dùng tự chịu trách nhiệm về quyết định giao dịch.
+    """
+    st.subheader("📌 Tổng hợp — Rà soát toàn diện 1 mã")
+    st.caption(
+        "⚠️ Công cụ TÍNH TOÁN THAM KHẢO, tổng hợp các module đã có cho ĐÚNG 1 mã "
+        "bạn chọn — KHÔNG phải khuyến nghị đầu tư cá nhân hóa. Mọi công thức (ATR14, "
+        "entry/stop-loss, Kelly Criterion) đều minh bạch, bạn tự đối chiếu và ra "
+        "quyết định."
+    )
+
+    all_symbols = sorted(storage.query_all_keys("ohlcv_history"))
+    if not all_symbols:
+        st.info("Chưa có dữ liệu OHLCV. Chạy `main.py` hoặc `run_full_market.py` trước.")
+        return
+
+    col_chon1, col_chon2 = st.columns(2)
+    with col_chon1:
+        ma_chon = st.selectbox("Chọn mã cổ phiếu", all_symbols, key="tong_hop_ma_chon")
+    with col_chon2:
+        chien_luoc = st.selectbox(
+            "Chiến lược tính vùng entry", ["breakout", "pullback", "support"],
+            format_func=lambda s: {"breakout": "Breakout (phá kháng cự)", "pullback": "Pullback (chờ hồi)", "support": "Hỗ trợ (Sideway)"}[s],
+            key="tong_hop_chien_luoc",
+        )
+
+    df_ma = _load_ohlcv_history_df(storage, ma_chon)
+    if df_ma is None or df_ma.empty:
+        st.warning(f"Không có dữ liệu lịch sử OHLCV cho mã {ma_chon}.")
+        return
+
+    gia_dong_cua_gan_nhat = float(df_ma["close"].iloc[-1])
+    col_gia1, col_gia2 = st.columns(2)
+    with col_gia1:
+        gia_hien_tai = st.number_input(
+            "💰 Giá hiện tại (nhập theo giao dịch thực tế — không phụ thuộc "
+            "độ trễ của pipeline tự động)",
+            value=gia_dong_cua_gan_nhat, min_value=0.01, step=0.05,
+            key="tong_hop_gia_hien_tai",
+            help=f"Giá đóng cửa gần nhất theo dữ liệu đã lưu: {gia_dong_cua_gan_nhat:,.2f} "
+                 "— sửa lại nếu giá thực tế bạn đang thấy trên bảng giá khác số này.",
+        )
+    with col_gia2:
+        von_giao_dich = st.number_input(
+            "💵 Số vốn định giao dịch cho lệnh này (VNĐ)",
+            value=100_000_000, min_value=0, step=10_000_000,
+            key="tong_hop_von_giao_dich",
+        )
+
+    st.divider()
+
+    # === PHẦN 1: ATR14 + Entry/Stop-loss/Take-profit (tính MỚI) ===
+    st.markdown("#### 📐 ATR14 và vùng entry/stop-loss/chốt lời (tính mới theo giá vừa nhập)")
+    from core.capital_allocation_engine import (
+        InvalidCapitalAllocationError, calculate_entry_price_range,
+        calculate_stop_loss_range, calculate_take_profit_range,
+        calculate_position_size, find_support_resistance,
+    )
+    from core.market_breadth import calculate_atr
+
+    try:
+        atr_series = calculate_atr(df_ma, period=14)
+        atr14 = float(atr_series.iloc[-1])
+        if pd.isna(atr14) or atr14 <= 0:
+            raise ValueError("ATR14 chưa đủ dữ liệu hoặc bằng 0.")
+
+        support, resistance = find_support_resistance(df_ma, lookback=60)
+        entry_range = calculate_entry_price_range(gia_hien_tai, atr14, strategy=chien_luoc, support_level=support)
+        stop_loss_range = calculate_stop_loss_range(support, atr14)
+        take_profit_range = calculate_take_profit_range(resistance, atr14)
+
+        col_a1, col_a2, col_a3 = st.columns(3)
+        col_a1.metric("ATR14", f"{atr14:,.2f}")
+        col_a2.metric("Hỗ trợ (60 phiên)", f"{support:,.2f}")
+        col_a3.metric("Kháng cự (60 phiên)", f"{resistance:,.2f}")
+
+        col_b1, col_b2, col_b3 = st.columns(3)
+        col_b1.metric("Vùng vào lệnh (Entry)", f"{entry_range[0]:,.2f} — {entry_range[1]:,.2f}")
+        col_b2.metric("Vùng cắt lỗ (Stop-loss)", f"{stop_loss_range[0]:,.2f} — {stop_loss_range[1]:,.2f}")
+        col_b3.metric("Vùng chốt lời tham khảo", f"{take_profit_range[0]:,.2f} — {take_profit_range[1]:,.2f}")
+
+        # Khối lượng theo rủi ro cố định 2% NAV (mặc định hệ thống) — để đối chiếu.
+        qty_theo_rui_ro = calculate_position_size(
+            nav=von_giao_dich, risk_per_trade_pct=0.02,
+            entry_price_range=entry_range, stop_loss_range=stop_loss_range,
+            capital_budget=von_giao_dich,
+        )
+        st.caption(
+            f"📎 Đối chiếu: nếu dùng nguyên tắc rủi ro cố định ≤2% vốn/lệnh (mặc định "
+            f"hệ thống), khối lượng tối đa mua được là **{qty_theo_rui_ro:,} cổ phiếu** "
+            f"(giá trị ~{qty_theo_rui_ro * entry_range[1]:,.0f} đ)."
+        )
+    except (InvalidCapitalAllocationError, ValueError, ZeroDivisionError) as exc:
+        st.error(f"⚠️ Không tính được vùng entry/stop-loss: {exc}")
+        entry_range = stop_loss_range = take_profit_range = None
+
+    st.divider()
+
+    # === PHẦN 2: Báo cáo Tín hiệu Mua/Bán ===
+    st.markdown("#### 🚦 Tín hiệu Mua/Bán hiện tại")
+    signal_record = storage.get_latest("stock_signal", ma_chon)
+    if signal_record:
+        sig = signal_record["data"]
+        khuyen_nghi_mau = {"MUA": "🟢 MUA", "BAN": "🔴 BÁN", "GIU_THEO_DOI": "🟡 GIỮ/THEO DÕI"}.get(sig.get("khuyen_nghi"), "—")
+        st.metric("Khuyến nghị", khuyen_nghi_mau)
+        chi_tiet = sig.get("chi_tiet", {})
+        if chi_tiet.get("mau_hinh_ky_thuat"):
+            st.write(f"**Mẫu hình kỹ thuật:** {chi_tiet['mau_hinh_ky_thuat']}")
+        if chi_tiet.get("ky_thuat_dat"):
+            st.write("**Lý do:** " + "; ".join(chi_tiet["ky_thuat_dat"]))
+        if sig.get("canh_bao"):
+            st.warning("; ".join(sig["canh_bao"]) if isinstance(sig["canh_bao"], list) else sig["canh_bao"])
+    else:
+        st.info("Chưa có báo cáo tín hiệu Mua/Bán cho mã này. Chạy `main.py`/`run_full_market.py` trước.")
+
+    st.divider()
+
+    # === PHẦN 3: Kelly Criterion — phân bổ vốn tối ưu theo tỷ lệ ăn/thua ===
+    st.markdown("#### 🎯 Phân bổ vốn tối ưu theo Kelly Criterion")
+    st.caption(
+        "Dựa trên tần suất lịch sử CHÍNH mã này từng ở tình huống tương tự hiện tại "
+        "(tái sử dụng logic module \"Rà soát danh sách vào lệnh ngắn hạn\") — công "
+        "thức Kelly: f* = p/L − q/G (p=xác suất thắng, q=xác suất thua, G=biên độ "
+        "tăng TB khi thắng, L=biên độ giảm TB khi thua)."
+    )
+
+    from core.entry_screener import tinh_kelly_fraction
+
+    col_k1, col_k2 = st.columns(2)
+    with col_k1:
+        duong_tham_chieu_nhan_k = st.radio(
+            "Đường tham chiếu", ["EMA200", "MA20"], horizontal=True, key="tong_hop_duong_tham_chieu",
+        )
+    with col_k2:
+        so_phien_du_bao_k = st.radio(
+            "Chu kỳ đo (phiên)", [5, 10, 15, 30], index=3, horizontal=True,
+            format_func=lambda x: f"{x} phiên", key="tong_hop_so_phien",
+        )
+    duong_tham_chieu_key_k = "ema200" if duong_tham_chieu_nhan_k == "EMA200" else "ma20"
+
+    snap = storage.get_latest("indicator_snapshot", ma_chon)
+    tieu_chi_dat_k = ["dieu_kien_nen_ema200"]  # mặc định — luôn tính được cho MỌI mã
+    if snap:
+        entry_report = storage.get_latest("entry_screener_report", "latest")
+        if entry_report:
+            for m in entry_report["data"]["danh_sach_ma"]:
+                if m["ma"] == ma_chon:
+                    tieu_chi_dat_k = m["tieu_chi_dat"]
+                    break
+
+    try:
+        thong_ke_k = _tinh_thong_ke_tang_giam_cached(
+            df_ma, ma_chon, tuple(tieu_chi_dat_k), so_phien_du_bao_k, duong_tham_chieu_key_k,
+        )
+    except Exception as exc:  # noqa: BLE001
+        thong_ke_k = {"so_lan_quan_sat": 0, "phan_bo": {}}
+        st.error(f"Lỗi khi tính thống kê: {exc}")
+
+    so_lan_k = thong_ke_k.get("so_lan_quan_sat", 0)
+    if so_lan_k == 0:
+        st.info(thong_ke_k.get("ghi_chu", "Không có đủ dữ liệu lịch sử cho mã này."))
+    else:
+        kelly = tinh_kelly_fraction(thong_ke_k["phan_bo"])
+        st.caption(f"Số lần quan sát trong lịch sử: **{so_lan_k}**")
+
+        if kelly.get("kelly_f") is None:
+            st.warning(kelly.get("ghi_chu", "Không tính được Kelly."))
+        else:
+            col_kq1, col_kq2, col_kq3, col_kq4 = st.columns(4)
+            col_kq1.metric("Xác suất thắng", f"{kelly['xac_suat_thang']:.1f}%")
+            col_kq2.metric("Xác suất thua", f"{kelly['xac_suat_thua']:.1f}%")
+            col_kq3.metric("TB tăng khi thắng", f"+{kelly['trung_binh_tang_pct']:.1f}%")
+            col_kq4.metric("TB giảm khi thua", f"-{kelly['trung_binh_giam_pct']:.1f}%")
+
+            st.markdown(
+                f"**Kelly đầy đủ (f): {kelly['kelly_f']*100:.1f}% vốn** — "
+                f"**Nửa Kelly (khuyến nghị thực tế): {kelly['kelly_f_nua']*100:.1f}% vốn**"
+            )
+            st.info(kelly["ghi_chu"])
+
+            if kelly["kelly_f"] > 0 and entry_range:
+                so_tien_full_kelly = von_giao_dich * kelly["kelly_f"]
+                so_tien_nua_kelly = von_giao_dich * kelly["kelly_f_nua"]
+                gia_vao_tb = sum(entry_range) / 2
+                sl_full = int(so_tien_full_kelly // gia_vao_tb // 100) * 100
+                sl_nua = int(so_tien_nua_kelly // gia_vao_tb // 100) * 100
+
+                rows_kelly = [
+                    {"Phương án": "Kelly đầy đủ", "% vốn": f"{kelly['kelly_f']*100:.1f}%",
+                     "Số tiền": f"{so_tien_full_kelly:,.0f} đ", "Số lượng (làm tròn lô 100)": f"{sl_full:,}"},
+                    {"Phương án": "Nửa Kelly (khuyến nghị)", "% vốn": f"{kelly['kelly_f_nua']*100:.1f}%",
+                     "Số tiền": f"{so_tien_nua_kelly:,.0f} đ", "Số lượng (làm tròn lô 100)": f"{sl_nua:,}"},
+                ]
+                st.dataframe(pd.DataFrame(rows_kelly), width='stretch', hide_index=True)
+
+    st.warning(
+        "⚠️ Kelly Criterion là CÔNG THỨC TOÁN HỌC áp dụng lên TẦN SUẤT LỊCH SỬ, "
+        "giả định tương lai lặp lại quá khứ — một giả định KHÔNG được đảm bảo. Kelly "
+        "đầy đủ trên thực tế biến động RẤT MẠNH; nên cân nhắc dùng nửa Kelly hoặc thấp "
+        "hơn, và KHÔNG bao giờ vượt quá nguyên tắc quản trị rủi ro chung của danh mục "
+        "(rủi ro mỗi lệnh ≤2% NAV, toàn danh mục ≤20% NAV)."
+    )
+
 def render_portfolio_section(storage: Storage, portfolio_key: str = "default") -> None:
     st.subheader("💼 Hiệu suất danh mục mô phỏng")
 
@@ -3073,6 +3289,7 @@ DASHBOARD_GROUPS = [
         "📐 Giai đoạn thị trường (3 lớp định lượng)",
     ]),
     ("NHÓM 3 — GIAO DỊCH CỔ PHIẾU", [
+        "📌 Tổng hợp",
         "📋 Watchlist (thêm/xóa mã)",
         "📈 Bảng giá theo dõi (Watchlist)",
         "🕯️ Biểu đồ nến",
@@ -3182,6 +3399,7 @@ def main() -> None:
 
     # --- Danh sách mục theo đúng thứ tự hiển thị, kèm hàm + tham số riêng ---
     sections_to_call = [
+        ("📌 Tổng hợp", render_tong_hop_section, (storage,)),
         ("📋 Watchlist (thêm/xóa mã)", render_watchlist_manager_section, (storage,)),
         ("📈 Bảng giá theo dõi (Watchlist)", render_watchlist_section, (storage, symbols)),
         ("🕯️ Biểu đồ nến", render_chart_section, (storage, symbols)),
