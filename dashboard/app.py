@@ -2819,23 +2819,63 @@ def render_tong_hop_section(storage: Storage) -> None:
     duong_tham_chieu_key_k = "ema200" if duong_tham_chieu_nhan_k == "EMA200" else "ma20"
     st.caption(f"📌 Đang phân tích khung NGẮN HẠN: {so_phien_du_bao_k} phiên tới (~{so_phien_du_bao_k / 20:.1f} tháng giao dịch).")
 
+    # --- Xác định CHÍNH XÁC mã này có ĐANG thực sự thỏa từng tiêu chí hay
+    #     không, TÍNH LẠI TƯƠI theo đúng đường tham chiếu đang chọn ở trên
+    #     — KHÔNG mặc định coi như luôn đạt (lỗi cũ: nếu mã không có trong
+    #     báo cáo "Rà soát ngắn hạn" — tức thất bại CẢ 4 tiêu chí — code cũ
+    #     vẫn ngầm coi là đạt "Giá trên EMA200/MA20...", gây sai lệch số
+    #     liệu Kelly so với chính module "Rà soát danh sách vào lệnh ngắn
+    #     hạn"). Sửa 04/08/2026: tính lại đúng như mục đó đang làm. ---
+    from core.entry_screener import kiem_tra_tich_luy_dai_han, xep_hang_uu_tien_theo_duong_tham_chieu
+
     snap = storage.get_latest("indicator_snapshot", ma_chon)
-    tieu_chi_dat_k = ["dieu_kien_nen_ema200"]  # mặc định — luôn tính được cho MỌI mã
+    tieu_chi_dat_k: list[str] = []
+
     if snap:
-        entry_report = storage.get_latest("entry_screener_report", "latest")
-        if entry_report:
-            for m in entry_report["data"]["danh_sach_ma"]:
-                if m["ma"] == ma_chon:
-                    tieu_chi_dat_k = m["tieu_chi_dat"]
-                    break
+        close_k = snap["data"].get("close")
+        gia_tri_duong_k = snap["data"].get(duong_tham_chieu_key_k)
+        if close_k is not None:
+            xep_hang_k = xep_hang_uu_tien_theo_duong_tham_chieu(close_k, gia_tri_duong_k, duong_tham_chieu_nhan_k)
+            if xep_hang_k["xep_hang_uu_tien"] != "KHONG_DAT":
+                tieu_chi_dat_k.append("dieu_kien_nen_ema200")
 
     try:
-        thong_ke_k = _tinh_thong_ke_tang_giam_cached(
-            df_ma, ma_chon, tuple(tieu_chi_dat_k), so_phien_du_bao_k, duong_tham_chieu_key_k,
+        tich_luy_k = kiem_tra_tich_luy_dai_han(df_ma)
+        if tich_luy_k.get("dat"):
+            tieu_chi_dat_k.append("tich_luy_dai_han")
+    except Exception:  # noqa: BLE001
+        pass
+
+    # 2 tiêu chí còn lại ("dao_dong_tat_dan", "volume_breakout") tốn kém để
+    # tính lại tươi (cần pattern_detector quét 10-30 tháng) — lấy từ báo
+    # cáo "Rà soát ngắn hạn" NẾU mã có mặt trong đó (bất kể mã đó có đạt
+    # "dieu_kien_nen_ema200" ở lần quét gốc hay không), còn nếu mã không
+    # xuất hiện ở báo cáo đó thì KHÔNG suy diễn — chỉ đơn giản là chưa có
+    # thông tin cho 2 tiêu chí này, không mặc định đạt hay không đạt.
+    entry_report = storage.get_latest("entry_screener_report", "latest")
+    if entry_report:
+        for m in entry_report["data"]["danh_sach_ma"]:
+            if m["ma"] == ma_chon:
+                for t in ("dao_dong_tat_dan", "volume_breakout"):
+                    if t in m["tieu_chi_dat"] and t not in tieu_chi_dat_k:
+                        tieu_chi_dat_k.append(t)
+                break
+
+    if not tieu_chi_dat_k:
+        st.info(
+            f"Mã {ma_chon} hiện KHÔNG thỏa tiêu chí \"Giá trên {duong_tham_chieu_nhan_k.upper()}...\" "
+            "hoặc \"Tích lũy dài hạn\" — nhất quán với việc mã này không xuất hiện trong "
+            "mục \"Rà soát danh sách vào lệnh ngắn hạn\" khi bỏ chọn 2 tiêu chí đó."
         )
-    except Exception as exc:  # noqa: BLE001
         thong_ke_k = {"so_lan_quan_sat": 0, "phan_bo": {}}
-        st.error(f"Lỗi khi tính thống kê: {exc}")
+    else:
+        try:
+            thong_ke_k = _tinh_thong_ke_tang_giam_cached(
+                df_ma, ma_chon, tuple(tieu_chi_dat_k), so_phien_du_bao_k, duong_tham_chieu_key_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            thong_ke_k = {"so_lan_quan_sat": 0, "phan_bo": {}}
+            st.error(f"Lỗi khi tính thống kê: {exc}")
 
     so_lan_k = thong_ke_k.get("so_lan_quan_sat", 0)
     if so_lan_k == 0:
