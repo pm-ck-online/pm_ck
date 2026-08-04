@@ -97,22 +97,18 @@ def check_pullback_pattern(
     df: pd.DataFrame, ema20: float, ema50: float, rsi_series: pd.Series
 ) -> bool:
     """Mua theo Pullback: giá hồi về vùng EMA20/EMA50, có nến đảo chiều
-    tăng (Engulfing/Pin Bar), VÀ RSI hồi từ vùng 40-50 đi lên.
+    tăng (Engulfing/Pin Bar).
+
+    CẬP NHẬT (30/07/2026): đã BỎ điều kiện "RSI hồi phục từ vùng 35-50
+    đi lên" theo yêu cầu điều chỉnh tiêu chí — giữ tham số `rsi_series`
+    trong chữ ký hàm để không phá vỡ các lời gọi hiện có, nhưng KHÔNG
+    còn dùng để quyết định kích hoạt mẫu hình này nữa.
     """
     last_close = df["close"].iloc[-1]
     near_ema_zone = min(ema20, ema50) * 0.98 <= last_close <= max(ema20, ema50) * 1.02
     has_reversal_candle = is_bullish_engulfing(df) or is_pin_bar(df, direction="bullish")
 
-    if len(rsi_series) < 2:
-        rsi_recovering = False
-    else:
-        prev_rsi, curr_rsi = rsi_series.iloc[-2], rsi_series.iloc[-1]
-        rsi_recovering = bool(
-            not pd.isna(prev_rsi) and not pd.isna(curr_rsi)
-            and 35 <= prev_rsi <= 50 and curr_rsi > prev_rsi
-        )
-
-    return bool(near_ema_zone and has_reversal_candle and rsi_recovering)
+    return bool(near_ema_zone and has_reversal_candle)
 
 
 def check_breakout_pattern(
@@ -193,7 +189,7 @@ def evaluate_technical_buy_trigger(
         }
 
     if check_pullback_pattern(df, ema20, ema50, rsi_series):
-        return {"kich_hoat": True, "mau_hinh": "PULLBACK", "ly_do": "Giá hồi về EMA20/50 kèm nến đảo chiều và RSI phục hồi."}
+        return {"kich_hoat": True, "mau_hinh": "PULLBACK", "ly_do": "Giá hồi về EMA20/50 kèm nến đảo chiều."}
 
     if resistance_level is not None and volume_ma20 is not None:
         if check_breakout_pattern(df, resistance_level, volume_ma20):
@@ -239,12 +235,16 @@ def check_stop_loss_hit(
 def check_resistance_overbought(
     df: pd.DataFrame, resistance_level: float, rsi_series: pd.Series, tolerance_pct: float = 2.0
 ) -> bool:
-    """Giá tiệm cận/chạm kháng cự mạnh VÀ RSI(14) > 70 (quá mua)."""
+    """Giá tiệm cận/chạm kháng cự mạnh.
+
+    CẬP NHẬT (30/07/2026): đã BỎ điều kiện "RSI(14) > 70 (quá mua)" theo
+    yêu cầu điều chỉnh tiêu chí — giữ tham số `rsi_series` trong chữ ký
+    hàm để không phá vỡ các lời gọi hiện có, nhưng KHÔNG còn dùng để
+    quyết định kích hoạt tín hiệu này nữa.
+    """
     last_close = df["close"].iloc[-1]
     near_resistance = abs(last_close - resistance_level) / resistance_level * 100 <= tolerance_pct
-    if rsi_series.empty or pd.isna(rsi_series.iloc[-1]):
-        return False
-    return bool(near_resistance and rsi_series.iloc[-1] > 70)
+    return bool(near_resistance)
 
 
 def check_volume_depletion(df: pd.DataFrame, lookback: int = 5) -> bool:
@@ -291,7 +291,7 @@ def evaluate_technical_sell_trigger(
     ly_do = []
 
     if resistance_level is not None and check_resistance_overbought(df, resistance_level, rsi_series):
-        ly_do.append("Giá chạm kháng cự mạnh, RSI > 70 (quá mua).")
+        ly_do.append("Giá chạm kháng cự mạnh.")
 
     divergence = detect_bearish_divergence(df)
     if divergence.get("detected"):
@@ -606,4 +606,164 @@ def build_signal_summary_report(evaluations: list[dict]) -> dict:
         "ban_chot_loi": ban_chot_loi_sorted,
         "giu_theo_doi": giu,
         "tong_so_ma": len(evaluations),
+    }
+
+
+# ==============================================================================
+# THỐNG KÊ TỶ LỆ TĂNG/GIẢM THEO TÍN HIỆU MUA/BÁN (bổ sung 04/08/2026)
+# ==============================================================================
+
+def tinh_thong_ke_tang_giam_theo_tin_hieu(
+    df: pd.DataFrame,
+    khuyen_nghi: str,
+    cac_phien_du_bao: tuple[int, ...] = (10, 20, 40, 60),
+    so_phien_kiem_tra: int = 250,
+) -> dict:
+    """Với CHÍNH mã đang xét, quét lại lịch sử giá để tìm các thời điểm
+    TRONG QUÁ KHỨ mã này từng KÍCH HOẠT tín hiệu KỸ THUẬT cùng loại
+    (`khuyen_nghi` = "MUA" hoặc "BAN") như hiện tại — rồi thống kê tỷ lệ
+    tăng/giảm sau ĐÚNG từng mốc trong `cac_phien_du_bao` (mặc định 10/20/
+    40/60 phiên).
+
+    PHẠM VI ĐÃ THU HẸP CÓ CHỦ Ý: chỉ phát lại được phần LỚP KỸ THUẬT THUẦN
+    TÚY (`evaluate_technical_buy_trigger` / `evaluate_technical_sell_trigger`
+    trong core/stock_signal_engine.py) — vì đây là phần DUY NHẤT chỉ phụ
+    thuộc chính OHLCV của mã đó, có thể tính lại chính xác tại bất kỳ thời
+    điểm quá khứ nào. KHÔNG phát lại được:
+        - Điều kiện phủ quyết theo `macro_score`/`market_regime` (Bước 2) —
+          đây là bối cảnh vĩ mô/thị trường THEO THỜI GIAN, hệ thống KHÔNG
+          lưu lại chuỗi lịch sử đầy đủ của 2 giá trị này, chỉ có giá trị
+          MỚI NHẤT — không thể biết chính xác macro_score/market_regime tại
+          1 ngày bất kỳ trong quá khứ.
+        - "BÁN CẮT LỖ" — phụ thuộc `position_info` (giá vào lệnh/cắt lỗ
+          THẬT của 1 vị thế cụ thể), không tồn tại trong lịch sử thuần túy.
+        - Lớp CƠ BẢN (EPS/ROE/D-E/CFO) — hiện chưa có nguồn dữ liệu.
+
+    Vì vậy, đây là thống kê "trong quá khứ, mỗi khi mã này thỏa ĐÚNG điều
+    kiện KỸ THUẬT kích hoạt MUA/BÁN như hiện tại, giá đã biến động ra sao"
+    — KHÔNG hoàn toàn giống thời điểm mã được xếp vào danh sách MUA/BÁN
+    thực tế trong báo cáo (vì báo cáo còn qua thêm lớp phủ quyết vĩ mô).
+
+    Trả về {"so_lan_quan_sat": ..., "theo_phien": {10: {...}, 20: {...}, ...}}.
+    """
+    if khuyen_nghi not in ("MUA", "BAN"):
+        raise InvalidStockSignalError('khuyen_nghi phải là "MUA" hoặc "BAN".')
+    if not cac_phien_du_bao:
+        raise InvalidStockSignalError("cac_phien_du_bao không được rỗng.")
+
+    from core.indicators import calculate_ema, calculate_ma, calculate_rsi
+    from core.market_breadth import calculate_adx
+
+    max_phien_du_bao = max(cac_phien_du_bao)
+    so_phien_toi_thieu = 200  # cần đủ cho EMA200/MA200/ADX
+    if df is None or df.empty or len(df) < so_phien_toi_thieu + max_phien_du_bao:
+        return {
+            "so_lan_quan_sat": 0,
+            "theo_phien": {},
+            "ghi_chu": (
+                f"Chưa đủ dữ liệu lịch sử (cần tối thiểu "
+                f"{so_phien_toi_thieu + max_phien_du_bao} phiên)."
+            ),
+        }
+
+    n = len(df)
+    closes = df["close"]
+    adx_series = calculate_adx(df, period=14)
+    rsi_series_full = calculate_rsi(df, period=14)
+    resistance_series = df["high"].rolling(60).max()
+    support_series = df["low"].rolling(60).min()
+    volume_ma20_series = df["volume"].rolling(20).mean()
+
+    if khuyen_nghi == "MUA":
+        ema20_series = calculate_ema(df, 20)
+        ema50_series = calculate_ema(df, 50)
+        ema200_series = calculate_ema(df, 200)
+    else:
+        ma50_series = calculate_ma(df, 50)
+        ma200_series = calculate_ma(df, 200)
+
+    start = min(so_phien_toi_thieu, max(0, n - so_phien_kiem_tra))
+    end = n - max_phien_du_bao
+
+    ket_qua_theo_phien: dict[int, list[float]] = {sp: [] for sp in cac_phien_du_bao}
+    so_lan_khop = 0
+
+    for i in range(start, max(start, end)):
+        adx_i = adx_series.iloc[i] if i < len(adx_series) else float("nan")
+        if pd.isna(adx_i):
+            continue
+        adx_i = float(adx_i)
+
+        resistance_i = resistance_series.iloc[i]
+        support_i = support_series.iloc[i]
+        volume_ma20_i = volume_ma20_series.iloc[i]
+        resistance_i = None if pd.isna(resistance_i) else float(resistance_i)
+        support_i = None if pd.isna(support_i) else float(support_i)
+        volume_ma20_i = None if pd.isna(volume_ma20_i) else float(volume_ma20_i)
+
+        df_slice = df.iloc[: i + 1]
+        rsi_slice = rsi_series_full.iloc[: i + 1]
+
+        try:
+            if khuyen_nghi == "MUA":
+                ema20_i = ema20_series.iloc[i]
+                ema50_i = ema50_series.iloc[i]
+                ema200_i = ema200_series.iloc[i]
+                if pd.isna(ema20_i) or pd.isna(ema50_i) or pd.isna(ema200_i):
+                    continue
+                ket_qua = evaluate_technical_buy_trigger(
+                    df_slice, float(ema20_i), float(ema50_i), float(ema200_i), adx_i,
+                    rsi_slice, resistance_level=resistance_i, support_level=support_i,
+                    volume_ma20=volume_ma20_i,
+                )
+                khop = ket_qua["kich_hoat"]
+            else:
+                ma50_i_series = ma50_series.iloc[: i + 1]
+                ma200_i_series = ma200_series.iloc[: i + 1]
+                if pd.isna(ma200_series.iloc[i]):
+                    continue
+                ket_qua = evaluate_technical_sell_trigger(
+                    df_slice, rsi_slice, ma50_i_series, ma200_i_series, adx_i, resistance_i,
+                )
+                khop = ket_qua["tin_hieu"]
+        except Exception:  # noqa: BLE001
+            continue
+
+        if not khop:
+            continue
+
+        so_lan_khop += 1
+        close_i = float(closes.iloc[i])
+        for sp in cac_phien_du_bao:
+            if i + sp < n:
+                close_sau = float(closes.iloc[i + sp])
+                ket_qua_theo_phien[sp].append((close_sau - close_i) / close_i * 100)
+
+    if so_lan_khop == 0:
+        return {
+            "so_lan_quan_sat": 0, "theo_phien": {},
+            "ghi_chu": "Không tìm thấy lần nào trong quá khứ mã này thỏa cùng tiêu chí kỹ thuật.",
+        }
+
+    theo_phien = {}
+    for sp in cac_phien_du_bao:
+        gia_tri = ket_qua_theo_phien[sp]
+        if not gia_tri:
+            theo_phien[sp] = {"so_lan": 0}
+            continue
+        so_lan_tang = sum(1 for x in gia_tri if x > 0)
+        theo_phien[sp] = {
+            "so_lan": len(gia_tri),
+            "ty_le_tang_pct": round(so_lan_tang / len(gia_tri) * 100, 1),
+            "ty_le_giam_pct": round((len(gia_tri) - so_lan_tang) / len(gia_tri) * 100, 1),
+            "trung_binh_thay_doi_pct": round(sum(gia_tri) / len(gia_tri), 2),
+        }
+
+    return {
+        "so_lan_quan_sat": so_lan_khop,
+        "theo_phien": theo_phien,
+        "ghi_chu": (
+            f"Dựa trên {so_lan_khop} lần trong quá khứ mã này kích hoạt cùng điều "
+            f"kiện KỸ THUẬT {khuyen_nghi} như hiện tại."
+        ),
     }
