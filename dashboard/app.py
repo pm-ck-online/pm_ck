@@ -2922,20 +2922,22 @@ def render_tong_hop_section(storage: Storage) -> None:
     #     KHÔNG chỉ so sánh cảm tính 2 con số %. ===
     st.markdown("#### 📐 Kiểm định thống kê: so sánh 2 khoảng độ lệch")
     st.caption(
-        "So sánh xem 2 khoảng CÁCH % (tính theo trị tuyệt đối so với đường tham chiếu "
-        "đã chọn ở trên) có khác biệt CÓ Ý NGHĨA THỐNG KÊ về tỷ lệ thắng hay không — "
-        "dùng kiểm định 2 tỷ lệ (two-proportion z-test), không phải so sánh cảm tính."
+        "So sánh 2 khoảng ĐỘ LỆCH % CÓ DẤU so với đường tham chiếu đã chọn ở trên "
+        "(số ÂM = giá đang DƯỚI đường tham chiếu, số DƯƠNG = giá đang TRÊN) — xem có "
+        "khác biệt CÓ Ý NGHĨA THỐNG KÊ về tỷ lệ thắng hay không, dùng kiểm định 2 tỷ lệ "
+        "(two-proportion z-test), không phải so sánh cảm tính. VD: nhập -5 đến 0 để lấy "
+        "các phiên giá THẤP HƠN đường tham chiếu tối đa 5%."
     )
 
     col_kh1, col_kh2 = st.columns(2)
     with col_kh1:
         st.markdown("**Khoảng 1**")
-        kh1_tu = st.number_input("Từ (%)", value=0.0, min_value=0.0, max_value=99.0, step=0.5, key="tong_hop_kh1_tu")
-        kh1_den = st.number_input("Đến, không gồm (%)", value=5.0, min_value=0.1, max_value=100.0, step=0.5, key="tong_hop_kh1_den")
+        kh1_tu = st.number_input("Từ (%, có thể âm)", value=-5.0, min_value=-99.0, max_value=99.0, step=0.5, key="tong_hop_kh1_tu")
+        kh1_den = st.number_input("Đến, không gồm (%, có thể âm)", value=0.0, min_value=-99.0, max_value=100.0, step=0.5, key="tong_hop_kh1_den")
     with col_kh2:
         st.markdown("**Khoảng 2**")
-        kh2_tu = st.number_input("Từ (%)", value=5.0, min_value=0.0, max_value=99.0, step=0.5, key="tong_hop_kh2_tu")
-        kh2_den = st.number_input("Đến, không gồm (%)", value=10.0, min_value=0.1, max_value=100.0, step=0.5, key="tong_hop_kh2_den")
+        kh2_tu = st.number_input("Từ (%, có thể âm)", value=0.0, min_value=-99.0, max_value=99.0, step=0.5, key="tong_hop_kh2_tu")
+        kh2_den = st.number_input("Đến, không gồm (%, có thể âm)", value=5.0, min_value=-99.0, max_value=100.0, step=0.5, key="tong_hop_kh2_den")
 
     if st.button("🔬 Chạy kiểm định", key="tong_hop_chay_kiem_dinh"):
         from core.entry_screener import so_sanh_2_khoang_do_lech
@@ -2954,14 +2956,14 @@ def render_tong_hop_section(storage: Storage) -> None:
             col_kq_a, col_kq_b = st.columns(2)
             with col_kq_a:
                 st.metric(
-                    f"Khoảng 1 ({kh1_tu:.0f}-{kh1_den:.0f}%) — Xác suất thắng",
+                    f"Khoảng 1 ({kh1_tu:+.0f}% đến {kh1_den:+.0f}%) — Xác suất thắng",
                     f"{kq_kd['xac_suat_thang_khoang_1_pct']:.1f}%",
                     help=f"Số lần quan sát: {kq_kd['so_lan_khoang_1']}",
                 )
                 st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_1']} · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
             with col_kq_b:
                 st.metric(
-                    f"Khoảng 2 ({kh2_tu:.0f}-{kh2_den:.0f}%) — Xác suất thắng",
+                    f"Khoảng 2 ({kh2_tu:+.0f}% đến {kh2_den:+.0f}%) — Xác suất thắng",
                     f"{kq_kd['xac_suat_thang_khoang_2_pct']:.1f}%",
                     help=f"Số lần quan sát: {kq_kd['so_lan_khoang_2']}",
                 )
