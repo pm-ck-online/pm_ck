@@ -15,6 +15,7 @@ from core.entry_screener import (
     kiem_tra_tich_luy_dai_han,
     quet_danh_sach_cho,
     quet_mot_ma,
+    so_sanh_2_khoang_do_lech,
     tinh_kelly_fraction,
     tinh_thong_ke_tang_giam_lich_su,
     xep_hang_uu_tien_theo_duong_tham_chieu,
@@ -468,3 +469,89 @@ class TestTinhKellyFraction:
         ket_qua = tinh_kelly_fraction(phan_bo)
         assert ket_qua["kelly_f"] is None
         assert "thiếu quan sát" in ket_qua["ghi_chu"]
+
+
+class TestSoSanh2KhoangDoLech:
+    def _make_engineered_df(self, n=800, seed=3):
+        import numpy as np
+        from core.indicators import calculate_ma
+
+        np.random.seed(seed)
+        dates = pd.bdate_range("2021-01-01", periods=n)
+        closes = 100 + np.cumsum(np.random.normal(0, 1.2, n))
+        df = pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.full(n, 1_000_000.0),
+        })
+
+        ma20_series = calculate_ma(df, period=20)
+        final_closes = closes.copy()
+        for i in range(20, n - 5):
+            ma20_i = ma20_series.iloc[i]
+            if pd_isna_safe(ma20_i) or ma20_i <= 0:
+                continue
+            do_lech = abs((closes[i] - ma20_i) / ma20_i * 100)
+            if 5 <= do_lech < 10:
+                final_closes[i + 5] = closes[i] * 1.08
+            elif do_lech < 5:
+                final_closes[i + 5] = closes[i] * 1.001
+
+        df["close"] = final_closes
+        df["high"] = final_closes * 1.01
+        df["low"] = final_closes * 0.99
+        return df
+
+    def test_detects_significant_difference_when_engineered(self):
+        df = self._make_engineered_df()
+        ket_qua = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20",
+            so_phien_du_bao=5, so_phien_kiem_tra=800,
+        )
+        assert ket_qua["hop_le"] is True
+        assert ket_qua["co_y_nghia_thong_ke"] is True
+        assert ket_qua["p_value"] < 0.05
+        assert ket_qua["xac_suat_thang_khoang_2_pct"] > ket_qua["xac_suat_thang_khoang_1_pct"]
+
+    def test_no_significant_difference_on_pure_random_walk(self):
+        import numpy as np
+        np.random.seed(42)
+        n = 500
+        closes = 100 + np.cumsum(np.random.normal(0.02, 1.0, n))
+        df = pd.DataFrame({
+            "date": pd.bdate_range("2023-01-01", periods=n),
+            "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.random.randint(500_000, 2_000_000, n).astype(float),
+        })
+        ket_qua = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20", so_phien_du_bao=5,
+        )
+        # Không có logic nào tạo khác biệt thật -> mong đợi KHÔNG có ý nghĩa thống kê.
+        assert ket_qua["co_y_nghia_thong_ke"] is False
+
+    def test_returns_invalid_when_sample_too_small(self):
+        df = pd.DataFrame({
+            "date": pd.bdate_range("2023-01-01", periods=30),
+            "open": [100.0] * 30, "high": [100.0] * 30, "low": [100.0] * 30,
+            "close": [100.0] * 30, "volume": [1_000_000.0] * 30,
+        })
+        ket_qua = so_sanh_2_khoang_do_lech(df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20")
+        assert ket_qua["hop_le"] is False
+
+    def test_raises_for_invalid_duong_tham_chieu(self):
+        df = self._make_engineered_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            so_sanh_2_khoang_do_lech(df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma50")
+
+    def test_result_types_are_json_serializable(self):
+        import json
+        df = self._make_engineered_df()
+        ket_qua = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20",
+            so_phien_du_bao=5, so_phien_kiem_tra=800,
+        )
+        json.dumps(ket_qua)  # không được ném lỗi TypeError (numpy bool/float)
+
+
+def pd_isna_safe(v):
+    import pandas as pd
+    return pd.isna(v)
