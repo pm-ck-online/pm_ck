@@ -2914,6 +2914,70 @@ def render_tong_hop_section(storage: Storage) -> None:
                 ]
                 st.dataframe(pd.DataFrame(rows_kelly), width='stretch', hide_index=True)
 
+    st.divider()
+
+    # === PHẦN 4 (bổ sung 04/08/2026): Kiểm định thống kê so sánh 2 khoảng
+    #     độ lệch — trả lời đúng câu hỏi "khoảng ±5% có khác gì khoảng
+    #     5-10% không" bằng kiểm định 2 tỷ lệ (two-proportion z-test),
+    #     KHÔNG chỉ so sánh cảm tính 2 con số %. ===
+    st.markdown("#### 📐 Kiểm định thống kê: so sánh 2 khoảng độ lệch")
+    st.caption(
+        "So sánh xem 2 khoảng CÁCH % (tính theo trị tuyệt đối so với đường tham chiếu "
+        "đã chọn ở trên) có khác biệt CÓ Ý NGHĨA THỐNG KÊ về tỷ lệ thắng hay không — "
+        "dùng kiểm định 2 tỷ lệ (two-proportion z-test), không phải so sánh cảm tính."
+    )
+
+    col_kh1, col_kh2 = st.columns(2)
+    with col_kh1:
+        st.markdown("**Khoảng 1**")
+        kh1_tu = st.number_input("Từ (%)", value=0.0, min_value=0.0, max_value=99.0, step=0.5, key="tong_hop_kh1_tu")
+        kh1_den = st.number_input("Đến, không gồm (%)", value=5.0, min_value=0.1, max_value=100.0, step=0.5, key="tong_hop_kh1_den")
+    with col_kh2:
+        st.markdown("**Khoảng 2**")
+        kh2_tu = st.number_input("Từ (%)", value=5.0, min_value=0.0, max_value=99.0, step=0.5, key="tong_hop_kh2_tu")
+        kh2_den = st.number_input("Đến, không gồm (%)", value=10.0, min_value=0.1, max_value=100.0, step=0.5, key="tong_hop_kh2_den")
+
+    if st.button("🔬 Chạy kiểm định", key="tong_hop_chay_kiem_dinh"):
+        from core.entry_screener import so_sanh_2_khoang_do_lech
+
+        try:
+            kq_kd = so_sanh_2_khoang_do_lech(
+                df_ma, khoang_1=(kh1_tu, kh1_den), khoang_2=(kh2_tu, kh2_den),
+                duong_tham_chieu=duong_tham_chieu_key_k, so_phien_du_bao=so_phien_du_bao_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            kq_kd = {"hop_le": False, "ghi_chu": f"Lỗi: {exc}"}
+
+        if not kq_kd.get("hop_le"):
+            st.warning(kq_kd.get("ghi_chu", "Không kiểm định được."))
+        else:
+            col_kq_a, col_kq_b = st.columns(2)
+            with col_kq_a:
+                st.metric(
+                    f"Khoảng 1 ({kh1_tu:.0f}-{kh1_den:.0f}%) — Xác suất thắng",
+                    f"{kq_kd['xac_suat_thang_khoang_1_pct']:.1f}%",
+                    help=f"Số lần quan sát: {kq_kd['so_lan_khoang_1']}",
+                )
+                st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_1']} · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
+            with col_kq_b:
+                st.metric(
+                    f"Khoảng 2 ({kh2_tu:.0f}-{kh2_den:.0f}%) — Xác suất thắng",
+                    f"{kq_kd['xac_suat_thang_khoang_2_pct']:.1f}%",
+                    help=f"Số lần quan sát: {kq_kd['so_lan_khoang_2']}",
+                )
+                st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_2']} · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_2']:+.2f}%")
+
+            st.metric("P-value (kiểm định 2 tỷ lệ)", f"{kq_kd['p_value']:.4f}")
+            if kq_kd["co_y_nghia_thong_ke"]:
+                st.success(kq_kd["ghi_chu"])
+            else:
+                st.info(kq_kd["ghi_chu"])
+            st.caption(
+                "⚠️ P-value nhỏ chỉ cho biết khác biệt QUAN SÁT ĐƯỢC khó xảy ra do ngẫu "
+                "nhiên thuần túy trong dữ liệu lịch sử — KHÔNG chứng minh quan hệ nhân quả "
+                "hay đảm bảo lặp lại trong tương lai."
+            )
+
     st.warning(
         "⚠️ Kelly Criterion là CÔNG THỨC TOÁN HỌC áp dụng lên TẦN SUẤT LỊCH SỬ, "
         "giả định tương lai lặp lại quá khứ — một giả định KHÔNG được đảm bảo. Kelly "
