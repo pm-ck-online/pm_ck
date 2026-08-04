@@ -308,9 +308,20 @@ class VnstockDataSource(DataSource):
     name = "vnstock"
     is_paid_source = False  # miễn phí ở mức cơ bản, có giới hạn request/phút
 
-    def __init__(self, interval_map: Optional[dict] = None, ohlcv_count: int = 800):
+    def __init__(
+        self, interval_map: Optional[dict] = None, ohlcv_count: int = 800,
+        start_date: Optional[str] = None,
+    ):
         self._interval_map = interval_map or {"day": "1D", "week": "1W"}
         self._ohlcv_count = ohlcv_count
+        # `start_date` (bổ sung 04/08/2026): lấy dữ liệu THEO NGÀY BẮT ĐẦU
+        # (VD "2021-01-01") thay vì chỉ theo `count` (số phiên gần nhất).
+        # Đã kiểm tra chữ ký API thật của vnstock trước khi dùng:
+        #   ohlcv(start=None, end=None, interval='1D', count=100, source='kbs', **kwargs)
+        # -> hàm hỗ trợ SẴN tham số start/end, chỉ là code cũ CHƯA dùng tới,
+        # luôn gọi bằng `count=` nên bị giới hạn ở mức `ohlcv_count` phiên
+        # gần nhất (mặc định 800 ≈ 3,2 năm), không lấy được xa hơn dù cần.
+        self._start_date = start_date
 
     def _get_market(self):
         try:
@@ -326,7 +337,13 @@ class VnstockDataSource(DataSource):
         interval = self._interval_map.get(timeframe, "1D")
 
         try:
-            raw_df = market.equity(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
+            if self._start_date:
+                # Lấy theo NGÀY BẮT ĐẦU (không giới hạn theo count) — dùng
+                # khi cần lịch sử dài (VD backfill từ 2021). `end=None` để
+                # vnstock tự lấy tới ngày gần nhất hiện có.
+                raw_df = market.equity(symbol).ohlcv(start=self._start_date, interval=interval)
+            else:
+                raw_df = market.equity(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
         except Exception as exc:  # noqa: BLE001 — bọc mọi lỗi thành DataSourceError thống nhất
             raise DataSourceError(
                 f"Lỗi khi lấy OHLCV từ vnstock cho '{symbol}': {exc}"
@@ -412,7 +429,10 @@ class VnstockDataSource(DataSource):
         interval = self._interval_map.get(timeframe, "1D")
 
         try:
-            raw_df = market.index(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
+            if self._start_date:
+                raw_df = market.index(symbol).ohlcv(start=self._start_date, interval=interval)
+            else:
+                raw_df = market.index(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
         except Exception as exc:  # noqa: BLE001
             raise DataSourceError(
                 f"Lỗi khi lấy dữ liệu chỉ số từ vnstock cho '{symbol}': {exc}"
