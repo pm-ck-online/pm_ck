@@ -472,7 +472,7 @@ class TestTinhKellyFraction:
 
 
 class TestSoSanh2KhoangDoLech:
-    def _make_engineered_df(self, n=800, seed=3):
+    def _make_engineered_df(self, n=1000, seed=11):
         import numpy as np
         from core.indicators import calculate_ma
 
@@ -490,11 +490,11 @@ class TestSoSanh2KhoangDoLech:
             ma20_i = ma20_series.iloc[i]
             if pd_isna_safe(ma20_i) or ma20_i <= 0:
                 continue
-            do_lech = abs((closes[i] - ma20_i) / ma20_i * 100)
+            do_lech = (closes[i] - ma20_i) / ma20_i * 100  # CÓ DẤU, khớp với logic hàm mới
             if 5 <= do_lech < 10:
-                final_closes[i + 5] = closes[i] * 1.08
-            elif do_lech < 5:
-                final_closes[i + 5] = closes[i] * 1.001
+                final_closes[i + 5] = closes[i] * 1.15   # hiệu ứng MẠNH, rõ ràng
+            elif 0 <= do_lech < 5:
+                final_closes[i + 5] = closes[i] * 0.999  # gần như đi ngang, hơi giảm nhẹ
 
         df["close"] = final_closes
         df["high"] = final_closes * 1.01
@@ -505,7 +505,7 @@ class TestSoSanh2KhoangDoLech:
         df = self._make_engineered_df()
         ket_qua = so_sanh_2_khoang_do_lech(
             df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20",
-            so_phien_du_bao=5, so_phien_kiem_tra=800,
+            so_phien_du_bao=5, so_phien_kiem_tra=1000,
         )
         assert ket_qua["hop_le"] is True
         assert ket_qua["co_y_nghia_thong_ke"] is True
@@ -547,9 +547,27 @@ class TestSoSanh2KhoangDoLech:
         df = self._make_engineered_df()
         ket_qua = so_sanh_2_khoang_do_lech(
             df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20",
-            so_phien_du_bao=5, so_phien_kiem_tra=800,
+            so_phien_du_bao=5, so_phien_kiem_tra=1000,
         )
         json.dumps(ket_qua)  # không được ném lỗi TypeError (numpy bool/float)
+
+    def test_supports_negative_range_below_reference_line(self):
+        # Khoảng ÂM (dưới đường tham chiếu) — đúng yêu cầu bổ sung: so
+        # sánh -5% đến 0% (dưới MA20) với 0% đến +5% (trên MA20).
+        df = self._make_engineered_df()
+        ket_qua = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(-5, 0), khoang_2=(0, 5), duong_tham_chieu="ma20",
+            so_phien_du_bao=5, so_phien_kiem_tra=1000,
+        )
+        assert ket_qua["hop_le"] is True
+        assert ket_qua["so_lan_khoang_1"] > 0  # phải bắt được các phiên có độ lệch ÂM
+
+    def test_raises_when_tu_not_less_than_den(self):
+        df = self._make_engineered_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            so_sanh_2_khoang_do_lech(df, khoang_1=(5, 5), khoang_2=(5, 10), duong_tham_chieu="ma20")
+        with pytest.raises(InvalidEntryScreenerError):
+            so_sanh_2_khoang_do_lech(df, khoang_1=(0, 5), khoang_2=(10, 5), duong_tham_chieu="ma20")
 
 
 def pd_isna_safe(v):
