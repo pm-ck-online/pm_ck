@@ -717,14 +717,32 @@ def render_market_regime_section(storage: Storage) -> None:
             try:
                 ts = pd.Timestamp(raw_ts)
                 so_phut_truoc = int((pd.Timestamp.now(tz=None) - ts).total_seconds() // 60)
+
+                # Nếu ra số ÂM (vô lý — nghĩa là thời điểm lưu "muộn hơn"
+                # hiện tại) -> rất có thể do script ghi bằng giờ ĐỊA
+                # PHƯƠNG máy chạy (VD giờ VN, UTC+7) trong khi so sánh ở
+                # đây theo giờ UTC của máy chủ Streamlit Cloud, khiến giờ
+                # ghi "trông như" đang ở tương lai. Tự động hiệu chỉnh
+                # +7 giờ (giả định phổ biến nhất: script chạy trên máy cá
+                # nhân đặt tại Việt Nam) và ghi rõ đây là số ĐÃ HIỆU CHỈNH,
+                # không phải số gốc, để không gây hiểu lầm dữ liệu tương lai.
+                da_hieu_chinh = False
+                if so_phut_truoc < 0:
+                    so_phut_truoc += 7 * 60
+                    da_hieu_chinh = True
+
                 canh_bao_cu = (
-                    " ⚠️ **Đã lâu chưa cập nhật (tính theo giờ UTC) — kiểm tra lại pipeline tự động.**"
+                    " ⚠️ **Đã lâu chưa cập nhật — kiểm tra lại pipeline tự động.**"
                     if so_phut_truoc > 90 else ""
+                )
+                ghi_chu_hieu_chinh = (
+                    " (đã tự hiệu chỉnh +7 giờ, giả định script chạy bằng giờ VN)"
+                    if da_hieu_chinh else ""
                 )
                 st.caption(
                     f"🕒 Cập nhật lần cuối (giờ ghi nhận trên máy chạy script): "
-                    f"{ts.strftime('%d/%m/%Y %H:%M')} — khoảng {so_phut_truoc} phút trước "
-                    f"(so với giờ UTC hiện tại).{canh_bao_cu}"
+                    f"{ts.strftime('%d/%m/%Y %H:%M')} — khoảng {so_phut_truoc} phút trước"
+                    f"{ghi_chu_hieu_chinh}.{canh_bao_cu}"
                 )
             except Exception:  # noqa: BLE001
                 st.caption(f"🕒 Cập nhật lần cuối: {raw_ts}")
