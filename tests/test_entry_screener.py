@@ -15,6 +15,7 @@ from core.entry_screener import (
     kiem_tra_tich_luy_dai_han,
     quet_danh_sach_cho,
     quet_mot_ma,
+    tinh_kelly_fraction,
     tinh_thong_ke_tang_giam_lich_su,
     xep_hang_uu_tien_theo_duong_tham_chieu,
     xep_hang_uu_tien_theo_ema200,
@@ -399,3 +400,71 @@ class TestXepHangUuTienTheoDuongThamChieu:
     def test_raises_for_non_positive_reference(self):
         with pytest.raises(InvalidEntryScreenerError):
             xep_hang_uu_tien_theo_duong_tham_chieu(100.0, 0.0, "MA20")
+
+
+class TestTinhKellyFraction:
+    def _phan_bo_gia_lap(self, ty_le_theo_bac: dict, gia_tri_theo_bac: dict, tong: int = 100):
+        phan_bo = {}
+        for key in [
+            "giam_tren_15", "giam_10_15", "giam_5_10", "giam_0_5",
+            "tang_0_5", "tang_5_10", "tang_10_15", "tang_tren_15",
+        ]:
+            so_lan = round(tong * ty_le_theo_bac.get(key, 0) / 100)
+            phan_bo[key] = {
+                "so_lan": so_lan,
+                "gia_tri_trung_binh_pct": gia_tri_theo_bac.get(key),
+            }
+        return phan_bo
+
+    def test_positive_edge_gives_positive_kelly(self):
+        # Xác suất thắng cao (70%) + biên độ thắng/thua tương đương -> Kelly dương rõ ràng.
+        phan_bo = self._phan_bo_gia_lap(
+            {"tang_0_5": 70.0, "giam_0_5": 30.0},
+            {"tang_0_5": 5.0, "giam_0_5": -5.0},
+        )
+        ket_qua = tinh_kelly_fraction(phan_bo)
+        assert ket_qua["kelly_f"] > 0
+        assert ket_qua["kelly_f_nua"] == pytest.approx(ket_qua["kelly_f"] / 2)
+
+    def test_no_edge_gives_zero_kelly(self):
+        # 50/50 với biên độ thắng/thua bằng nhau -> không có lợi thế -> Kelly = 0.
+        phan_bo = self._phan_bo_gia_lap(
+            {"tang_0_5": 50.0, "giam_0_5": 50.0},
+            {"tang_0_5": 5.0, "giam_0_5": -5.0},
+        )
+        ket_qua = tinh_kelly_fraction(phan_bo)
+        assert ket_qua["kelly_f"] == 0.0
+        assert "không nên vào lệnh" in ket_qua["ghi_chu"]
+
+    def test_negative_edge_capped_at_zero(self):
+        # Xác suất thắng thấp + biên độ thua LỚN hơn thắng -> Kelly âm -> cắt về 0.
+        phan_bo = self._phan_bo_gia_lap(
+            {"tang_0_5": 30.0, "giam_0_5": 70.0},
+            {"tang_0_5": 3.0, "giam_0_5": -10.0},
+        )
+        ket_qua = tinh_kelly_fraction(phan_bo)
+        assert ket_qua["kelly_f"] == 0.0
+        assert ket_qua["kelly_f_tho"] < 0  # giá trị thô âm, xác nhận không phải trùng hợp
+
+    def test_kelly_capped_at_100_percent(self):
+        # Lợi thế cực lớn -> f* thô có thể > 1 -> phải cắt về đúng 1.0 (100%).
+        phan_bo = self._phan_bo_gia_lap(
+            {"tang_0_5": 90.0, "giam_0_5": 10.0},
+            {"tang_0_5": 20.0, "giam_0_5": -2.0},
+        )
+        ket_qua = tinh_kelly_fraction(phan_bo)
+        assert ket_qua["kelly_f"] == 1.0
+
+    def test_returns_none_when_no_observations(self):
+        phan_bo = self._phan_bo_gia_lap({}, {})
+        ket_qua = tinh_kelly_fraction(phan_bo)
+        assert ket_qua["kelly_f"] is None
+
+    def test_returns_none_when_only_one_direction(self):
+        # Chỉ toàn "tăng", không có lần nào "giảm" -> không tính được Kelly (thiếu L).
+        phan_bo = self._phan_bo_gia_lap(
+            {"tang_0_5": 100.0}, {"tang_0_5": 5.0},
+        )
+        ket_qua = tinh_kelly_fraction(phan_bo)
+        assert ket_qua["kelly_f"] is None
+        assert "thiếu quan sát" in ket_qua["ghi_chu"]
