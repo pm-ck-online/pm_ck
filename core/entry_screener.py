@@ -592,15 +592,20 @@ def so_sanh_2_khoang_do_lech(
     so_phien_kiem_tra: int = 250,
     nguong_y_nghia: float = 0.05,
 ) -> dict:
-    """Kiểm định thống kê xem 2 KHOẢNG ĐỘ LỆCH (khoảng cách % giá so với
-    đường tham chiếu EMA200/MA20) có khác biệt CÓ Ý NGHĨA THỐNG KÊ về
-    tỷ lệ thắng hay không — trả lời đúng câu hỏi "khoảng ±5% có khác gì
-    khoảng 5-10% không", KHÔNG chỉ so sánh cảm tính 2 con số %.
+    """Kiểm định thống kê xem 2 KHOẢNG ĐỘ LỆCH (% giá so với đường tham
+    chiếu EMA200/MA20) có khác biệt CÓ Ý NGHĨA THỐNG KÊ về tỷ lệ thắng
+    hay không — trả lời đúng câu hỏi "khoảng -5% đến 0% có khác gì
+    khoảng 0% đến +5% không", KHÔNG chỉ so sánh cảm tính 2 con số %.
 
-    `khoang_1`, `khoang_2`: tuple (từ, đến) tính theo TRỊ TUYỆT ĐỐI độ
-    lệch % (VD: (0, 5) nghĩa là |độ lệch| trong [0%, 5%); (5, 10) nghĩa
-    là |độ lệch| trong [5%, 10%)) — không phân biệt trên/dưới đường
-    tham chiếu, chỉ tính KHOẢNG CÁCH.
+    `khoang_1`, `khoang_2`: tuple (từ, đến) tính theo độ lệch % CÓ DẤU
+    (bổ sung 04/08/2026 — trước đây dùng trị tuyệt đối, nay cho phép
+    nhập số ÂM để phân biệt DƯỚI/TRÊN đường tham chiếu):
+        - Số ÂM = giá đang DƯỚI đường tham chiếu (VD: -5 đến 0 nghĩa là
+          giá thấp hơn đường tham chiếu tối đa 5%).
+        - Số DƯƠNG = giá đang TRÊN đường tham chiếu (VD: 0 đến 5 nghĩa
+          là giá cao hơn đường tham chiếu tối đa 5%).
+    Mỗi khoảng là nửa khoảng đóng-mở: [từ, đến) — bao gồm cận dưới,
+    không bao gồm cận trên.
 
     PHƯƠNG PHÁP: kiểm định 2 tỷ lệ (two-proportion z-test) so sánh tỷ lệ
     THẮNG (giá tăng sau `so_phien_du_bao` phiên) giữa 2 nhóm — trả về
@@ -616,6 +621,10 @@ def so_sanh_2_khoang_do_lech(
 
     if duong_tham_chieu not in ("ema200", "ma20"):
         raise InvalidEntryScreenerError('duong_tham_chieu phải là "ema200" hoặc "ma20".')
+    if khoang_1[0] >= khoang_1[1]:
+        raise InvalidEntryScreenerError('khoang_1: giá trị "từ" phải nhỏ hơn "đến".')
+    if khoang_2[0] >= khoang_2[1]:
+        raise InvalidEntryScreenerError('khoang_2: giá trị "từ" phải nhỏ hơn "đến".')
 
     so_phien_toi_thieu = 200 if duong_tham_chieu == "ema200" else 20
     if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < so_phien_toi_thieu:
@@ -639,12 +648,12 @@ def so_sanh_2_khoang_do_lech(
         if pd.isna(duong_i) or duong_i <= 0:
             continue
         close_i = float(closes.iloc[i])
-        do_lech_tuyet_doi = abs((close_i - duong_i) / duong_i * 100)
+        do_lech = (close_i - duong_i) / duong_i * 100  # CÓ DẤU: âm = dưới đường, dương = trên đường
 
         nhom = None
-        if khoang_1[0] <= do_lech_tuyet_doi < khoang_1[1]:
+        if khoang_1[0] <= do_lech < khoang_1[1]:
             nhom = 1
-        elif khoang_2[0] <= do_lech_tuyet_doi < khoang_2[1]:
+        elif khoang_2[0] <= do_lech < khoang_2[1]:
             nhom = 2
         if nhom is None:
             continue
