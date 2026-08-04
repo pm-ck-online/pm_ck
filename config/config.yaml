@@ -19,6 +19,11 @@ app:
 #   cần tự xác minh lại trước khi tắt chế độ này.
 data_source:
   adapter: "vnstock"            # "mock" | "vnstock" | "ssi" | "vndirect" | ... (tự bổ sung sau)
+  # Lấy lịch sử OHLCV bắt đầu từ ngày này (thay vì mặc định chỉ lấy ~800
+  # phiên gần nhất ≈ 3,2 năm) — bổ sung 04/08/2026 để có đủ dữ liệu phân
+  # tích thống kê dài hạn (VD các kiểm định trong core/entry_screener.py).
+  # Để trống ("") hoặc xóa dòng này để quay lại lấy theo count như cũ.
+  vnstock_start_date: "2021-01-01"
   delayed_mode: true
   warn_if_paid_source: true
   polling_interval_minutes: 5
