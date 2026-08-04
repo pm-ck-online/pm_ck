@@ -2716,6 +2716,26 @@ def render_tong_hop_section(storage: Storage) -> None:
         st.warning(f"Không có dữ liệu lịch sử OHLCV cho mã {ma_chon}.")
         return
 
+    # --- Thêm nhanh vào "Danh sách theo dõi + Lý do" (bổ sung 04/08/2026) ---
+    # Gợi ý sẵn 1 lý do dựa trên tín hiệu Mua/Bán hiện có (nếu có), người
+    # dùng có thể sửa lại tự do trước khi lưu.
+    _signal_goi_y = storage.get_latest("stock_signal", ma_chon)
+    goi_y_ly_do = ""
+    if _signal_goi_y:
+        _sig_data = _signal_goi_y["data"]
+        _ly_do_ky_thuat = _sig_data.get("chi_tiet", {}).get("ky_thuat", []) or _sig_data.get("chi_tiet", {}).get("ky_thuat_dat", [])
+        if _ly_do_ky_thuat:
+            goi_y_ly_do = f"{_sig_data.get('khuyen_nghi', '')}: " + "; ".join(_ly_do_ky_thuat)
+
+    with st.expander("🔖 Thêm mã này vào Danh sách theo dõi + Lý do", expanded=False):
+        ly_do_theo_doi = st.text_area(
+            "Lý do theo dõi", value=goi_y_ly_do, key="tong_hop_ly_do_theo_doi",
+            placeholder="VD: Phát hiện phân kỳ giảm, cần theo dõi thêm trước khi chốt lời...",
+        )
+        if st.button("🔖 Thêm vào danh sách theo dõi", key="tong_hop_them_theo_doi_btn"):
+            them_vao_danh_sach_theo_doi(storage, ma_chon, ly_do_theo_doi, get_current_user_id())
+            st.success(f"Đã thêm {ma_chon} vào Danh sách theo dõi.")
+
     gia_dong_cua_gan_nhat = float(df_ma["close"].iloc[-1])
     col_gia1, col_gia2 = st.columns(2)
     with col_gia1:
@@ -3065,6 +3085,36 @@ def save_watchlist(storage: Storage, symbols: list[str], user_id: str = "default
     storage.save("watchlist", user_id, {"symbols": symbols})
 
 
+# ==============================================================================
+# DANH SÁCH THEO DÕI + LÝ DO (bổ sung 04/08/2026) — KHÁC với "Watchlist" ở
+# trên (chỉ là danh sách mã đơn thuần): mục này lưu THÊM lý do cụ thể vì
+# sao cần theo dõi mã đó, phát sinh trong lúc rà soát/phân tích — có thể
+# thêm nhanh trực tiếp từ module "📌 Tổng hợp".
+# ==============================================================================
+
+def load_danh_sach_theo_doi(storage: Storage, user_id: str = "default") -> list[dict]:
+    record = storage.get_latest("danh_sach_theo_doi", user_id)
+    if record is None:
+        return []
+    return record["data"].get("danh_sach", [])
+
+
+def save_danh_sach_theo_doi(storage: Storage, danh_sach: list[dict], user_id: str = "default") -> None:
+    storage.save("danh_sach_theo_doi", user_id, {"danh_sach": danh_sach})
+
+
+def them_vao_danh_sach_theo_doi(storage: Storage, ma: str, ly_do: str, user_id: str = "default") -> None:
+    """Thêm 1 mã vào danh sách theo dõi kèm lý do — nếu mã ĐÃ CÓ SẴN thì
+    CẬP NHẬT lại lý do mới (không tạo bản ghi trùng lặp cho cùng 1 mã)."""
+    from datetime import date
+
+    danh_sach = load_danh_sach_theo_doi(storage, user_id)
+    danh_sach = [d for d in danh_sach if d["ma"] != ma]
+    danh_sach.append({"ma": ma, "ly_do": ly_do, "ngay_them": date.today().isoformat()})
+    danh_sach.sort(key=lambda d: d["ma"])
+    save_danh_sach_theo_doi(storage, danh_sach, user_id)
+
+
 @st.cache_data(ttl=30, show_spinner="Đang tải dữ liệu watchlist...")
 def build_watchlist_detail_table(_storage: Storage, symbols: tuple[str, ...]) -> pd.DataFrame:
     """Tổng hợp thông tin CƠ BẢN + KỸ THUẬT đã tính sẵn ở CÁC MODULE KHÁC
@@ -3262,6 +3312,61 @@ def render_watchlist_manager_section(storage: Storage) -> None:
 # NHẬT KÝ GIAO DỊCH MUA/BÁN (mô phỏng)
 # ==============================================================================
 
+def render_danh_sach_theo_doi_section(storage: Storage) -> None:
+    """Hiển thị + quản lý "Danh sách theo dõi + Lý do" (bổ sung 04/08/2026)
+    — KHÁC với "Watchlist" (chỉ là danh sách mã đơn thuần): mục này lưu
+    thêm LÝ DO cụ thể vì sao cần theo dõi từng mã, phát sinh trong quá
+    trình rà soát/phân tích. Có thể thêm nhanh trực tiếp từ module
+    "📌 Tổng hợp", hoặc thêm/xóa thủ công ngay tại đây.
+    """
+    st.subheader("🔖 Danh sách theo dõi + Lý do")
+    st.caption(
+        "Khác với \"📋 Watchlist\" (chỉ là danh sách mã đơn thuần) — mục này lưu "
+        "kèm LÝ DO cụ thể vì sao cần theo dõi từng mã, phát sinh trong lúc rà soát/"
+        "phân tích. Có thể thêm nhanh ngay từ module \"📌 Tổng hợp\", hoặc thêm/sửa/"
+        "xóa thủ công tại đây."
+    )
+
+    user_id = get_current_user_id()
+    danh_sach = load_danh_sach_theo_doi(storage, user_id)
+
+    with st.form("them_theo_doi_thu_cong_form", clear_on_submit=True):
+        col1, col2 = st.columns([1, 3])
+        with col1:
+            ma_moi = st.text_input("Mã cổ phiếu", key="theo_doi_ma_moi").strip().upper()
+        with col2:
+            ly_do_moi = st.text_input("Lý do theo dõi", key="theo_doi_ly_do_moi")
+        submitted = st.form_submit_button("➕ Thêm vào danh sách")
+        if submitted:
+            if not ma_moi:
+                st.warning("Cần nhập mã cổ phiếu.")
+            else:
+                them_vao_danh_sach_theo_doi(storage, ma_moi, ly_do_moi, user_id)
+                st.success(f"Đã thêm {ma_moi} vào Danh sách theo dõi.")
+                st.rerun()
+
+    if not danh_sach:
+        st.info("Danh sách theo dõi hiện đang trống.")
+        return
+
+    df_hien_thi = pd.DataFrame(danh_sach).rename(
+        columns={"ma": "Mã", "ly_do": "Lý do theo dõi", "ngay_them": "Ngày thêm"}
+    )
+    df_hien_thi.insert(len(df_hien_thi.columns), "🗑️ Xóa", False)
+
+    edited = st.data_editor(
+        df_hien_thi, hide_index=True, width='stretch', key="theo_doi_editor",
+        column_config={"🗑️ Xóa": st.column_config.CheckboxColumn(help="Tick để xóa mã khỏi danh sách theo dõi")},
+    )
+    if st.button("Xác nhận xóa các mã đã tick", key="theo_doi_xoa_btn"):
+        so_luong_truoc = len(danh_sach)
+        ma_can_xoa = set(edited.loc[edited["🗑️ Xóa"], "Mã"])
+        danh_sach_moi = [d for d in danh_sach if d["ma"] not in ma_can_xoa]
+        save_danh_sach_theo_doi(storage, danh_sach_moi, user_id)
+        st.success(f"Đã xóa {so_luong_truoc - len(danh_sach_moi)} mã khỏi danh sách theo dõi.")
+        st.rerun()
+
+
 def render_trade_journal_section(storage: Storage, symbols: list[str]) -> None:
     st.subheader("📒 Nhật ký giao dịch mua/bán (mô phỏng)")
     st.caption(
@@ -3426,6 +3531,7 @@ DASHBOARD_GROUPS = [
     ]),
     ("NHÓM 3 — GIAO DỊCH CỔ PHIẾU", [
         "📌 Tổng hợp",
+        "🔖 Danh sách theo dõi + Lý do",
         "📋 Watchlist (thêm/xóa mã)",
         "📈 Bảng giá theo dõi (Watchlist)",
         "🕯️ Biểu đồ nến",
@@ -3536,6 +3642,7 @@ def main() -> None:
     # --- Danh sách mục theo đúng thứ tự hiển thị, kèm hàm + tham số riêng ---
     sections_to_call = [
         ("📌 Tổng hợp", render_tong_hop_section, (storage,)),
+        ("🔖 Danh sách theo dõi + Lý do", render_danh_sach_theo_doi_section, (storage,)),
         ("📋 Watchlist (thêm/xóa mã)", render_watchlist_manager_section, (storage,)),
         ("📈 Bảng giá theo dõi (Watchlist)", render_watchlist_section, (storage, symbols)),
         ("🕯️ Biểu đồ nến", render_chart_section, (storage, symbols)),
