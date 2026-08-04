@@ -2765,13 +2765,21 @@ def render_tong_hop_section(storage: Storage) -> None:
 
     st.divider()
 
-    # === PHẦN 2: Báo cáo Tín hiệu Mua/Bán ===
-    st.markdown("#### 🚦 Tín hiệu Mua/Bán hiện tại")
+    # === PHẦN 2: Báo cáo Tín hiệu Mua/Bán (TRUNG/DÀI HẠN) ===
+    st.markdown("#### 🚦 Tín hiệu Mua/Bán (Trung/Dài hạn)")
+    st.caption(
+        "📅 Khung thời gian: TRUNG/DÀI HẠN (vài tuần đến vài tháng) — dựa trên xu "
+        "hướng EMA200, ADX, mẫu hình breakout/pullback (core.stock_signal_engine). "
+        "KHÔNG cùng khung thời gian với phần Kelly Criterion bên dưới (vốn tính theo "
+        "chu kỳ ngắn hạn bạn chọn) — 2 mục này CÓ THỂ cho kết luận khác nhau, thậm chí "
+        "ngược nhau, vì đang trả lời 2 câu hỏi khác nhau (xu hướng dài hạn vs. xác suất "
+        "ngắn hạn), không phải mâu thuẫn hay lỗi."
+    )
     signal_record = storage.get_latest("stock_signal", ma_chon)
     if signal_record:
         sig = signal_record["data"]
         khuyen_nghi_mau = {"MUA": "🟢 MUA", "BAN": "🔴 BÁN", "GIU_THEO_DOI": "🟡 GIỮ/THEO DÕI"}.get(sig.get("khuyen_nghi"), "—")
-        st.metric("Khuyến nghị", khuyen_nghi_mau)
+        st.metric("Khuyến nghị (Trung/Dài hạn)", khuyen_nghi_mau)
         chi_tiet = sig.get("chi_tiet", {})
         if chi_tiet.get("mau_hinh_ky_thuat"):
             st.write(f"**Mẫu hình kỹ thuật:** {chi_tiet['mau_hinh_ky_thuat']}")
@@ -2784,13 +2792,16 @@ def render_tong_hop_section(storage: Storage) -> None:
 
     st.divider()
 
-    # === PHẦN 3: Kelly Criterion — phân bổ vốn tối ưu theo tỷ lệ ăn/thua ===
-    st.markdown("#### 🎯 Phân bổ vốn tối ưu theo Kelly Criterion")
+    # === PHẦN 3: Kelly Criterion — phân bổ vốn tối ưu theo tỷ lệ ăn/thua (NGẮN HẠN) ===
+    st.markdown("#### 🎯 Phân bổ vốn tối ưu theo Kelly Criterion (Ngắn hạn)")
     st.caption(
-        "Dựa trên tần suất lịch sử CHÍNH mã này từng ở tình huống tương tự hiện tại "
-        "(tái sử dụng logic module \"Rà soát danh sách vào lệnh ngắn hạn\") — công "
-        "thức Kelly: f* = p/L − q/G (p=xác suất thắng, q=xác suất thua, G=biên độ "
-        "tăng TB khi thắng, L=biên độ giảm TB khi thua)."
+        "📅 Khung thời gian: NGẮN HẠN — xác suất tăng/giảm đo theo đúng SỐ PHIÊN bạn "
+        "chọn bên dưới (5/10/15/30 phiên, tối đa ~1,5 tháng), KHÔNG phải cùng khung "
+        "trung/dài hạn với mục Tín hiệu Mua/Bán ở trên. Dựa trên tần suất lịch sử "
+        "CHÍNH mã này từng ở tình huống tương tự hiện tại (tái sử dụng logic module "
+        "\"Rà soát danh sách vào lệnh ngắn hạn\") — công thức Kelly: f* = p/L − q/G "
+        "(p=xác suất thắng, q=xác suất thua, G=biên độ tăng TB khi thắng, L=biên độ "
+        "giảm TB khi thua)."
     )
 
     from core.entry_screener import tinh_kelly_fraction
@@ -2806,6 +2817,7 @@ def render_tong_hop_section(storage: Storage) -> None:
             format_func=lambda x: f"{x} phiên", key="tong_hop_so_phien",
         )
     duong_tham_chieu_key_k = "ema200" if duong_tham_chieu_nhan_k == "EMA200" else "ma20"
+    st.caption(f"📌 Đang phân tích khung NGẮN HẠN: {so_phien_du_bao_k} phiên tới (~{so_phien_du_bao_k / 20:.1f} tháng giao dịch).")
 
     snap = storage.get_latest("indicator_snapshot", ma_chon)
     tieu_chi_dat_k = ["dieu_kien_nen_ema200"]  # mặc định — luôn tính được cho MỌI mã
