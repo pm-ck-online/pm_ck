@@ -467,11 +467,15 @@ def tinh_thong_ke_tang_giam_lich_su(
 
     phan_bo = {}
     for key, _, _, nhan in BAC_TANG_GIAM:
-        so_lan_bac = sum(1 for x in ket_qua_tung_lan if _xac_dinh_bac(x) == key)
+        gia_tri_bac = [x for x in ket_qua_tung_lan if _xac_dinh_bac(x) == key]
+        so_lan_bac = len(gia_tri_bac)
         phan_bo[key] = {
             "nhan": nhan,
             "so_lan": so_lan_bac,
             "ty_le_pct": round(so_lan_bac / so_lan * 100, 1),
+            "gia_tri_trung_binh_pct": (
+                round(sum(gia_tri_bac) / so_lan_bac, 2) if so_lan_bac > 0 else None
+            ),
         }
 
     return {
@@ -481,5 +485,95 @@ def tinh_thong_ke_tang_giam_lich_su(
         "ghi_chu": (
             f"Dựa trên {so_lan} lần trong quá khứ mã này thỏa tiêu chí: "
             + ", ".join(TIEU_CHI_KHA_DUNG.get(t, t) for t in tieu_chi_su_dung)
+        ),
+    }
+
+
+# ==============================================================================
+# MỤC 8 (BỔ SUNG 04/08/2026) — KELLY CRITERION DỰA TRÊN PHÂN BỐ TĂNG/GIẢM
+# ==============================================================================
+
+TANG_KEYS = ("tang_0_5", "tang_5_10", "tang_10_15", "tang_tren_15")
+GIAM_KEYS = ("giam_0_5", "giam_5_10", "giam_10_15", "giam_tren_15")
+
+
+def tinh_kelly_fraction(phan_bo: dict) -> dict:
+    """Tính hệ số Kelly Criterion (f*) — tỷ trọng vốn TỐI ƯU (về mặt toán
+    học, tối đa hóa tốc độ tăng trưởng vốn kỳ vọng dài hạn) cho 1 lệnh —
+    dựa trên phân bố xác suất tăng/giảm theo bậc % đã tính ở
+    `tinh_thong_ke_tang_giam_lich_su()`.
+
+    CÔNG THỨC (Kelly cho cược nhị phân thắng tỷ lệ G / thua tỷ lệ L):
+        f* = p/L - q/G
+    trong đó:
+        p = xác suất THẮNG = tổng ty_le_pct các bậc "tăng" / 100
+        q = 1 - p = xác suất THUA
+        G = trung bình % TĂNG khi thắng (bình quân gia quyền theo số lần
+            quan sát của các bậc tăng), dạng phân số (VD 0,08 cho 8%)
+        L = trung bình % GIẢM khi thua (lấy trị tuyệt đối), dạng phân số
+
+    Trả về f* đã cắt về [0, 1] — f*=0 nghĩa là "không có lợi thế thống
+    kê, không nên vào lệnh theo Kelly". Kèm f*/2 ("nửa Kelly") vì Kelly
+    ĐẦY ĐỦ trên thực tế biến động rất mạnh, giới đầu tư định lượng
+    thường khuyến nghị dùng 1/2 hoặc 1/4 Kelly để giảm rủi ro.
+
+    LƯU Ý: đây là CÔNG THỨC TOÁN HỌC áp dụng lên DỮ LIỆU TẦN SUẤT LỊCH
+    SỬ - không phải cam kết lợi nhuận, và giả định phân bố tương lai
+    giống phân bố quá khứ (một giả định KHÔNG được đảm bảo).
+    """
+    so_lan_tang = sum(phan_bo.get(k, {}).get("so_lan", 0) for k in TANG_KEYS)
+    so_lan_giam = sum(phan_bo.get(k, {}).get("so_lan", 0) for k in GIAM_KEYS)
+    tong_so_lan = so_lan_tang + so_lan_giam
+
+    if tong_so_lan == 0:
+        return {
+            "kelly_f": None, "kelly_f_nua": None,
+            "ghi_chu": "Không có đủ số liệu (0 quan sát) để tính Kelly.",
+        }
+
+    p = so_lan_tang / tong_so_lan
+    q = so_lan_giam / tong_so_lan
+
+    if so_lan_tang == 0 or so_lan_giam == 0:
+        return {
+            "kelly_f": None, "kelly_f_nua": None,
+            "xac_suat_thang": round(p * 100, 1), "xac_suat_thua": round(q * 100, 1),
+            "ghi_chu": "Không thể tính Kelly vì thiếu quan sát ở chiều tăng hoặc giảm (toàn bộ lịch sử chỉ có 1 chiều).",
+        }
+
+    tong_gia_tri_tang = sum(
+        phan_bo[k]["so_lan"] * phan_bo[k]["gia_tri_trung_binh_pct"]
+        for k in TANG_KEYS if phan_bo.get(k, {}).get("so_lan", 0) > 0
+    )
+    tong_gia_tri_giam = sum(
+        phan_bo[k]["so_lan"] * phan_bo[k]["gia_tri_trung_binh_pct"]
+        for k in GIAM_KEYS if phan_bo.get(k, {}).get("so_lan", 0) > 0
+    )
+    G = (tong_gia_tri_tang / so_lan_tang) / 100
+    L = abs(tong_gia_tri_giam / so_lan_giam) / 100
+
+    if G <= 0 or L <= 0:
+        return {
+            "kelly_f": None, "kelly_f_nua": None,
+            "xac_suat_thang": round(p * 100, 1), "xac_suat_thua": round(q * 100, 1),
+            "ghi_chu": "Không thể tính Kelly do biên độ tăng/giảm trung bình bằng 0.",
+        }
+
+    f_sao = p / L - q / G
+    f_sao_cat = max(0.0, min(1.0, f_sao))
+
+    return {
+        "kelly_f": round(f_sao_cat, 4),
+        "kelly_f_nua": round(f_sao_cat / 2, 4),
+        "kelly_f_tho": round(f_sao, 4),
+        "xac_suat_thang": round(p * 100, 1),
+        "xac_suat_thua": round(q * 100, 1),
+        "trung_binh_tang_pct": round(G * 100, 2),
+        "trung_binh_giam_pct": round(L * 100, 2),
+        "ghi_chu": (
+            "Không có lợi thế thống kê (Kelly <= 0) - về mặt toán học không nên vào lệnh."
+            if f_sao <= 0 else
+            f"Kelly đề xuất phân bổ tối đa {f_sao_cat * 100:.1f}% vốn cho lệnh này "
+            f"(khuyến nghị thực tế nên dùng nửa Kelly {f_sao_cat / 2 * 100:.1f}% để giảm biến động)."
         ),
     }
