@@ -41,20 +41,23 @@ TIEU_CHI_KHA_DUNG = {
 # MỤC 1 — XẾP HẠNG ƯU TIÊN THEO VỊ TRÍ SO VỚI EMA200
 # ==============================================================================
 
-def xep_hang_uu_tien_theo_ema200(gia_dong_cua: float, ema200: Optional[float]) -> dict:
-    """Xếp hạng ưu tiên vào lệnh dựa trên độ lệch giá so với EMA200 (mục 1
-    tài liệu): trên EMA200 -> ưu tiên CAO, trong -10%..0% -> ưu tiên TRUNG
-    BÌNH (có thể đang pullback), dưới -10% -> KHÔNG ĐẠT.
+def xep_hang_uu_tien_theo_duong_tham_chieu(
+    gia_dong_cua: float, duong_tham_chieu: Optional[float], ten_duong: str = "EMA200"
+) -> dict:
+    """Phiên bản TỔNG QUÁT của `xep_hang_uu_tien_theo_ema200()` — dùng
+    chung được cho BẤT KỲ đường trung bình nào làm mốc tham chiếu (EMA200
+    hoặc MA20), theo đúng cùng 1 công thức/ngưỡng (bổ sung 04/08/2026 để
+    hỗ trợ lựa chọn MA20 làm đường tham chiếu thay thế EMA200).
 
-    `ema200=None` (mã chưa đủ dữ liệu tính EMA200) -> trả về KHÔNG ĐẠT,
-    không báo lỗi (an toàn, loại khỏi danh sách chờ).
+    `ten_duong`: chỉ dùng để đặt tên trong thông báo lỗi cho khớp ngữ
+    cảnh hiển thị (VD: "EMA200" hoặc "MA20").
     """
-    if ema200 is None:
-        return {"do_lech_ema200_pct": None, "xep_hang_uu_tien": "KHONG_DAT"}
-    if ema200 <= 0:
-        raise InvalidEntryScreenerError("ema200 phải > 0.")
+    if duong_tham_chieu is None:
+        return {"do_lech_pct": None, "xep_hang_uu_tien": "KHONG_DAT"}
+    if duong_tham_chieu <= 0:
+        raise InvalidEntryScreenerError(f"{ten_duong} phải > 0.")
 
-    do_lech = (gia_dong_cua - ema200) / ema200 * 100
+    do_lech = (gia_dong_cua - duong_tham_chieu) / duong_tham_chieu * 100
     if do_lech >= 0:
         hang = "UU_TIEN_CAO"
     elif do_lech >= -10.0:
@@ -62,7 +65,23 @@ def xep_hang_uu_tien_theo_ema200(gia_dong_cua: float, ema200: Optional[float]) -
     else:
         hang = "KHONG_DAT"
 
-    return {"do_lech_ema200_pct": do_lech, "xep_hang_uu_tien": hang}
+    return {"do_lech_pct": do_lech, "xep_hang_uu_tien": hang}
+
+
+def xep_hang_uu_tien_theo_ema200(gia_dong_cua: float, ema200: Optional[float]) -> dict:
+    """Xếp hạng ưu tiên vào lệnh dựa trên độ lệch giá so với EMA200 (mục 1
+    tài liệu): trên EMA200 -> ưu tiên CAO, trong -10%..0% -> ưu tiên TRUNG
+    BÌNH (có thể đang pullback), dưới -10% -> KHÔNG ĐẠT.
+
+    `ema200=None` (mã chưa đủ dữ liệu tính EMA200) -> trả về KHÔNG ĐẠT,
+    không báo lỗi (an toàn, loại khỏi danh sách chờ).
+
+    (Giữ nguyên hàm này để KHÔNG phá vỡ các lời gọi hiện có — nay chỉ là
+    lớp bọc mỏng gọi `xep_hang_uu_tien_theo_duong_tham_chieu()` ở trên,
+    đảm bảo kết quả giống hệt như trước.)
+    """
+    ket_qua = xep_hang_uu_tien_theo_duong_tham_chieu(gia_dong_cua, ema200, "EMA200")
+    return {"do_lech_ema200_pct": ket_qua["do_lech_pct"], "xep_hang_uu_tien": ket_qua["xep_hang_uu_tien"]}
 
 
 # ==============================================================================
@@ -355,11 +374,16 @@ def tinh_thong_ke_tang_giam_lich_su(
     tieu_chi_dat: list[str],
     so_phien_du_bao: int = 30,
     so_phien_kiem_tra: int = 250,
+    duong_tham_chieu: str = "ema200",
 ) -> dict:
     """Với CHÍNH mã đang xét, quét lại lịch sử giá để tìm các thời điểm
     TRONG QUÁ KHỨ mã này từng thỏa CÙNG bộ tiêu chí (`tieu_chi_dat`) như
     hiện tại — rồi thống kê % thay đổi giá sau đúng `so_phien_du_bao`
     phiên kể từ mỗi thời điểm đó, phân theo các bậc % (xem `BAC_TANG_GIAM`).
+
+    `duong_tham_chieu`: "ema200" (mặc định) hoặc "ma20" — đường trung
+    bình dùng làm mốc cho tiêu chí "dieu_kien_nen_ema200" khi phát lại
+    lịch sử (bổ sung 04/08/2026, cho phép chọn MA20 thay EMA200).
 
     PHẠM VI ĐÃ THU HẸP CÓ CHỦ Ý: chỉ phát lại 2 tiêu chí tính NHANH
     ("dieu_kien_nen_ema200", "tich_luy_dai_han") — 2 tiêu chí còn lại
@@ -373,6 +397,9 @@ def tinh_thong_ke_tang_giam_lich_su(
     Đây là TẦN SUẤT THỰC NGHIỆM từ lịch sử, KHÔNG phải xác suất dự báo
     tương lai được đảm bảo — luôn báo cáo kèm cỡ mẫu.
     """
+    if duong_tham_chieu not in ("ema200", "ma20"):
+        raise InvalidEntryScreenerError('duong_tham_chieu phải là "ema200" hoặc "ma20".')
+
     TIEU_CHI_NHANH = {"dieu_kien_nen_ema200", "tich_luy_dai_han"}
     tieu_chi_su_dung = [t for t in tieu_chi_dat if t in TIEU_CHI_NHANH]
 
@@ -388,29 +415,33 @@ def tinh_thong_ke_tang_giam_lich_su(
             "phan_bo": {},
         }
 
-    if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < 200:
-        return {"so_lan_quan_sat": 0, "ghi_chu": "Chưa đủ dữ liệu lịch sử (cần tối thiểu 200 phiên).", "phan_bo": {}}
+    so_phien_toi_thieu = 200 if duong_tham_chieu == "ema200" else 20
+    if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < so_phien_toi_thieu:
+        return {"so_lan_quan_sat": 0, "ghi_chu": f"Chưa đủ dữ liệu lịch sử (cần tối thiểu {so_phien_toi_thieu} phiên).", "phan_bo": {}}
 
-    from core.indicators import calculate_ema
+    from core.indicators import calculate_ema, calculate_ma
 
     n = len(df_ohlcv)
-    ema200_series = calculate_ema(df_ohlcv, period=200)
+    if duong_tham_chieu == "ema200":
+        duong_series = calculate_ema(df_ohlcv, period=200)
+    else:
+        duong_series = calculate_ma(df_ohlcv, period=20)
     closes = df_ohlcv["close"]
 
-    start = 200
+    start = so_phien_toi_thieu
     end = n - so_phien_du_bao  # cần đủ dữ liệu TƯƠNG LAI để đo % thay đổi
     start = min(start, max(0, n - so_phien_kiem_tra))
 
     ket_qua_tung_lan: list[float] = []
     for i in range(start, max(start, end)):
-        ema200_i = ema200_series.iloc[i]
-        if pd.isna(ema200_i) or ema200_i <= 0:
+        duong_i = duong_series.iloc[i]
+        if pd.isna(duong_i) or duong_i <= 0:
             continue
         close_i = float(closes.iloc[i])
 
         dat_dieu_kien = False
         if "dieu_kien_nen_ema200" in tieu_chi_su_dung:
-            do_lech = (close_i - ema200_i) / ema200_i * 100
+            do_lech = (close_i - duong_i) / duong_i * 100
             if do_lech >= -10.0:
                 dat_dieu_kien = True
 
