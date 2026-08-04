@@ -16,6 +16,7 @@ from core.entry_screener import (
     quet_danh_sach_cho,
     quet_mot_ma,
     tinh_thong_ke_tang_giam_lich_su,
+    xep_hang_uu_tien_theo_duong_tham_chieu,
     xep_hang_uu_tien_theo_ema200,
 )
 
@@ -351,3 +352,50 @@ class TestTinhThongKeTangGiamLichSu:
         )
         assert result["so_lan_quan_sat"] > 0
         assert "Tích lũy" in result["ghi_chu"] or "EMA200" in result["ghi_chu"]
+
+    def test_works_with_ma20_reference_line(self):
+        df = self._make_realistic_df()
+        result = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=10, duong_tham_chieu="ma20",
+        )
+        assert result["so_lan_quan_sat"] > 0
+
+    def test_ma20_needs_less_history_than_ema200(self):
+        # MA20 chỉ cần tối thiểu 20 phiên, ít hơn nhiều so với 200 của EMA200.
+        df = self._make_realistic_df(n=60)
+        r_ema200 = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=10, duong_tham_chieu="ema200",
+        )
+        r_ma20 = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=10, duong_tham_chieu="ma20",
+        )
+        assert r_ema200["so_lan_quan_sat"] == 0  # chưa đủ 200 phiên cho EMA200
+        assert r_ma20["so_lan_quan_sat"] > 0      # đã đủ 20 phiên cho MA20
+
+    def test_raises_for_invalid_duong_tham_chieu(self):
+        df = self._make_realistic_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            tinh_thong_ke_tang_giam_lich_su(df, ["dieu_kien_nen_ema200"], duong_tham_chieu="ma50")
+
+
+class TestXepHangUuTienTheoDuongThamChieu:
+    def test_matches_ema200_wrapper_exactly(self):
+        # Hàm cũ (wrapper) và hàm tổng quát PHẢI cho kết quả giống hệt nhau.
+        ket_qua_cu = xep_hang_uu_tien_theo_ema200(105.0, 100.0)
+        ket_qua_moi = xep_hang_uu_tien_theo_duong_tham_chieu(105.0, 100.0, "EMA200")
+        assert ket_qua_cu["xep_hang_uu_tien"] == ket_qua_moi["xep_hang_uu_tien"]
+        assert ket_qua_cu["do_lech_ema200_pct"] == pytest.approx(ket_qua_moi["do_lech_pct"])
+
+    def test_works_with_ma20_label(self):
+        ket_qua = xep_hang_uu_tien_theo_duong_tham_chieu(110.0, 100.0, "MA20")
+        assert ket_qua["xep_hang_uu_tien"] == "UU_TIEN_CAO"
+        assert ket_qua["do_lech_pct"] == pytest.approx(10.0)
+
+    def test_none_reference_returns_khong_dat(self):
+        ket_qua = xep_hang_uu_tien_theo_duong_tham_chieu(100.0, None, "MA20")
+        assert ket_qua["xep_hang_uu_tien"] == "KHONG_DAT"
+        assert ket_qua["do_lech_pct"] is None
+
+    def test_raises_for_non_positive_reference(self):
+        with pytest.raises(InvalidEntryScreenerError):
+            xep_hang_uu_tien_theo_duong_tham_chieu(100.0, 0.0, "MA20")
