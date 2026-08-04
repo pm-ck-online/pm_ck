@@ -145,7 +145,7 @@ def run_full_market(
 
                 # Lưu lại lịch sử OHLCV (tối đa 750 phiên gần nhất) để
                 # dashboard vẽ biểu đồ nến — không tốn thêm request nào.
-                ohlcv_tail = df.tail(750).copy()
+                ohlcv_tail = df.tail(1500).copy()  # tăng từ 750 -> 1500 (~2021 tới nay + đệm)
                 ohlcv_tail["date"] = ohlcv_tail["date"].astype(str)
                 storage.save(
                     "ohlcv_history", symbol,

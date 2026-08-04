@@ -99,6 +99,12 @@ def build_data_collector(config: dict) -> DataCollector:
     Muốn chuyển sang dữ liệu thật, sửa trong config.yaml:
         data_source:
           adapter: "vnstock"
+
+    Muốn lấy lịch sử DÀI HƠN mức mặc định (~800 phiên ≈ 3,2 năm gần nhất),
+    thêm vào config.yaml (bổ sung 04/08/2026 — VD lấy từ đầu năm 2021):
+        data_source:
+          adapter: "vnstock"
+          vnstock_start_date: "2021-01-01"
     """
     data_source_cfg = config.get("data_source", {})
     adapter_name = data_source_cfg.get("adapter", "mock")
@@ -106,7 +112,7 @@ def build_data_collector(config: dict) -> DataCollector:
     if adapter_name == "mock":
         source = MockDataSource()
     elif adapter_name == "vnstock":
-        source = VnstockDataSource()
+        source = VnstockDataSource(start_date=data_source_cfg.get("vnstock_start_date"))
     elif adapter_name == "binance":
         source = BinanceDataSource()
     else:
@@ -139,7 +145,7 @@ def run_indicator_and_pattern_step(
     # Lưu lại lịch sử OHLCV (tối đa 750 phiên gần nhất) để dashboard vẽ
     # biểu đồ nến — không tốn thêm lệnh gọi API nào (dùng chung dữ liệu
     # vừa lấy ở trên).
-    ohlcv_tail = df.tail(750).copy()
+    ohlcv_tail = df.tail(1500).copy()  # tăng từ 750 -> 1500 (~2021 tới nay + đệm)
     ohlcv_tail["date"] = ohlcv_tail["date"].astype(str)
     storage.save(
         "ohlcv_history", symbol,
@@ -660,7 +666,7 @@ def run_index_step(
         logger.warning("[%s] Không lấy được dữ liệu chỉ số: %s", index_symbol, exc)
         return None
 
-    ohlcv_tail = df.tail(750).copy()
+    ohlcv_tail = df.tail(1500).copy()  # tăng từ 750 -> 1500 (~2021 tới nay + đệm)
     ohlcv_tail["date"] = ohlcv_tail["date"].astype(str)
     storage.save(
         "ohlcv_history", index_symbol,
