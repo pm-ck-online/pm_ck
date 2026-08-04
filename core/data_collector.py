@@ -310,7 +310,7 @@ class VnstockDataSource(DataSource):
 
     def __init__(
         self, interval_map: Optional[dict] = None, ohlcv_count: int = 800,
-        start_date: Optional[str] = None,
+        start_date: Optional[str] = None, backfill_count: int = 2000,
     ):
         self._interval_map = interval_map or {"day": "1D", "week": "1W"}
         self._ohlcv_count = ohlcv_count
@@ -318,10 +318,14 @@ class VnstockDataSource(DataSource):
         # (VD "2021-01-01") thay vì chỉ theo `count` (số phiên gần nhất).
         # Đã kiểm tra chữ ký API thật của vnstock trước khi dùng:
         #   ohlcv(start=None, end=None, interval='1D', count=100, source='kbs', **kwargs)
-        # -> hàm hỗ trợ SẴN tham số start/end, chỉ là code cũ CHƯA dùng tới,
-        # luôn gọi bằng `count=` nên bị giới hạn ở mức `ohlcv_count` phiên
-        # gần nhất (mặc định 800 ≈ 3,2 năm), không lấy được xa hơn dù cần.
+        # ĐÃ KIỂM CHỨNG THỰC TẾ (04/08/2026, script debug_index_ohlcv.py):
+        # CHỈ truyền `start=` mà KHÔNG kèm `count=` LỚN thì vnstock ÂM
+        # THẦM BỎ QUA `start`, chỉ trả về đúng 100 dòng gần nhất (giá trị
+        # count mặc định của chính vnstock) — dù cho cả cổ phiếu THƯỜNG
+        # lẫn CHỈ SỐ. Phải truyền CẢ HAI `start=` và `count=` (đủ lớn)
+        # CÙNG LÚC thì `start` mới thực sự có tác dụng — xem `_backfill_count`.
         self._start_date = start_date
+        self._backfill_count = backfill_count  # dùng CÙNG với start_date, xem ghi chú trên
 
     def _get_market(self):
         try:
@@ -338,10 +342,16 @@ class VnstockDataSource(DataSource):
 
         try:
             if self._start_date:
-                # Lấy theo NGÀY BẮT ĐẦU (không giới hạn theo count) — dùng
-                # khi cần lịch sử dài (VD backfill từ 2021). `end=None` để
-                # vnstock tự lấy tới ngày gần nhất hiện có.
-                raw_df = market.equity(symbol).ohlcv(start=self._start_date, interval=interval)
+                # Lấy theo NGÀY BẮT ĐẦU (dùng khi cần lịch sử dài, VD
+                # backfill từ 2021). QUAN TRỌNG — đã kiểm chứng thực tế
+                # (04/08/2026): CHỈ truyền `start=` mà KHÔNG kèm `count=`
+                # lớn thì vnstock ÂM THẦM BỎ QUA `start`, chỉ trả về đúng
+                # 100 dòng gần nhất (giá trị count mặc định của vnstock)
+                # — phải truyền CẢ HAI cùng lúc thì `start` mới thực sự có
+                # hiệu lực. `end=None` để vnstock tự lấy tới ngày gần nhất.
+                raw_df = market.equity(symbol).ohlcv(
+                    start=self._start_date, interval=interval, count=self._backfill_count,
+                )
             else:
                 raw_df = market.equity(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
         except Exception as exc:  # noqa: BLE001 — bọc mọi lỗi thành DataSourceError thống nhất
@@ -430,7 +440,9 @@ class VnstockDataSource(DataSource):
 
         try:
             if self._start_date:
-                raw_df = market.index(symbol).ohlcv(start=self._start_date, interval=interval)
+                raw_df = market.index(symbol).ohlcv(
+                    start=self._start_date, interval=interval, count=self._backfill_count,
+                )
             else:
                 raw_df = market.index(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
         except Exception as exc:  # noqa: BLE001
