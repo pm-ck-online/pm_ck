@@ -552,6 +552,15 @@ class TestSoSanh2KhoangDoLech:
         )
         json.dumps(ket_qua)  # không được ném lỗi TypeError (numpy bool/float)
 
+    def test_tong_so_phien_quet_included_and_ge_tong_2_khoang(self):
+        df = self._make_engineered_df()
+        ket_qua = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(0, 5), khoang_2=(5, 10), duong_tham_chieu="ma20",
+            so_phien_du_bao=5, so_phien_kiem_tra=1000,
+        )
+        assert "tong_so_phien_quet" in ket_qua
+        assert ket_qua["tong_so_phien_quet"] >= ket_qua["so_lan_khoang_1"] + ket_qua["so_lan_khoang_2"]
+
     def test_supports_negative_range_below_reference_line(self):
         # Khoảng ÂM (dưới đường tham chiếu) — đúng yêu cầu bổ sung: so
         # sánh -5% đến 0% (dưới MA20) với 0% đến +5% (trên MA20).
@@ -632,3 +641,9 @@ class TestSoSanh2KhoangRsi:
         # khoảng), nhưng KHÔNG được báo "chưa đủ dữ liệu" vì đã đủ 60 phiên.
         if not ket_qua["hop_le"]:
             assert "Chưa đủ dữ liệu lịch sử" not in ket_qua.get("ghi_chu", "")
+
+    def test_tong_so_phien_quet_included_and_ge_tong_2_khoang(self):
+        df = self._make_df()
+        ket_qua = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
+        assert "tong_so_phien_quet" in ket_qua
+        assert ket_qua["tong_so_phien_quet"] >= ket_qua["so_lan_khoang_1"] + ket_qua["so_lan_khoang_2"]
