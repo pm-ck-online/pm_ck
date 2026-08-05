@@ -3189,6 +3189,72 @@ def render_tong_hop_section(storage: Storage) -> None:
                 "hay đảm bảo lặp lại trong tương lai."
             )
 
+    st.divider()
+
+    # === PHẦN 5 (bổ sung 04/08/2026): "Kiểm định có RSI (14)" — tương tự
+    #     Phần 4 ở trên nhưng phân nhóm theo GIÁ TRỊ RSI(14) thay vì % độ
+    #     lệch so với đường tham chiếu. ===
+    st.markdown("#### 📊 Kiểm định có RSI (14)")
+    st.caption(
+        "Tương tự kiểm định ở trên, nhưng phân nhóm theo GIÁ TRỊ RSI(14) tại từng "
+        "thời điểm thay vì % độ lệch so với EMA200/MA20 — VD so sánh vùng quá bán "
+        "(RSI < 30) với vùng quá mua (RSI > 69) xem xác suất thắng có khác biệt CÓ "
+        "Ý NGHĨA THỐNG KÊ hay không. 3 vùng RSI kinh điển: Quá bán (0-30), Trung "
+        "tính (31-69), Quá mua (70-100) — có thể chọn bất kỳ 2 trong số này hoặc "
+        "khoảng tùy ý."
+    )
+
+    col_rsi1, col_rsi2 = st.columns(2)
+    with col_rsi1:
+        st.markdown("**Khoảng 1 (RSI)**")
+        rsi1_tu = st.number_input("Từ", value=0.0, min_value=0.0, max_value=100.0, step=1.0, key="tong_hop_rsi1_tu")
+        rsi1_den = st.number_input("Đến, không gồm", value=30.0, min_value=0.1, max_value=101.0, step=1.0, key="tong_hop_rsi1_den")
+    with col_rsi2:
+        st.markdown("**Khoảng 2 (RSI)**")
+        rsi2_tu = st.number_input("Từ", value=70.0, min_value=0.0, max_value=100.0, step=1.0, key="tong_hop_rsi2_tu")
+        rsi2_den = st.number_input("Đến, không gồm", value=101.0, min_value=0.1, max_value=101.0, step=1.0, key="tong_hop_rsi2_den")
+
+    if st.button("🔬 Chạy kiểm định RSI", key="tong_hop_chay_kiem_dinh_rsi"):
+        from core.entry_screener import so_sanh_2_khoang_rsi
+
+        try:
+            kq_rsi = so_sanh_2_khoang_rsi(
+                df_ma, khoang_1=(rsi1_tu, rsi1_den), khoang_2=(rsi2_tu, rsi2_den),
+                so_phien_du_bao=so_phien_du_bao_k,
+            )
+        except Exception as exc:  # noqa: BLE001
+            kq_rsi = {"hop_le": False, "ghi_chu": f"Lỗi: {exc}"}
+
+        if not kq_rsi.get("hop_le"):
+            st.warning(kq_rsi.get("ghi_chu", "Không kiểm định được."))
+        else:
+            col_rq_a, col_rq_b = st.columns(2)
+            with col_rq_a:
+                st.metric(
+                    f"RSI {rsi1_tu:.0f} — {rsi1_den:.0f} — Xác suất thắng",
+                    f"{kq_rsi['xac_suat_thang_khoang_1_pct']:.1f}%",
+                    help=f"Số lần quan sát: {kq_rsi['so_lan_khoang_1']}",
+                )
+                st.caption(f"Số lần quan sát: {kq_rsi['so_lan_khoang_1']} · TB thay đổi: {kq_rsi['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
+            with col_rq_b:
+                st.metric(
+                    f"RSI {rsi2_tu:.0f} — {rsi2_den:.0f} — Xác suất thắng",
+                    f"{kq_rsi['xac_suat_thang_khoang_2_pct']:.1f}%",
+                    help=f"Số lần quan sát: {kq_rsi['so_lan_khoang_2']}",
+                )
+                st.caption(f"Số lần quan sát: {kq_rsi['so_lan_khoang_2']} · TB thay đổi: {kq_rsi['pct_thay_doi_trung_binh_khoang_2']:+.2f}%")
+
+            st.metric("P-value (kiểm định 2 tỷ lệ)", f"{kq_rsi['p_value']:.4f}")
+            if kq_rsi["co_y_nghia_thong_ke"]:
+                st.success(kq_rsi["ghi_chu"])
+            else:
+                st.info(kq_rsi["ghi_chu"])
+            st.caption(
+                "⚠️ P-value nhỏ chỉ cho biết khác biệt QUAN SÁT ĐƯỢC khó xảy ra do ngẫu "
+                "nhiên thuần túy trong dữ liệu lịch sử — KHÔNG chứng minh quan hệ nhân quả "
+                "hay đảm bảo lặp lại trong tương lai."
+            )
+
     st.warning(
         "⚠️ Kelly Criterion là CÔNG THỨC TOÁN HỌC áp dụng lên TẦN SUẤT LỊCH SỬ, "
         "giả định tương lai lặp lại quá khứ — một giả định KHÔNG được đảm bảo. Kelly "
