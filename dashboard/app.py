@@ -3169,14 +3169,14 @@ def render_tong_hop_section(storage: Storage) -> None:
                     f"{kq_kd['xac_suat_thang_khoang_1_pct']:.1f}%",
                     help=f"Số lần quan sát: {kq_kd['so_lan_khoang_1']}",
                 )
-                st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_1']} · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
+                st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_1']}/{kq_kd.get('tong_so_phien_quet', '?')} phiên giao dịch · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
             with col_kq_b:
                 st.metric(
                     f"Khoảng 2 ({kh2_tu:+.0f}% đến {kh2_den:+.0f}%) — Xác suất thắng",
                     f"{kq_kd['xac_suat_thang_khoang_2_pct']:.1f}%",
                     help=f"Số lần quan sát: {kq_kd['so_lan_khoang_2']}",
                 )
-                st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_2']} · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_2']:+.2f}%")
+                st.caption(f"Số lần quan sát: {kq_kd['so_lan_khoang_2']}/{kq_kd.get('tong_so_phien_quet', '?')} phiên giao dịch · TB thay đổi: {kq_kd['pct_thay_doi_trung_binh_khoang_2']:+.2f}%")
 
             st.metric("P-value (kiểm định 2 tỷ lệ)", f"{kq_kd['p_value']:.4f}")
             if kq_kd["co_y_nghia_thong_ke"]:
@@ -3235,14 +3235,14 @@ def render_tong_hop_section(storage: Storage) -> None:
                     f"{kq_rsi['xac_suat_thang_khoang_1_pct']:.1f}%",
                     help=f"Số lần quan sát: {kq_rsi['so_lan_khoang_1']}",
                 )
-                st.caption(f"Số lần quan sát: {kq_rsi['so_lan_khoang_1']} · TB thay đổi: {kq_rsi['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
+                st.caption(f"Số lần quan sát: {kq_rsi['so_lan_khoang_1']}/{kq_rsi.get('tong_so_phien_quet', '?')} phiên giao dịch · TB thay đổi: {kq_rsi['pct_thay_doi_trung_binh_khoang_1']:+.2f}%")
             with col_rq_b:
                 st.metric(
                     f"RSI {rsi2_tu:.0f} — {rsi2_den:.0f} — Xác suất thắng",
                     f"{kq_rsi['xac_suat_thang_khoang_2_pct']:.1f}%",
                     help=f"Số lần quan sát: {kq_rsi['so_lan_khoang_2']}",
                 )
-                st.caption(f"Số lần quan sát: {kq_rsi['so_lan_khoang_2']} · TB thay đổi: {kq_rsi['pct_thay_doi_trung_binh_khoang_2']:+.2f}%")
+                st.caption(f"Số lần quan sát: {kq_rsi['so_lan_khoang_2']}/{kq_rsi.get('tong_so_phien_quet', '?')} phiên giao dịch · TB thay đổi: {kq_rsi['pct_thay_doi_trung_binh_khoang_2']:+.2f}%")
 
             st.metric("P-value (kiểm định 2 tỷ lệ)", f"{kq_rsi['p_value']:.4f}")
             if kq_rsi["co_y_nghia_thong_ke"]:
