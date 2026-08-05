@@ -1411,6 +1411,112 @@ def render_vcp_scan_section(storage: Storage) -> None:
                 st.caption(data["canh_bao_phap_ly"])
 
 
+def render_hdtl_vn30_section(storage: Storage) -> None:
+    """Công cụ tính toán HĐTL VN30 (bổ sung 04/08/2026) — entry range,
+    phân bổ vốn (ràng buộc kép: rủi ro 2% NAV + trần ký quỹ), và R:R.
+    Toàn bộ input NHẬP TAY (không phụ thuộc dữ liệu tự động) — vì HĐTL
+    VN30 cần nguồn dữ liệu phái sinh riêng (HNX/công ty chứng khoán),
+    KHÔNG lấy được qua vnstock/Binance đang dùng cho phần còn lại của
+    hệ thống.
+    """
+    st.subheader("📐 HĐTL VN30 — Entry / Phân bổ vốn / R:R")
+    st.caption(
+        "⚠️ Công cụ TÍNH TOÁN THAM KHẢO — KHÔNG tự động đặt lệnh, không phải khuyến "
+        "nghị đầu tư hay đảm bảo lợi nhuận. Phái sinh có đòn bẩy cao, cơ chế thanh "
+        "toán bù trừ hàng ngày (mark-to-market) có thể gây lỗ nhanh hơn nhiều so với "
+        "cổ phiếu thường. Toàn bộ input bên dưới NHẬP TAY theo dữ liệu bạn tự theo dõi."
+    )
+
+    from core.derivatives_trading_engine import (
+        HUONG_THEO_TIN_HIEU, InvalidDerivativesError, phan_tich_lenh_hdtl_vn30,
+    )
+
+    col1, col2 = st.columns(2)
+    with col1:
+        nav = st.number_input("NAV (VNĐ)", value=1_500_000_000, min_value=0, step=10_000_000, key="hdtl_nav")
+        phong_cach_nhan = st.radio(
+            "Phong cách giao dịch", ["Lướt trong ngày", "Giữ theo kịch bản"],
+            key="hdtl_phong_cach",
+        )
+        phong_cach = "luot_trong_ngay" if phong_cach_nhan == "Lướt trong ngày" else "giu_theo_kich_ban"
+        kieu_tin_hieu = st.selectbox(
+            "Kiểu tín hiệu", list(HUONG_THEO_TIN_HIEU.keys()),
+            format_func=lambda k: {
+                "BREAKOUT_TANG": "Breakout tăng (LONG)", "BREAKOUT_GIAM": "Breakout giảm (SHORT)",
+                "MUA_HO_TRO": "Mua hỗ trợ (LONG)", "BAN_KHANG_CU": "Bán kháng cự (SHORT)",
+            }[k],
+            key="hdtl_kieu_tin_hieu",
+        )
+    with col2:
+        gia_tham_chieu = st.number_input("Giá tham chiếu (điểm chỉ số)", value=1830.0, min_value=0.1, step=0.5, key="hdtl_gia_tham_chieu")
+        atr14 = st.number_input("ATR14 (điểm chỉ số)", value=25.0, min_value=0.1, step=0.5, key="hdtl_atr14")
+        gia_cat_lo = st.number_input("Giá cắt lỗ (điểm chỉ số)", value=1812.0, step=0.5, key="hdtl_gia_cat_lo")
+        gia_chot_loi_nhap = st.number_input(
+            "Giá chốt lời dự kiến (điểm chỉ số) — để 0 nếu chưa xác định",
+            value=1899.0, step=0.5, key="hdtl_gia_chot_loi",
+        )
+
+    with st.expander("⚙️ Tham số nâng cao (ký quỹ / rủi ro)"):
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            ty_le_ky_quy_pct = st.number_input("Tỷ lệ ký quỹ yêu cầu (%)", value=15.0, min_value=0.1, max_value=99.0, step=0.5, key="hdtl_ty_le_ky_quy")
+        with col_b:
+            ty_le_ky_quy_toi_da_pct = st.number_input("Trần ký quỹ tối đa (% NAV)", value=50.0, min_value=1.0, max_value=100.0, step=1.0, key="hdtl_tran_ky_quy")
+        with col_c:
+            rui_ro_moi_lenh_pct = st.number_input("Rủi ro tối đa/lệnh (% NAV)", value=2.0, min_value=0.1, max_value=100.0, step=0.5, key="hdtl_rui_ro_lenh")
+
+    if st.button("📐 Tính toán", key="hdtl_tinh_toan_btn"):
+        try:
+            ket_qua = phan_tich_lenh_hdtl_vn30(
+                nav=nav, phong_cach=phong_cach, kieu_tin_hieu=kieu_tin_hieu,
+                gia_tham_chieu=gia_tham_chieu, atr14=atr14, gia_cat_lo=gia_cat_lo,
+                gia_chot_loi_du_kien=(gia_chot_loi_nhap if gia_chot_loi_nhap > 0 else None),
+                ty_le_ky_quy=ty_le_ky_quy_pct / 100, ty_le_ky_quy_toi_da_nav=ty_le_ky_quy_toi_da_pct / 100,
+                rui_ro_moi_lenh_pct=rui_ro_moi_lenh_pct / 100,
+            )
+        except InvalidDerivativesError as exc:
+            st.error(f"⚠️ {exc}")
+            return
+
+        st.divider()
+        huong_mau = "🟢 LONG" if ket_qua["huong"] == "LONG" else "🔴 SHORT"
+        col_r1, col_r2, col_r3 = st.columns(3)
+        col_r1.metric("Hướng lệnh", huong_mau)
+        col_r2.metric("Vùng vào lệnh", f"{ket_qua['khoang_gia_vao_lenh'][0]:,.1f} — {ket_qua['khoang_gia_vao_lenh'][1]:,.1f}")
+        col_r3.metric("Số hợp đồng tối ưu", f"{ket_qua['so_hop_dong']:,}")
+
+        col_r4, col_r5, col_r6 = st.columns(3)
+        col_r4.metric("Rủi ro/1 HĐ", f"{ket_qua['rui_ro_tren_1_hd_vnd']:,} đ")
+        col_r5.metric("Ký quỹ yêu cầu/1 HĐ", f"{ket_qua['ky_quy_yeu_cau_1_hd_vnd']:,} đ")
+        col_r6.metric("Tổng ký quỹ sử dụng", f"{ket_qua['tong_ky_quy_su_dung_vnd']:,} đ ({ket_qua['tong_ky_quy_pct_nav']:.1f}% NAV)")
+
+        nhan_nut_that = {
+            "theo_rui_ro_2pct": "Rủi ro tối đa/lệnh",
+            "theo_tran_ky_quy": "Trần ký quỹ",
+            "theo_gioi_han_quy_dinh": "Giới hạn quy định (500 HĐ/lệnh)",
+        }
+        st.info(
+            f"📌 Số hợp đồng đang bị giới hạn bởi: **{nhan_nut_that.get(ket_qua['nut_that_gioi_han'])}** "
+            f"— chi tiết từng ràng buộc: "
+            + ", ".join(
+                f"{nhan_nut_that.get(k, k)}={v if v is not None else '—'}"
+                for k, v in ket_qua["chi_tiet_cac_rang_buoc"].items()
+            )
+        )
+
+        if ket_qua["ty_le_rr"]:
+            danh_gia_mau = {
+                "TOT": "🟢 TỐT", "CHAP_NHAN_DUOC": "🟡 CHẤP NHẬN ĐƯỢC",
+                "THAP_CAN_XEM_XET_LAI": "🟠 THẤP — CẦN XEM XÉT LẠI", "KHONG_NEN_VAO_LENH": "🔴 KHÔNG NÊN VÀO LỆNH",
+            }
+            st.metric("Tỷ lệ R:R", f"{ket_qua['ty_le_rr']['rr']:.2f}", danh_gia_mau.get(ket_qua["ty_le_rr"]["danh_gia"]))
+
+        for cb in ket_qua["canh_bao"]:
+            st.warning(cb)
+
+        st.caption(ket_qua["canh_bao_phap_ly"])
+
+
 def _assess_sub_score(sub_score: float) -> tuple[str, str]:
     """Gán icon + nhãn đánh giá định tính cho 1 điểm thành phần vĩ mô."""
     if sub_score >= 1.0:
@@ -3593,6 +3699,7 @@ DASHBOARD_GROUPS = [
         "🌐 Giai đoạn thị trường (định tính)",
         "📋 Báo cáo tổng hợp thị trường chung",
         "📐 Giai đoạn thị trường (3 lớp định lượng)",
+        "📐 HĐTL VN30 — Entry/Vốn/R:R",
     ]),
     ("NHÓM 3 — GIAO DỊCH CỔ PHIẾU", [
         "📌 Tổng hợp",
@@ -3717,6 +3824,7 @@ def main() -> None:
         ("📉 Rà soát mô hình co hẹp (XAUUSD/BTC)", render_vcp_scan_section, (storage,)),
         ("📋 Báo cáo tổng hợp thị trường chung", render_market_summary_report_section, (storage,)),
         ("📐 Giai đoạn thị trường (3 lớp định lượng)", render_market_regime_quant_section, (storage,)),
+        ("📐 HĐTL VN30 — Entry/Vốn/R:R", render_hdtl_vn30_section, (storage,)),
         ("📦 Khuyến nghị phân bổ vốn (đơn giản)", render_allocation_section, (storage, symbols)),
         ("📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)", render_capital_allocation_v2_section, (storage, symbols)),
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
