@@ -643,10 +643,12 @@ def so_sanh_2_khoang_do_lech(
     end = n - so_phien_du_bao
 
     ket_qua_theo_khoang = {1: [], 2: []}
+    tong_so_phien_quet = 0
     for i in range(start, max(start, end)):
         duong_i = duong_series.iloc[i]
         if pd.isna(duong_i) or duong_i <= 0:
             continue
+        tong_so_phien_quet += 1
         close_i = float(closes.iloc[i])
         do_lech = (close_i - duong_i) / duong_i * 100  # CÓ DẤU: âm = dưới đường, dương = trên đường
 
@@ -667,6 +669,7 @@ def so_sanh_2_khoang_do_lech(
         return {
             "hop_le": False,
             "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+            "tong_so_phien_quet": tong_so_phien_quet,
             "ghi_chu": (
                 f"Cỡ mẫu quá nhỏ để kiểm định đáng tin cậy (khoảng 1: {n1} lần, "
                 f"khoảng 2: {n2} lần) — cần tối thiểu 5 lần mỗi khoảng, khuyến nghị "
@@ -685,6 +688,7 @@ def so_sanh_2_khoang_do_lech(
         return {
             "hop_le": False,
             "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+            "tong_so_phien_quet": tong_so_phien_quet,
             "ghi_chu": "Không tính được kiểm định (2 nhóm có tỷ lệ thắng giống hệt nhau, sai số chuẩn bằng 0).",
         }
 
@@ -695,6 +699,7 @@ def so_sanh_2_khoang_do_lech(
     return {
         "hop_le": True,
         "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+        "tong_so_phien_quet": tong_so_phien_quet,
         "xac_suat_thang_khoang_1_pct": round(p1 * 100, 1),
         "xac_suat_thang_khoang_2_pct": round(p2 * 100, 1),
         "pct_thay_doi_trung_binh_khoang_1": round(sum(ket_qua_theo_khoang[1]) / n1, 2),
@@ -760,10 +765,12 @@ def so_sanh_2_khoang_rsi(
     end = n - so_phien_du_bao
 
     ket_qua_theo_khoang = {1: [], 2: []}
+    tong_so_phien_quet = 0
     for i in range(start, max(start, end)):
         rsi_i = rsi_series.iloc[i]
         if pd.isna(rsi_i):
             continue
+        tong_so_phien_quet += 1
         rsi_i = float(rsi_i)
 
         nhom = None
@@ -802,6 +809,7 @@ def so_sanh_2_khoang_rsi(
         return {
             "hop_le": False,
             "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+            "tong_so_phien_quet": tong_so_phien_quet,
             "ghi_chu": "Không tính được kiểm định (2 nhóm có tỷ lệ thắng giống hệt nhau, sai số chuẩn bằng 0).",
         }
 
@@ -812,6 +820,7 @@ def so_sanh_2_khoang_rsi(
     return {
         "hop_le": True,
         "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+        "tong_so_phien_quet": tong_so_phien_quet,
         "xac_suat_thang_khoang_1_pct": round(p1 * 100, 1),
         "xac_suat_thang_khoang_2_pct": round(p2 * 100, 1),
         "pct_thay_doi_trung_binh_khoang_1": round(sum(ket_qua_theo_khoang[1]) / n1, 2),
