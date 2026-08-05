@@ -37,11 +37,11 @@ import time
 
 import pandas as pd
 
-from core.data_collector import DataCollector, VnstockDataSource
+from core.data_collector import DataCollector
 from core.indicators import get_indicator_snapshot
 from core.pattern_detector import detect_narrowing_pattern
 from core.storage import Storage
-from main import compute_precomputed_macro_score, load_config, resolve_storage_path
+from main import build_data_collector, compute_precomputed_macro_score, load_config, resolve_storage_path
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,6 +73,17 @@ def save_checkpoint(storage: Storage, completed: set[str]) -> None:
 
 RATE_LIMIT_KEYWORDS = ("rate limit", "giới hạn", "request limit")
 
+# Nhận diện lỗi MẤT KẾT NỐI Supabase (bổ sung 04/08/2026) — hay gặp hơn
+# hẳn từ khi tăng lượng dữ liệu tải mỗi mã (từ 2021 tới nay), khiến các
+# phiên chạy dài hơn nhiều, dễ bị Supabase tự đóng kết nối nhàn rỗi giữa
+# chừng. Dò theo từ khóa trong thông điệp lỗi (giống cách nhận diện rate
+# limit ở trên) — không import trực tiếp psycopg2 để không bắt buộc cài
+# đặt thư viện đó nếu ai đó chạy ở chế độ SQLite thuần túy.
+CONNECTION_ERROR_KEYWORDS = (
+    "connection already closed", "connection is closed",
+    "server closed the connection", "could not connect", "connection not open",
+)
+
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
     """Nhận diện lỗi giới hạn API của vnstock qua nội dung thông báo lỗi
@@ -81,6 +92,36 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     """
     text = str(exc).lower()
     return any(keyword in text for keyword in RATE_LIMIT_KEYWORDS)
+
+
+def _is_connection_error(exc: BaseException) -> bool:
+    """Nhận diện lỗi MẤT KẾT NỐI Supabase (khác với rate limit của vnstock)."""
+    text = str(exc).lower()
+    return any(keyword in text for keyword in CONNECTION_ERROR_KEYWORDS)
+
+
+def _save_checkpoint_voi_ket_noi_lai(storage: Storage, completed: set[str], config: dict) -> Storage:
+    """Gọi `save_checkpoint()`; nếu bị lỗi mất kết nối, TỰ ĐỘNG mở lại kết
+    nối mới rồi thử lại đúng 1 lần — tránh làm sập toàn bộ chương trình
+    chỉ vì 1 lần rớt kết nối tạm thời (bổ sung 04/08/2026).
+
+    Trả về đối tượng `Storage` ĐANG DÙNG (có thể là bản mới nếu vừa phải
+    kết nối lại) — LUÔN gán ngược lại biến `storage` ở nơi gọi.
+    """
+    try:
+        save_checkpoint(storage, completed)
+        return storage
+    except Exception as exc:  # noqa: BLE001
+        if not _is_connection_error(exc):
+            raise
+        logger.warning("Kết nối Supabase bị ngắt khi lưu checkpoint -> đang kết nối lại...")
+        try:
+            storage.close()
+        except Exception:  # noqa: BLE001
+            pass
+        storage_moi = Storage(db_path=resolve_storage_path(config))
+        save_checkpoint(storage_moi, completed)
+        return storage_moi
 
 
 def run_full_market(
@@ -92,8 +133,12 @@ def run_full_market(
     rate_limit_cooldown_seconds: float = 65.0,
 ) -> None:
     storage = Storage(db_path=resolve_storage_path(config))
-    source = VnstockDataSource()
-    collector = DataCollector(source, config=config.get("data_source", {}))
+    # SỬA LỖI (05/08/2026): trước đây tự khởi tạo VnstockDataSource() TRỰC
+    # TIẾP, KHÔNG tham số — bỏ qua hoàn toàn cấu hình `vnstock_start_date`
+    # trong config.yaml (dù build_data_collector() đã đọc đúng cấu hình
+    # đó), khiến script LUÔN lấy mặc định ~800 phiên gần nhất bất kể cấu
+    # hình. Dùng đúng build_data_collector() để tôn trọng cấu hình.
+    collector = build_data_collector(config)
 
     # --- Ưu tiên danh sách mã + ngành TÙY CHỈNH của người dùng (config.yaml
     #     -> watchlist.symbols) nếu có — thay vì luôn quét TOÀN BỘ ~1.500+
@@ -109,7 +154,7 @@ def run_full_market(
         )
     else:
         logger.info("Đang lấy danh sách toàn bộ mã + ngành từ vnstock...")
-        symbol_sector_map = source.fetch_symbol_sector_map()
+        symbol_sector_map = collector.source.fetch_symbol_sector_map()
         logger.info("Tổng số mã lấy được: %d", len(symbol_sector_map))
 
     completed = set() if reset_checkpoint else load_checkpoint(storage)
@@ -171,6 +216,22 @@ def run_full_market(
                 success = True
 
             except (Exception, SystemExit) as exc:  # noqa: BLE001
+                if _is_connection_error(exc):
+                    # Mất kết nối Supabase giữa chừng — KHÔNG phải lỗi dữ
+                    # liệu của mã này, nên KHÔNG bỏ qua vĩnh viễn: mở lại
+                    # kết nối mới rồi thử lại đúng mã này (bổ sung 04/08/2026).
+                    logger.warning(
+                        "[%d/%d] %s — Kết nối Supabase bị ngắt giữa chừng "
+                        "-> đang kết nối lại rồi thử lại mã này...",
+                        idx, total_remaining, symbol,
+                    )
+                    try:
+                        storage.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    storage = Storage(db_path=resolve_storage_path(config))
+                    rate_limit_attempts += 1  # dùng chung bộ đếm để tránh lặp vô hạn
+                    continue
                 if _is_rate_limit_error(exc):
                     rate_limit_attempts += 1
                     logger.warning(
@@ -195,8 +256,8 @@ def run_full_market(
             logger.info("[%d/%d] %s (%s) — OK", idx, total_remaining, symbol, sector)
         elif rate_limit_attempts > max_rate_limit_retries:
             logger.error(
-                "[%d/%d] %s — Vẫn bị giới hạn API sau %d lần thử lại. TẠM "
-                "BỎ QUA (sẽ tự động thử lại ở lần chạy kế tiếp nhờ checkpoint, "
+                "[%d/%d] %s — Vẫn bị giới hạn API/mất kết nối sau %d lần thử lại. "
+                "TẠM BỎ QUA (sẽ tự động thử lại ở lần chạy kế tiếp nhờ checkpoint, "
                 "KHÔNG đánh dấu là đã xử lý).",
                 idx, total_remaining, symbol, max_rate_limit_retries,
             )
@@ -206,7 +267,7 @@ def run_full_market(
             # bỏ qua vĩnh viễn trong batch này (xem giải thích ở docstring).
             completed.add(symbol)
 
-        save_checkpoint(storage, completed)
+        storage = _save_checkpoint_voi_ket_noi_lai(storage, completed, config)
         if idx < total_remaining:
             time.sleep(delay_seconds)
 
