@@ -88,6 +88,7 @@ def config_with_db(tmp_path):
     return {
         "storage": {"path": db_path},
         "data_source": {
+            "adapter": "vnstock",
             "delayed_mode": True,
             "cache": {"enabled": False},
             "retry": {"max_attempts": 1, "backoff_seconds": 0},
