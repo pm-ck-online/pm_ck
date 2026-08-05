@@ -16,6 +16,7 @@ from core.entry_screener import (
     quet_danh_sach_cho,
     quet_mot_ma,
     so_sanh_2_khoang_do_lech,
+    so_sanh_2_khoang_rsi,
     tinh_kelly_fraction,
     tinh_thong_ke_tang_giam_lich_su,
     xep_hang_uu_tien_theo_duong_tham_chieu,
@@ -573,3 +574,61 @@ class TestSoSanh2KhoangDoLech:
 def pd_isna_safe(v):
     import pandas as pd
     return pd.isna(v)
+
+
+class TestSoSanh2KhoangRsi:
+    def _make_df(self, n=500, seed=5):
+        import numpy as np
+        np.random.seed(seed)
+        dates = pd.bdate_range("2023-01-01", periods=n)
+        closes = 100 + np.cumsum(np.random.normal(0.02, 1.0, n))
+        return pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.random.randint(500_000, 2_000_000, n).astype(float),
+        })
+
+    def test_computes_valid_result_for_oversold_vs_overbought(self):
+        df = self._make_df()
+        ket_qua = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
+        assert ket_qua["hop_le"] is True
+        assert ket_qua["so_lan_khoang_1"] >= 5
+        assert ket_qua["so_lan_khoang_2"] >= 5
+        assert 0 <= ket_qua["xac_suat_thang_khoang_1_pct"] <= 100
+        assert 0 <= ket_qua["xac_suat_thang_khoang_2_pct"] <= 100
+
+    def test_three_canonical_zones_dont_overlap(self):
+        # Quá bán (0,30), Trung tính (30,70), Quá mua (70,101) — không chồng lấn.
+        qua_ban, trung_tinh, qua_mua = (0, 30), (30, 70), (70, 101)
+        assert qua_ban[1] == trung_tinh[0]
+        assert trung_tinh[1] == qua_mua[0]
+
+    def test_raises_when_tu_not_less_than_den(self):
+        df = self._make_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            so_sanh_2_khoang_rsi(df, khoang_1=(30, 30), khoang_2=(70, 101))
+        with pytest.raises(InvalidEntryScreenerError):
+            so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(101, 70))
+
+    def test_returns_invalid_when_history_too_short(self):
+        df = pd.DataFrame({
+            "date": pd.bdate_range("2023-01-01", periods=10),
+            "open": [100.0] * 10, "high": [100.0] * 10, "low": [100.0] * 10,
+            "close": [100.0] * 10, "volume": [1_000_000.0] * 10,
+        })
+        ket_qua = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101))
+        assert ket_qua["hop_le"] is False
+
+    def test_result_is_json_serializable(self):
+        import json
+        df = self._make_df()
+        ket_qua = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
+        json.dumps(ket_qua)
+
+    def test_needs_less_history_than_ma_based_test(self):
+        # RSI(14) cần ít dữ liệu hơn nhiều so với EMA200 (200 phiên).
+        df = self._make_df(n=60)
+        ket_qua = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
+        # Không bắt buộc phải hợp lệ (còn tùy cỡ mẫu thực tế rơi vào mỗi
+        # khoảng), nhưng KHÔNG được báo "chưa đủ dữ liệu" vì đã đủ 60 phiên.
+        if not ket_qua["hop_le"]:
+            assert "Chưa đủ dữ liệu lịch sử" not in ket_qua.get("ghi_chu", "")
