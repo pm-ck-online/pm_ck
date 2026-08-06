@@ -13,6 +13,7 @@ from core.entry_screener import (
     detect_bullish_divergence_3_diem,
     kiem_tra_sap_breakout,
     kiem_tra_tich_luy_dai_han,
+    mo_phong_giao_dich_khong_chong_lap,
     quet_danh_sach_cho,
     quet_mot_ma,
     so_sanh_2_khoang_do_lech,
@@ -730,3 +731,82 @@ class TestLocTheoGiaiDoan:
             chuoi_giai_doan=chuoi_rong, giai_doan_loc="uptrend",
         )
         assert kq.get("tong_so_phien_quet", 0) == 0
+
+
+class TestMoPhongGiaoDichKhongChongLap:
+    def _make_realistic_df(self, n=1400, seed=9):
+        import numpy as np
+        np.random.seed(seed)
+        dates = pd.bdate_range("2021-01-01", periods=n)
+        closes = 100 + np.cumsum(np.random.normal(0, 0.6, n))
+        return pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.random.randint(500_000, 2_000_000, n).astype(float),
+        })
+
+    def test_so_giao_dich_it_hon_so_lan_quan_sat_chong_lan(self):
+        df = self._make_realistic_df()
+        kq_thong_ke = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=4, duong_tham_chieu="ma20",
+        )
+        kq_mo_phong = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dieu_kien_nen_ema200"], so_phien_giu=4, duong_tham_chieu="ma20",
+        )
+        # Số giao dịch ĐỘC LẬP phải <= số lần quan sát CHỒNG LẤN (không bao giờ nhiều hơn).
+        assert kq_mo_phong["so_giao_dich"] <= kq_thong_ke["so_lan_quan_sat"]
+
+    def test_von_cuoi_cung_khop_cong_thuc_lai_kep(self):
+        df = self._make_realistic_df()
+        von_ban_dau = 1_000_000_000
+        kq = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dieu_kien_nen_ema200"], so_phien_giu=4, duong_tham_chieu="ma20",
+            von_ban_dau=von_ban_dau, ty_trong_von_moi_lenh=0.5,
+        )
+        assert kq["so_giao_dich"] > 0
+
+        # Tự tính lại lãi kép từ chi_tiet_giao_dich, phải khớp đúng von_cuoi_cung.
+        von = von_ban_dau
+        for gd in kq["chi_tiet_giao_dich"]:
+            von += von * 0.5 * gd["pct_thay_doi"] / 100
+        assert round(von) == kq["von_cuoi_cung"]
+
+    def test_giao_dich_khong_chong_lan_thoi_gian(self):
+        df = self._make_realistic_df()
+        kq = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dieu_kien_nen_ema200"], so_phien_giu=4, duong_tham_chieu="ma20",
+        )
+        ngay_vao = [pd.Timestamp(gd["ngay_vao"]) for gd in kq["chi_tiet_giao_dich"]]
+        for a, b in zip(ngay_vao, ngay_vao[1:]):
+            # Ngày vào của giao dịch SAU phải >= ngày vào + so_phien_giu (không chồng lấn).
+            assert b >= a
+
+    def test_ty_trong_von_ngoai_khoang_hop_le_bi_tu_choi(self):
+        df = self._make_realistic_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            mo_phong_giao_dich_khong_chong_lap(df, ["dieu_kien_nen_ema200"], ty_trong_von_moi_lenh=1.5)
+        with pytest.raises(InvalidEntryScreenerError):
+            mo_phong_giao_dich_khong_chong_lap(df, ["dieu_kien_nen_ema200"], ty_trong_von_moi_lenh=0)
+
+    def test_von_ban_dau_khong_hop_le_bi_tu_choi(self):
+        df = self._make_realistic_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            mo_phong_giao_dich_khong_chong_lap(df, ["dieu_kien_nen_ema200"], von_ban_dau=0)
+
+    def test_khong_co_giao_dich_khi_chi_dat_tieu_chi_cham(self):
+        df = self._make_realistic_df()
+        kq = mo_phong_giao_dich_khong_chong_lap(df, ["dao_dong_tat_dan"])
+        assert kq["so_giao_dich"] == 0
+
+    def test_ho_tro_loc_theo_giai_doan(self):
+        from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+        df = self._make_realistic_df()
+        chuoi = tinh_chuoi_giai_doan_theo_ngay({"MA_TEST": df})
+
+        kq_khong_loc = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dieu_kien_nen_ema200"], so_phien_giu=4, duong_tham_chieu="ma20",
+        )
+        kq_loc = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dieu_kien_nen_ema200"], so_phien_giu=4, duong_tham_chieu="ma20",
+            chuoi_giai_doan=chuoi, giai_doan_loc="sideway",
+        )
+        assert kq_loc["so_giao_dich"] <= kq_khong_loc["so_giao_dich"]
