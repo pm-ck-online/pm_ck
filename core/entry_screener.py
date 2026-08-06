@@ -369,12 +369,31 @@ def _xac_dinh_bac(pct_thay_doi: float) -> str:
     return BAC_TANG_GIAM[-1][0]  # fallback: giá trị cực lớn -> "tang_tren_15"
 
 
+def _khop_giai_doan(ngay, chuoi_giai_doan, giai_doan_loc: Optional[str]) -> bool:
+    """Kiểm tra ngày `ngay` có thuộc đúng `giai_doan_loc` (uptrend/downtrend/
+    sideway) theo `chuoi_giai_doan` (pd.Series index=ngày, xem
+    `core.market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`) hay không.
+
+    Nếu KHÔNG lọc theo giai đoạn (`giai_doan_loc` là None) -> luôn khớp
+    (True), giữ nguyên hành vi cũ. Nếu ngày đó KHÔNG có trong chuỗi giai
+    đoạn (thiếu dữ liệu) -> KHÔNG khớp (loại khỏi thống kê, không suy diễn).
+    """
+    if giai_doan_loc is None:
+        return True
+    if chuoi_giai_doan is None:
+        return True
+    gia_tri = chuoi_giai_doan.get(pd.Timestamp(ngay))
+    return gia_tri == giai_doan_loc
+
+
 def tinh_thong_ke_tang_giam_lich_su(
     df_ohlcv: pd.DataFrame,
     tieu_chi_dat: list[str],
     so_phien_du_bao: int = 30,
     so_phien_kiem_tra: int = 250,
     duong_tham_chieu: str = "ema200",
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
 ) -> dict:
     """Với CHÍNH mã đang xét, quét lại lịch sử giá để tìm các thời điểm
     TRONG QUÁ KHỨ mã này từng thỏa CÙNG bộ tiêu chí (`tieu_chi_dat`) như
@@ -384,6 +403,14 @@ def tinh_thong_ke_tang_giam_lich_su(
     `duong_tham_chieu`: "ema200" (mặc định) hoặc "ma20" — đường trung
     bình dùng làm mốc cho tiêu chí "dieu_kien_nen_ema200" khi phát lại
     lịch sử (bổ sung 04/08/2026, cho phép chọn MA20 thay EMA200).
+
+    `chuoi_giai_doan` + `giai_doan_loc` (bổ sung 05/08/2026): nếu truyền
+    cả 2, CHỈ tính các lần trong quá khứ mà NGÀY đó khớp đúng giai đoạn
+    thị trường/ngành mong muốn ("uptrend"/"downtrend"/"sideway", xem
+    `core.market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`) — giúp
+    trả lời "tỷ lệ thắng/thua trong quá khứ khi thị trường/ngành đang
+    Uptrend có khác gì khi Downtrend không". Để trống (mặc định) -> giữ
+    nguyên hành vi cũ, không lọc theo giai đoạn.
 
     PHẠM VI ĐÃ THU HẸP CÓ CHỦ Ý: chỉ phát lại 2 tiêu chí tính NHANH
     ("dieu_kien_nen_ema200", "tich_luy_dai_han") — 2 tiêu chí còn lại
@@ -451,6 +478,9 @@ def tinh_thong_ke_tang_giam_lich_su(
                 dat_dieu_kien = True
 
         if not dat_dieu_kien:
+            continue
+
+        if not _khop_giai_doan(df_ohlcv["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
             continue
 
         close_sau = float(closes.iloc[i + so_phien_du_bao])
@@ -591,11 +621,18 @@ def so_sanh_2_khoang_do_lech(
     so_phien_du_bao: int = 5,
     so_phien_kiem_tra: int = 250,
     nguong_y_nghia: float = 0.05,
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
 ) -> dict:
     """Kiểm định thống kê xem 2 KHOẢNG ĐỘ LỆCH (% giá so với đường tham
     chiếu EMA200/MA20) có khác biệt CÓ Ý NGHĨA THỐNG KÊ về tỷ lệ thắng
     hay không — trả lời đúng câu hỏi "khoảng -5% đến 0% có khác gì
     khoảng 0% đến +5% không", KHÔNG chỉ so sánh cảm tính 2 con số %.
+
+    `chuoi_giai_doan` + `giai_doan_loc` (bổ sung 05/08/2026): nếu truyền
+    cả 2, CHỈ tính các lần trong quá khứ mà NGÀY đó khớp đúng giai đoạn
+    thị trường/ngành mong muốn (xem
+    `core.market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`).
 
     `khoang_1`, `khoang_2`: tuple (từ, đến) tính theo độ lệch % CÓ DẤU
     (bổ sung 04/08/2026 — trước đây dùng trị tuyệt đối, nay cho phép
@@ -647,6 +684,8 @@ def so_sanh_2_khoang_do_lech(
     for i in range(start, max(start, end)):
         duong_i = duong_series.iloc[i]
         if pd.isna(duong_i) or duong_i <= 0:
+            continue
+        if not _khop_giai_doan(df_ohlcv["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
             continue
         tong_so_phien_quet += 1
         close_i = float(closes.iloc[i])
@@ -727,6 +766,8 @@ def so_sanh_2_khoang_rsi(
     so_phien_du_bao: int = 5,
     so_phien_kiem_tra: int = 250,
     nguong_y_nghia: float = 0.05,
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
 ) -> dict:
     """Kiểm định thống kê "Kiểm định có RSI (14)" (bổ sung 04/08/2026) —
     TƯƠNG TỰ `so_sanh_2_khoang_do_lech()` ở trên, nhưng phân nhóm theo
@@ -735,6 +776,11 @@ def so_sanh_2_khoang_rsi(
     bán) có khác gì RSI trên 69 (quá mua) về xác suất thắng sau N phiên
     không" — bằng kiểm định 2 tỷ lệ (two-proportion z-test), không chỉ
     so sánh cảm tính 2 con số %.
+
+    `chuoi_giai_doan` + `giai_doan_loc` (bổ sung 05/08/2026): nếu truyền
+    cả 2, CHỈ tính các lần trong quá khứ mà NGÀY đó khớp đúng giai đoạn
+    thị trường/ngành mong muốn (xem
+    `core.market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`).
 
     `khoang_1`, `khoang_2`: tuple (từ, đến) tính theo GIÁ TRỊ RSI(14)
     (0-100), nửa khoảng đóng-mở [từ, đến). Ví dụ 3 vùng RSI kinh điển:
@@ -770,6 +816,8 @@ def so_sanh_2_khoang_rsi(
         rsi_i = rsi_series.iloc[i]
         if pd.isna(rsi_i):
             continue
+        if not _khop_giai_doan(df_ohlcv["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
+            continue
         tong_so_phien_quet += 1
         rsi_i = float(rsi_i)
 
@@ -791,6 +839,7 @@ def so_sanh_2_khoang_rsi(
         return {
             "hop_le": False,
             "so_lan_khoang_1": n1, "so_lan_khoang_2": n2,
+            "tong_so_phien_quet": tong_so_phien_quet,
             "ghi_chu": (
                 f"Cỡ mẫu quá nhỏ để kiểm định đáng tin cậy (khoảng 1: {n1} lần, "
                 f"khoảng 2: {n2} lần) — cần tối thiểu 5 lần mỗi khoảng, khuyến nghị "

@@ -546,3 +546,81 @@ def detect_market_regime_quant(
         "canh_bao": canh_bao,
         "reasoning": reasoning,
     }
+
+
+# ==============================================================================
+# CHUỖI GIAI ĐOẠN THEO TỪNG NGÀY (bổ sung 05/08/2026) — phát lại đúng logic
+# `classify_sector_trend()` ở trên, nhưng tính cho TỪNG NGÀY trong lịch sử
+# (không chỉ ngày mới nhất), để dùng làm cơ sở lọc thống kê Kelly/kiểm
+# định theo giai đoạn Uptrend/Sideway/Downtrend.
+# ==============================================================================
+
+def tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma, config=None):
+    """Tính CHUỖI giai đoạn ngành/thị trường THEO TỪNG NGÀY trong lịch sử
+    — dựa trên % số mã đang TRÊN EMA200 của CHÍNH nó, tổng hợp qua NHIỀU
+    mã CÙNG LÚC — đúng nguyên tắc `classify_sector_trend()` ở trên, chỉ
+    khác là tính lại cho MỌI ngày (không chỉ ngày gần nhất).
+
+    `du_lieu_theo_ma`: dict {mã: df_ohlcv} — mỗi df cần tối thiểu cột
+    "date" và "close". Mã nào có dưới 200 phiên sẽ tự bị loại (không đủ
+    tính EMA200), không gây lỗi.
+
+    Trả về `pd.Series` — index = ngày (Timestamp), giá trị = chuỗi
+    "uptrend" | "downtrend" | "sideway" — CHỈ gồm các ngày có ít nhất 1
+    mã đủ dữ liệu để đánh giá.
+
+    HIỆU NĂNG: toàn bộ tính toán VECTOR HÓA (không lặp Python theo từng
+    ngày) — với 1 ngành ~15-20 mã hoặc toàn thị trường ~212 mã, đều chạy
+    trong vài giây, phù hợp gọi trực tiếp từ dashboard.
+    """
+    import pandas as pd
+    from core.indicators import calculate_ema
+
+    cfg = {**DEFAULT_CONFIG, **(config or {})}
+
+    cot_tren_ema = {}
+    cot_khoang_cach = {}
+
+    for ma, df in du_lieu_theo_ma.items():
+        if df is None or df.empty or len(df) < 200:
+            continue
+        df = df.copy()
+        df["date"] = pd.to_datetime(df["date"])
+        df = df.set_index("date")
+
+        ema200 = calculate_ema(df.reset_index(), 200)
+        ema200.index = df.index
+
+        # Trên EMA200 (1.0/0.0), NaN khi chưa đủ 200 phiên -> tự loại khỏi
+        # trung bình khi tổng hợp (dùng skipna).
+        tren = (df["close"] > ema200).astype(float)
+        tren[ema200.isna()] = float("nan")
+        cot_tren_ema[ma] = tren
+
+        khoang_cach = (df["close"] - ema200).abs() / ema200 * 100
+        cot_khoang_cach[ma] = khoang_cach
+
+    if not cot_tren_ema:
+        return pd.Series(dtype=object)
+
+    bang_tren = pd.DataFrame(cot_tren_ema)
+    bang_khoang_cach = pd.DataFrame(cot_khoang_cach)
+
+    n_hop_le = bang_tren.count(axis=1)
+    n_tren = bang_tren.sum(axis=1, skipna=True)
+    pct_tren = n_tren / n_hop_le
+    avg_khoang_cach = bang_khoang_cach.mean(axis=1, skipna=True)
+
+    mask_hop_le = n_hop_le > 0
+    pct_tren = pct_tren[mask_hop_le]
+    avg_khoang_cach = avg_khoang_cach[mask_hop_le]
+
+    dieu_kien_sideway_theo_khoang_cach = avg_khoang_cach < cfg["sideway_distance_threshold_pct"]
+    dieu_kien_uptrend = pct_tren >= cfg["uptrend_threshold_pct"]
+    dieu_kien_downtrend = pct_tren <= cfg["downtrend_threshold_pct"]
+
+    ket_qua = pd.Series("sideway", index=pct_tren.index)
+    ket_qua[dieu_kien_uptrend & ~dieu_kien_sideway_theo_khoang_cach] = "uptrend"
+    ket_qua[dieu_kien_downtrend & ~dieu_kien_sideway_theo_khoang_cach] = "downtrend"
+
+    return ket_qua.sort_index()
