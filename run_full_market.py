@@ -41,7 +41,7 @@ from core.data_collector import DataCollector
 from core.indicators import get_indicator_snapshot
 from core.pattern_detector import detect_narrowing_pattern
 from core.storage import Storage
-from main import build_data_collector, compute_precomputed_macro_score, load_config, resolve_storage_path
+from main import build_data_collector, compute_precomputed_macro_score, load_config, resolve_storage_path, run_market_regime_history_step
 
 logging.basicConfig(
     level=logging.INFO,
@@ -299,6 +299,12 @@ def run_full_market(
     from main import run_entry_screener_step, run_short_term_signal_step
     run_short_term_signal_step(storage, list(symbol_sector_map.keys()))
     run_entry_screener_step(storage, list(symbol_sector_map.keys()))
+
+    # --- Tính và LƯU LẠI chuỗi giai đoạn Uptrend/Sideway/Downtrend theo
+    #     TỪNG NGÀY (toàn thị trường + từng ngành) — bổ sung 05/08/2026,
+    #     để dashboard đọc nhanh thay vì phải tính lại mỗi lần (xem
+    #     module "Tổng hợp" -> "Lọc theo giai đoạn thị trường/ngành"). ---
+    run_market_regime_history_step(storage)
 
     storage.close()
     logger.info("Hoàn tất toàn bộ pipeline (dữ liệu + giai đoạn thị trường theo ngành).")

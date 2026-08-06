@@ -968,6 +968,81 @@ def run_short_term_signal_step(storage: Storage, watchlist_symbols: list[str]) -
     return report
 
 
+def _luu_chuoi_giai_doan(storage: Storage, key: str, chuoi) -> None:
+    """Lưu 1 chuỗi giai đoạn (pd.Series index=ngày) vào storage dưới dạng
+    JSON-hóa được (list các bản ghi {"date": ..., "giai_doan": ...})."""
+    records = [
+        {"date": str(ngay.date()) if hasattr(ngay, "date") else str(ngay), "giai_doan": gia_tri}
+        for ngay, gia_tri in chuoi.items()
+    ]
+    storage.save("chuoi_giai_doan_lich_su", key, {"records": records})
+
+
+def run_market_regime_history_step(storage: Storage) -> None:
+    """Tính và LƯU LẠI (bổ sung 05/08/2026) chuỗi giai đoạn Uptrend/
+    Sideway/Downtrend THEO TỪNG NGÀY trong lịch sử — cho TOÀN THỊ TRƯỜNG
+    (key="thi_truong") và TỪNG NGÀNH (key=tên ngành) — chạy 1 LẦN/NGÀY
+    như 1 bước trong pipeline chính (`run_full_market.py`), để dashboard
+    CHỈ CẦN ĐỌC (nhanh, 1 lượt truy vấn) thay vì phải TÍNH LẠI mỗi lần
+    người dùng mở mục "Lọc theo giai đoạn thị trường/ngành" (chậm, tốn
+    nhiều lượt gọi Supabase, và mất khi Streamlit khởi động lại vì trước
+    đây chỉ cache tạm trong bộ nhớ).
+
+    CHỈ 1 LƯỢT TRUY VẤN LỚN duy nhất để lấy OHLCV của TẤT CẢ mã (dùng
+    `get_latest_many`) — toàn bộ tính toán còn lại (vector hóa, tính cho
+    từng ngành) đều làm TRONG BỘ NHỚ, không tốn thêm request nào.
+    """
+    from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+
+    all_symbol_keys = storage.query_all_keys("ohlcv_history")
+    if not all_symbol_keys:
+        logger.warning("Không có dữ liệu OHLCV nào để tính chuỗi giai đoạn lịch sử — bỏ qua bước này.")
+        return
+
+    ohlcv_map_raw = storage.get_latest_many("ohlcv_history", all_symbol_keys)
+    du_lieu_theo_ma: dict[str, pd.DataFrame] = {}
+    for ma, record in ohlcv_map_raw.items():
+        records = record["data"].get("records", [])
+        if not records:
+            continue
+        df = pd.DataFrame(records)
+        df["date"] = pd.to_datetime(df["date"])
+        du_lieu_theo_ma[ma] = df.sort_values("date").reset_index(drop=True)
+
+    if not du_lieu_theo_ma:
+        logger.warning("Không có mã nào đủ dữ liệu OHLCV hợp lệ — bỏ qua bước tính chuỗi giai đoạn lịch sử.")
+        return
+
+    # --- Toàn thị trường ---
+    chuoi_thi_truong = tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma)
+    _luu_chuoi_giai_doan(storage, "thi_truong", chuoi_thi_truong)
+    logger.info("Đã lưu chuỗi giai đoạn lịch sử TOÀN THỊ TRƯỜNG (%d ngày).", len(chuoi_thi_truong))
+
+    # --- Theo từng ngành ---
+    sector_keys = storage.query_all_keys("symbol_sector")
+    sector_map = storage.get_latest_many("symbol_sector", sector_keys)
+    nganh_theo_ma = {ma: rec["data"].get("sector") for ma, rec in sector_map.items()}
+
+    tat_ca_nganh = sorted({v for v in nganh_theo_ma.values() if v})
+    so_nganh_da_luu = 0
+    for nganh in tat_ca_nganh:
+        ma_trong_nganh = [
+            ma for ma, ng in nganh_theo_ma.items()
+            if ng == nganh and ma in du_lieu_theo_ma
+        ]
+        if not ma_trong_nganh:
+            continue
+        du_lieu_nganh = {ma: du_lieu_theo_ma[ma] for ma in ma_trong_nganh}
+        chuoi_nganh = tinh_chuoi_giai_doan_theo_ngay(du_lieu_nganh)
+        if len(chuoi_nganh) > 0:
+            _luu_chuoi_giai_doan(storage, nganh, chuoi_nganh)
+            so_nganh_da_luu += 1
+
+    logger.info(
+        "Đã lưu chuỗi giai đoạn lịch sử cho %d/%d ngành.", so_nganh_da_luu, len(tat_ca_nganh),
+    )
+
+
 def main() -> None:
     print("pm_ck — Phần mềm theo dõi & mô phỏng giao dịch CK Việt Nam")
     print("⚠️  Đây là công cụ THEO DÕI VÀ MÔ PHỎNG — không đặt lệnh giao dịch thật.\n")
