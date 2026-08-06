@@ -3349,6 +3349,59 @@ def render_tong_hop_section(storage: Storage) -> None:
 
     st.divider()
 
+    # === PHẦN 3C (bổ sung 06/08/2026): Hiện tại cổ phiếu mô phỏng — đối
+    #     chiếu NHANH bối cảnh HIỆN TẠI (giai đoạn ngành + giá/MA20 tự
+    #     nhập) với kết quả mô phỏng lịch sử ở trên, để biết mã đang ở
+    #     đâu SO VỚI đúng điều kiện vừa mô phỏng. ===
+    st.markdown("#### 🔎 Hiện tại cổ phiếu mô phỏng")
+
+    sector_snap_hien_tai = storage.get_latest("symbol_sector", ma_chon)
+    nganh_hien_tai = sector_snap_hien_tai["data"].get("sector") if sector_snap_hien_tai else None
+
+    col_ht1, col_ht2 = st.columns(2)
+    with col_ht1:
+        if nganh_hien_tai:
+            regime_record_ht = storage.get_latest("market_regime", nganh_hien_tai)
+            regime_ht = regime_record_ht["data"].get("regime") if regime_record_ht else None
+            confidence_ht = regime_record_ht["data"].get("confidence", 0.0) if regime_record_ht else 0.0
+            regime_emoji_ht = {"uptrend": "🟢", "downtrend": "🔴", "sideway": "🟡"}.get(regime_ht, "⚪")
+            st.metric(f"Ngành: {_nhan_nganh(nganh_hien_tai)}", f"{regime_emoji_ht} {regime_ht or 'Chưa xác định'}")
+            st.caption(
+                f"Độ tin cậy {confidence_ht*100:.0f}% — xem chi tiết đầy đủ tại mục "
+                f"\"🌐 Giai đoạn thị trường (định tính)\" (Nhóm 2 — Thị trường chung)."
+            )
+        else:
+            st.info(f"Chưa xác định được ngành của mã {ma_chon}.")
+
+    with col_ht2:
+        gia_hien_tai_ht = st.number_input(
+            "Giá cổ phiếu hiện tại (tự nhập)", value=0.0, min_value=0.0, step=0.05,
+            key="tong_hop_gia_hien_tai_mo_phong",
+        )
+        ma20_hien_tai_ht = st.number_input(
+            "MA20 hiện tại (tự nhập)", value=0.0, min_value=0.0, step=0.05,
+            key="tong_hop_ma20_hien_tai_mo_phong",
+        )
+
+    if gia_hien_tai_ht > 0 and ma20_hien_tai_ht > 0:
+        do_lech_hien_tai = (gia_hien_tai_ht - ma20_hien_tai_ht) / ma20_hien_tai_ht * 100
+        st.metric("Độ lệch % hiện tại so với MA20 (tự nhập)", f"{do_lech_hien_tai:+.2f}%")
+        if dung_khoang_tuy_chinh and khoang_do_lech_mo_phong:
+            khop = khoang_do_lech_mo_phong[0] <= do_lech_hien_tai < khoang_do_lech_mo_phong[1]
+            if khop:
+                st.success(
+                    f"✅ Độ lệch hiện tại ({do_lech_hien_tai:+.2f}%) ĐANG NẰM TRONG khoảng vừa mô phỏng "
+                    f"[{khoang_do_lech_mo_phong[0]:+.1f}%, {khoang_do_lech_mo_phong[1]:+.1f}%)."
+                )
+            else:
+                st.warning(
+                    f"⚠️ Độ lệch hiện tại ({do_lech_hien_tai:+.2f}%) ĐANG NẰM NGOÀI khoảng vừa mô phỏng "
+                    f"[{khoang_do_lech_mo_phong[0]:+.1f}%, {khoang_do_lech_mo_phong[1]:+.1f}%) — kết quả mô "
+                    f"phỏng ở trên CHƯA áp dụng cho tình huống hiện tại."
+                )
+
+    st.divider()
+
     # === PHẦN 4 (bổ sung 04/08/2026): Kiểm định thống kê so sánh 2 khoảng
     #     độ lệch — trả lời đúng câu hỏi "khoảng ±5% có khác gì khoảng
     #     5-10% không" bằng kiểm định 2 tỷ lệ (two-proportion z-test),
