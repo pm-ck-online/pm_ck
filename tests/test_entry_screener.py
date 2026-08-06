@@ -810,3 +810,38 @@ class TestMoPhongGiaoDichKhongChongLap:
             chuoi_giai_doan=chuoi, giai_doan_loc="sideway",
         )
         assert kq_loc["so_giao_dich"] <= kq_khong_loc["so_giao_dich"]
+
+    def test_khoang_do_lech_chat_hon_cho_it_giao_dich_hon(self):
+        df = self._make_realistic_df()
+        kq_rong = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dieu_kien_nen_ema200"], so_phien_giu=4, duong_tham_chieu="ma20",
+        )
+        kq_chat = mo_phong_giao_dich_khong_chong_lap(
+            df, [], so_phien_giu=4, duong_tham_chieu="ma20", khoang_do_lech=(0, 5),
+        )
+        assert kq_chat["so_giao_dich"] <= kq_rong["so_giao_dich"]
+
+    def test_khoang_do_lech_bo_qua_tieu_chi_dat(self):
+        # Khi truyền khoang_do_lech, KHÔNG cần tieu_chi_dat (dù để rỗng []
+        # hay chỉ có tiêu chí chậm) vẫn phải chạy được bình thường.
+        df = self._make_realistic_df()
+        kq = mo_phong_giao_dich_khong_chong_lap(
+            df, ["dao_dong_tat_dan"], so_phien_giu=4, duong_tham_chieu="ma20",
+            khoang_do_lech=(0, 5),
+        )
+        assert kq["so_giao_dich"] > 0
+
+    def test_khoang_do_lech_tu_lon_hon_den_bi_tu_choi(self):
+        df = self._make_realistic_df()
+        with pytest.raises(InvalidEntryScreenerError):
+            mo_phong_giao_dich_khong_chong_lap(
+                df, [], duong_tham_chieu="ma20", khoang_do_lech=(5, 0),
+            )
+
+    def test_khoang_do_lech_ho_tro_gia_tri_am(self):
+        df = self._make_realistic_df()
+        kq = mo_phong_giao_dich_khong_chong_lap(
+            df, [], so_phien_giu=4, duong_tham_chieu="ma20", khoang_do_lech=(-5, 0),
+        )
+        # Không bắt buộc phải có giao dịch, nhưng KHÔNG được lỗi.
+        assert "so_giao_dich" in kq
