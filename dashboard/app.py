@@ -2214,6 +2214,8 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
 def _tinh_thong_ke_tang_giam_cached(
     df: pd.DataFrame, ma: str, tieu_chi_dat: tuple[str, ...], so_phien_du_bao: int,
     duong_tham_chieu: str = "ema200",
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
 ) -> dict:
     """Bọc `tinh_thong_ke_tang_giam_lich_su()` bằng cache 10 phút."""
     from core.entry_screener import tinh_thong_ke_tang_giam_lich_su
@@ -2221,6 +2223,7 @@ def _tinh_thong_ke_tang_giam_cached(
     return tinh_thong_ke_tang_giam_lich_su(
         df, list(tieu_chi_dat), so_phien_du_bao=so_phien_du_bao,
         duong_tham_chieu=duong_tham_chieu,
+        chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc,
     )
 
 
@@ -2843,6 +2846,43 @@ def render_stock_signal_report_section(storage: Storage) -> None:
             st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
+@st.cache_data(ttl=1800, show_spinner="Đang tính giai đoạn ngành/thị trường theo lịch sử (có thể mất chút thời gian)...")
+def _tinh_chuoi_giai_doan_cached(_storage: Storage, nguon: str, ma_hoac_nganh: str) -> pd.Series:
+    """Tính chuỗi giai đoạn Uptrend/Sideway/Downtrend THEO NGÀY, tổng hợp
+    nhiều mã (bổ sung 05/08/2026) — dùng để lọc thống kê Kelly/kiểm định
+    theo đúng giai đoạn thị trường chung (VNINDEX/toàn thị trường) hoặc
+    riêng ngành của 1 mã. Cache 30 phút vì tính toán khá nặng (fetch +
+    tính EMA200 cho nhiều mã).
+
+    `nguon`: "thi_truong" (toàn bộ mã đang có dữ liệu) hoặc "nganh"
+    (chỉ các mã CÙNG NGÀNH với `ma_hoac_nganh`, tra qua symbol_sector).
+    """
+    from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+
+    if nguon == "thi_truong":
+        danh_sach_ma = sorted(_storage.query_all_keys("ohlcv_history"))
+    else:
+        all_keys = _storage.query_all_keys("symbol_sector")
+        sector_map = _storage.get_latest_many("symbol_sector", all_keys)
+        ma_goc = ma_hoac_nganh
+        nganh_cua_ma = None
+        snap = sector_map.get(ma_goc)
+        if snap:
+            nganh_cua_ma = snap["data"].get("sector")
+        danh_sach_ma = [
+            ma for ma, rec in sector_map.items()
+            if nganh_cua_ma is not None and rec["data"].get("sector") == nganh_cua_ma
+        ]
+
+    du_lieu_theo_ma: dict[str, pd.DataFrame] = {}
+    for ma in danh_sach_ma:
+        df_ma = _load_ohlcv_history_df(_storage, ma)
+        if df_ma is not None and not df_ma.empty:
+            du_lieu_theo_ma[ma] = df_ma
+
+    return tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma)
+
+
 def render_tong_hop_section(storage: Storage) -> None:
     """Module "Tổng hợp" (bổ sung 04/08/2026) — rà soát TOÀN DIỆN 1 mã cổ
     phiếu do người dùng chọn, tích hợp:
@@ -3028,6 +3068,45 @@ def render_tong_hop_section(storage: Storage) -> None:
     duong_tham_chieu_key_k = "ema200" if duong_tham_chieu_nhan_k == "EMA200" else "ma20"
     st.caption(f"📌 Đang phân tích khung NGẮN HẠN: {so_phien_du_bao_k} phiên tới (~{so_phien_du_bao_k / 20:.1f} tháng giao dịch).")
 
+    # === LỌC THEO GIAI ĐOẠN THỊ TRƯỜNG/NGÀNH (bổ sung 05/08/2026) — áp
+    #     dụng chung cho CẢ Kelly VÀ 2 mục kiểm định bên dưới, vì kết quả
+    #     Kelly/kiểm định có thể thay đổi rất nhiều tùy giai đoạn thị
+    #     trường chung hoặc ngành đang Uptrend/Sideway/Downtrend. ===
+    st.markdown("##### 🌐 Lọc theo giai đoạn thị trường/ngành (áp dụng cho Kelly + kiểm định bên dưới)")
+    col_gd1, col_gd2 = st.columns(2)
+    with col_gd1:
+        nguon_giai_doan_nhan = st.radio(
+            "Nguồn giai đoạn", ["Không lọc (toàn bộ lịch sử)", "Toàn thị trường (nhiều mã)", "Riêng ngành của mã này"],
+            key="tong_hop_nguon_giai_doan",
+        )
+    giai_doan_loc_nhan = None
+    with col_gd2:
+        if nguon_giai_doan_nhan != "Không lọc (toàn bộ lịch sử)":
+            giai_doan_loc_nhan = st.radio(
+                "Giai đoạn muốn lọc", ["Uptrend", "Sideway", "Downtrend"],
+                key="tong_hop_giai_doan_loc", horizontal=True,
+            )
+
+    chuoi_giai_doan = None
+    giai_doan_loc_key = None
+    if nguon_giai_doan_nhan != "Không lọc (toàn bộ lịch sử)":
+        nguon_key = "thi_truong" if nguon_giai_doan_nhan == "Toàn thị trường (nhiều mã)" else "nganh"
+        try:
+            chuoi_giai_doan = _tinh_chuoi_giai_doan_cached(storage, nguon_key, ma_chon)
+        except Exception as exc:  # noqa: BLE001
+            st.warning(f"Không tính được chuỗi giai đoạn: {exc}")
+            chuoi_giai_doan = None
+        giai_doan_loc_key = giai_doan_loc_nhan.lower() if giai_doan_loc_nhan else None
+
+        if chuoi_giai_doan is not None and len(chuoi_giai_doan) > 0:
+            phan_bo_giai_doan = chuoi_giai_doan.value_counts()
+            st.caption(
+                f"📊 Phân bố giai đoạn trong lịch sử đã tính ({'toàn thị trường' if nguon_key == 'thi_truong' else 'ngành của ' + ma_chon}): "
+                + ", ".join(f"{nhan}={so_luong}" for nhan, so_luong in phan_bo_giai_doan.items())
+            )
+        elif chuoi_giai_doan is not None:
+            st.info("Chưa tính được chuỗi giai đoạn nào (thiếu dữ liệu các mã liên quan).")
+
     # --- Xác định CHÍNH XÁC mã này có ĐANG thực sự thỏa từng tiêu chí hay
     #     không, TÍNH LẠI TƯƠI theo đúng đường tham chiếu đang chọn ở trên
     #     — KHÔNG mặc định coi như luôn đạt (lỗi cũ: nếu mã không có trong
@@ -3081,6 +3160,7 @@ def render_tong_hop_section(storage: Storage) -> None:
         try:
             thong_ke_k = _tinh_thong_ke_tang_giam_cached(
                 df_ma, ma_chon, tuple(tieu_chi_dat_k), so_phien_du_bao_k, duong_tham_chieu_key_k,
+                chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc_key,
             )
         except Exception as exc:  # noqa: BLE001
             thong_ke_k = {"so_lan_quan_sat": 0, "phan_bo": {}}
@@ -3155,6 +3235,7 @@ def render_tong_hop_section(storage: Storage) -> None:
             kq_kd = so_sanh_2_khoang_do_lech(
                 df_ma, khoang_1=(kh1_tu, kh1_den), khoang_2=(kh2_tu, kh2_den),
                 duong_tham_chieu=duong_tham_chieu_key_k, so_phien_du_bao=so_phien_du_bao_k,
+                chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc_key,
             )
         except Exception as exc:  # noqa: BLE001
             kq_kd = {"hop_le": False, "ghi_chu": f"Lỗi: {exc}"}
@@ -3221,6 +3302,7 @@ def render_tong_hop_section(storage: Storage) -> None:
             kq_rsi = so_sanh_2_khoang_rsi(
                 df_ma, khoang_1=(rsi1_tu, rsi1_den), khoang_2=(rsi2_tu, rsi2_den),
                 so_phien_du_bao=so_phien_du_bao_k,
+                chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc_key,
             )
         except Exception as exc:  # noqa: BLE001
             kq_rsi = {"hop_le": False, "ghi_chu": f"Lỗi: {exc}"}
