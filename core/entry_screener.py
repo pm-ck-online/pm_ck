@@ -888,3 +888,142 @@ def so_sanh_2_khoang_rsi(
             )
         ),
     }
+
+
+# ==============================================================================
+# MÔ PHỎNG GIAO DỊCH KHÔNG CHỒNG LẤN THỜI GIAN (bổ sung 06/08/2026) —
+# trả lời chính xác "thực tế sẽ có bao nhiêu giao dịch ĐỘC LẬP, lãi/lỗ
+# THẬT là bao nhiêu" — KHÁC với tinh_thong_ke_tang_giam_lich_su() (đếm
+# TẤT CẢ các lần quan sát, dù CHỒNG LẤN thời gian với nhau).
+# ==============================================================================
+
+def mo_phong_giao_dich_khong_chong_lap(
+    df_ohlcv: pd.DataFrame,
+    tieu_chi_dat: list[str],
+    so_phien_giu: int = 4,
+    so_phien_kiem_tra: int = 250,
+    duong_tham_chieu: str = "ema200",
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
+    von_ban_dau: float = 1_000_000_000,
+    ty_trong_von_moi_lenh: float = 0.5,
+) -> dict:
+    """Mô phỏng THỰC TẾ số giao dịch ĐỘC LẬP (KHÔNG CHỒNG LẤN thời gian —
+    mỗi giao dịch phải "xong" đủ `so_phien_giu` phiên mới được tính giao
+    dịch tiếp theo, đúng logic chu kỳ T+ của thị trường VN) mà CHÍNH mã
+    này từng thỏa tiêu chí trong quá khứ — sau đó CỘNG DỒN (compound)
+    LỢI NHUẬN THẬT (không phải số trung bình giả định) qua ĐÚNG THỨ TỰ
+    THỜI GIAN thật đã xảy ra, để biết chính xác NẾU giao dịch từ đầu với
+    `von_ban_dau`, dùng `ty_trong_von_moi_lenh` mỗi lần, thì vốn cuối là
+    bao nhiêu.
+
+    KHÁC với `tinh_thong_ke_tang_giam_lich_su()`: hàm đó đếm TẤT CẢ các
+    lần quan sát dù CHỒNG LẤN nhau (VD ngày 1-5, ngày 2-6... đều tính
+    riêng) — phù hợp để tính XÁC SUẤT/Kelly (cần cỡ mẫu lớn). Hàm NÀY
+    chỉ đếm các giao dịch THỰC SỰ CÓ THỂ THỰC HIỆN ĐỘC LẬP theo đúng
+    ràng buộc thời gian thật — phù hợp để biết SỐ TIỀN THẬT, không phải
+    xác suất.
+
+    Đây vẫn là MÔ PHỎNG trên dữ liệu lịch sử, KHÔNG phải cam kết lợi
+    nhuận hay dự báo tương lai — chỉ cho biết "nếu quá khứ lặp lại đúng
+    như vậy" thì kết quả sẽ ra sao.
+    """
+    if not (0 < ty_trong_von_moi_lenh <= 1):
+        raise InvalidEntryScreenerError("ty_trong_von_moi_lenh phải trong khoảng (0, 1].")
+    if von_ban_dau <= 0:
+        raise InvalidEntryScreenerError("von_ban_dau phải > 0.")
+
+    tieu_chi_su_dung = [t for t in tieu_chi_dat if t in {"dieu_kien_nen_ema200", "tich_luy_dai_han"}]
+    if not tieu_chi_su_dung:
+        return {
+            "so_giao_dich": 0,
+            "ghi_chu": (
+                "Mã này chỉ đạt tiêu chí 'Mô hình thu hẹp biên độ' và/hoặc "
+                "'Khối lượng breakout' — 2 tiêu chí này KHÔNG được phát lại "
+                "trong mô phỏng (quá chậm để tính hàng loạt)."
+            ),
+        }
+
+    so_phien_toi_thieu = 200 if duong_tham_chieu == "ema200" else 20
+    if df_ohlcv is None or df_ohlcv.empty or len(df_ohlcv) < so_phien_toi_thieu:
+        return {"so_giao_dich": 0, "ghi_chu": f"Chưa đủ dữ liệu lịch sử (cần tối thiểu {so_phien_toi_thieu} phiên)."}
+
+    from core.indicators import calculate_ema, calculate_ma
+
+    n = len(df_ohlcv)
+    duong_series = (
+        calculate_ema(df_ohlcv, period=200) if duong_tham_chieu == "ema200"
+        else calculate_ma(df_ohlcv, period=20)
+    )
+    closes = df_ohlcv["close"]
+
+    start = min(so_phien_toi_thieu, max(0, n - so_phien_kiem_tra))
+    end = n - so_phien_giu
+
+    giao_dich: list[dict] = []
+    i = start
+    while i < max(start, end):
+        duong_i = duong_series.iloc[i]
+        if pd.isna(duong_i) or duong_i <= 0:
+            i += 1
+            continue
+        close_i = float(closes.iloc[i])
+
+        dat_dieu_kien = False
+        if "dieu_kien_nen_ema200" in tieu_chi_su_dung:
+            do_lech = (close_i - duong_i) / duong_i * 100
+            if do_lech >= -10.0:
+                dat_dieu_kien = True
+        if not dat_dieu_kien and "tich_luy_dai_han" in tieu_chi_su_dung:
+            tich_luy = kiem_tra_tich_luy_dai_han(df_ohlcv.iloc[: i + 1])
+            if tich_luy.get("dat"):
+                dat_dieu_kien = True
+
+        if not dat_dieu_kien or not _khop_giai_doan(df_ohlcv["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
+            i += 1
+            continue
+
+        # KHỚP điều kiện -> mở 1 giao dịch ĐỘC LẬP, "khóa" luôn
+        # `so_phien_giu` phiên tiếp theo (không cho mở giao dịch mới
+        # chồng lấn trong khoảng thời gian này — đúng ràng buộc T+ thật).
+        close_sau = float(closes.iloc[i + so_phien_giu])
+        pct_thay_doi = (close_sau - close_i) / close_i * 100
+        giao_dich.append({
+            "ngay_vao": str(df_ohlcv["date"].iloc[i]),
+            "ngay_ra": str(df_ohlcv["date"].iloc[i + so_phien_giu]),
+            "pct_thay_doi": round(pct_thay_doi, 2),
+        })
+        i += so_phien_giu  # nhảy hẳn qua khoảng đã "khóa", KHÔNG chồng lấn
+
+    so_giao_dich = len(giao_dich)
+    if so_giao_dich == 0:
+        return {"so_giao_dich": 0, "ghi_chu": "Không tìm thấy giao dịch độc lập nào trong lịch sử đã quét."}
+
+    # --- Cộng dồn (compound) lợi nhuận THẬT theo ĐÚNG thứ tự thời gian ---
+    von = von_ban_dau
+    lich_su_von: list[float] = []
+    so_lan_thang = 0
+    for gd in giao_dich:
+        so_tien_dat = von * ty_trong_von_moi_lenh
+        lai_lo = so_tien_dat * gd["pct_thay_doi"] / 100
+        von += lai_lo
+        gd["von_sau_giao_dich"] = round(von)
+        lich_su_von.append(von)
+        if gd["pct_thay_doi"] > 0:
+            so_lan_thang += 1
+
+    return {
+        "so_giao_dich": so_giao_dich,
+        "so_lan_thang": so_lan_thang,
+        "so_lan_thua": so_giao_dich - so_lan_thang,
+        "von_ban_dau": von_ban_dau,
+        "von_cuoi_cung": round(von),
+        "lai_lo_tuyet_doi": round(von - von_ban_dau),
+        "lai_lo_pct": round((von - von_ban_dau) / von_ban_dau * 100, 2),
+        "chi_tiet_giao_dich": giao_dich,
+        "ghi_chu": (
+            f"Mô phỏng {so_giao_dich} giao dịch ĐỘC LẬP (không chồng lấn thời gian, "
+            f"mỗi giao dịch giữ đúng {so_phien_giu} phiên) — dùng {ty_trong_von_moi_lenh*100:.0f}% "
+            f"vốn hiện có cho mỗi lần, cộng dồn lợi nhuận THẬT theo đúng thứ tự lịch sử."
+        ),
+    }
