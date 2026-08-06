@@ -3251,6 +3251,78 @@ def render_tong_hop_section(storage: Storage) -> None:
 
     st.divider()
 
+    # === PHẦN 3B (bổ sung 06/08/2026): Mô phỏng giao dịch KHÔNG CHỒNG LẤN
+    #     thời gian — trả lời chính xác "thực tế có bao nhiêu giao dịch
+    #     ĐỘC LẬP, lãi/lỗ THẬT là bao nhiêu" — KHÁC với "Số lần quan sát"
+    #     ở phần Kelly trên (đếm CẢ các lần chồng lấn thời gian, phù hợp
+    #     tính xác suất nhưng KHÔNG phải số giao dịch thực hiện được). ===
+    st.markdown("#### 💰 Mô phỏng giao dịch không chồng lấn (số tiền THẬT)")
+    st.caption(
+        "Khác với \"Số lần quan sát\" ở Kelly phía trên (đếm CẢ các lần chồng lấn thời "
+        "gian — VD ngày 1-5, ngày 2-6... đều tính riêng, phù hợp tính xác suất) — mục "
+        "này chỉ đếm các giao dịch THỰC SỰ ĐỘC LẬP (mỗi giao dịch phải \"xong\" đủ số "
+        "phiên giữ mới tính giao dịch tiếp theo, đúng ràng buộc T+ thật), rồi CỘNG DỒN "
+        "lợi nhuận THẬT theo đúng thứ tự lịch sử — cho biết SỐ TIỀN THẬT, không phải "
+        "xác suất."
+    )
+    col_mp1, col_mp2, col_mp3 = st.columns(3)
+    with col_mp1:
+        von_mo_phong = st.number_input(
+            "Vốn ban đầu (VNĐ)", value=1_000_000_000, min_value=0, step=10_000_000,
+            key="tong_hop_von_mo_phong",
+        )
+    with col_mp2:
+        so_phien_giu_mo_phong = st.number_input(
+            "Số phiên giữ mỗi giao dịch (T+)", value=4, min_value=1, max_value=60, step=1,
+            key="tong_hop_so_phien_giu",
+            help="Thị trường VN hiện là T+2 — số phiên giữ tối thiểu 1 vòng mua/bán "
+                 "thường quy ước khoảng 3-4 phiên tùy cách tính.",
+        )
+    with col_mp3:
+        ty_trong_mo_phong_pct = st.number_input(
+            "% vốn dùng mỗi lần", value=50.0, min_value=1.0, max_value=100.0, step=5.0,
+            key="tong_hop_ty_trong_mo_phong",
+        )
+
+    if st.button("💰 Chạy mô phỏng", key="tong_hop_chay_mo_phong_btn"):
+        from core.entry_screener import mo_phong_giao_dich_khong_chong_lap
+
+        try:
+            kq_mp = mo_phong_giao_dich_khong_chong_lap(
+                df_ma, tieu_chi_dat_k, so_phien_giu=int(so_phien_giu_mo_phong),
+                duong_tham_chieu=duong_tham_chieu_key_k,
+                chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc_key,
+                von_ban_dau=von_mo_phong, ty_trong_von_moi_lenh=ty_trong_mo_phong_pct / 100,
+            )
+        except Exception as exc:  # noqa: BLE001
+            kq_mp = {"so_giao_dich": 0, "ghi_chu": f"Lỗi: {exc}"}
+
+        if kq_mp.get("so_giao_dich", 0) == 0:
+            st.warning(kq_mp.get("ghi_chu", "Không mô phỏng được."))
+        else:
+            col_mpq1, col_mpq2, col_mpq3 = st.columns(3)
+            col_mpq1.metric("Số giao dịch ĐỘC LẬP", f"{kq_mp['so_giao_dich']:,}")
+            col_mpq2.metric(
+                "Thắng/Thua", f"{kq_mp['so_lan_thang']}/{kq_mp['so_lan_thua']}",
+                f"{kq_mp['so_lan_thang']/kq_mp['so_giao_dich']*100:.1f}% thắng",
+            )
+            col_mpq3.metric(
+                "Vốn cuối cùng", f"{kq_mp['von_cuoi_cung']:,.0f} đ",
+                f"{kq_mp['lai_lo_pct']:+.1f}%",
+            )
+            st.caption(kq_mp["ghi_chu"])
+
+            with st.expander(f"Xem chi tiết {kq_mp['so_giao_dich']} giao dịch"):
+                st.dataframe(pd.DataFrame(kq_mp["chi_tiet_giao_dich"]), width='stretch', hide_index=True)
+
+            st.warning(
+                "⚠️ Đây là MÔ PHỎNG trên dữ liệu lịch sử ĐÃ XẢY RA (không phải dự báo "
+                "tương lai) — giả định tương lai lặp lại đúng như quá khứ là một giả "
+                "định KHÔNG được đảm bảo. Không phải cam kết lợi nhuận."
+            )
+
+    st.divider()
+
     # === PHẦN 4 (bổ sung 04/08/2026): Kiểm định thống kê so sánh 2 khoảng
     #     độ lệch — trả lời đúng câu hỏi "khoảng ±5% có khác gì khoảng
     #     5-10% không" bằng kiểm định 2 tỷ lệ (two-proportion z-test),
