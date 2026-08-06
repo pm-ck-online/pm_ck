@@ -3284,6 +3284,31 @@ def render_tong_hop_section(storage: Storage) -> None:
             key="tong_hop_ty_trong_mo_phong",
         )
 
+    dung_khoang_tuy_chinh = st.checkbox(
+        "🎯 Chỉ vào lệnh khi độ lệch % so với đường tham chiếu nằm ĐÚNG trong 1 khoảng "
+        "cụ thể (chặt hơn tiêu chí mặc định \"-10% tới bất kỳ mức dương nào\")",
+        key="tong_hop_dung_khoang_tuy_chinh",
+    )
+    khoang_do_lech_mo_phong = None
+    if dung_khoang_tuy_chinh:
+        col_kh_mp1, col_kh_mp2 = st.columns(2)
+        with col_kh_mp1:
+            kh_mp_tu = st.number_input(
+                "Từ (%, có thể âm)", value=0.0, min_value=-99.0, max_value=99.0, step=0.5,
+                key="tong_hop_kh_mp_tu",
+            )
+        with col_kh_mp2:
+            kh_mp_den = st.number_input(
+                "Đến, không gồm (%, có thể âm)", value=5.0, min_value=-99.0, max_value=100.0, step=0.5,
+                key="tong_hop_kh_mp_den",
+            )
+        khoang_do_lech_mo_phong = (kh_mp_tu, kh_mp_den)
+        st.caption(
+            f"📌 Chỉ mô phỏng vào lệnh khi độ lệch so với "
+            f"{'EMA200' if duong_tham_chieu_key_k == 'ema200' else 'MA20'} nằm trong "
+            f"[{kh_mp_tu:+.1f}%, {kh_mp_den:+.1f}%) — âm = dưới đường, dương = trên đường."
+        )
+
     if st.button("💰 Chạy mô phỏng", key="tong_hop_chay_mo_phong_btn"):
         from core.entry_screener import mo_phong_giao_dich_khong_chong_lap
 
@@ -3293,6 +3318,7 @@ def render_tong_hop_section(storage: Storage) -> None:
                 duong_tham_chieu=duong_tham_chieu_key_k,
                 chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc_key,
                 von_ban_dau=von_mo_phong, ty_trong_von_moi_lenh=ty_trong_mo_phong_pct / 100,
+                khoang_do_lech=khoang_do_lech_mo_phong,
             )
         except Exception as exc:  # noqa: BLE001
             kq_mp = {"so_giao_dich": 0, "ghi_chu": f"Lỗi: {exc}"}
