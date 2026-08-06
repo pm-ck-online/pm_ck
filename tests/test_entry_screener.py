@@ -647,3 +647,86 @@ class TestSoSanh2KhoangRsi:
         ket_qua = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
         assert "tong_so_phien_quet" in ket_qua
         assert ket_qua["tong_so_phien_quet"] >= ket_qua["so_lan_khoang_1"] + ket_qua["so_lan_khoang_2"]
+
+
+class TestLocTheoGiaiDoan:
+    """Kiểm tra tham số chuoi_giai_doan/giai_doan_loc — dùng chung cho cả
+    3 hàm: tinh_thong_ke_tang_giam_lich_su, so_sanh_2_khoang_do_lech,
+    so_sanh_2_khoang_rsi (bổ sung 05/08/2026)."""
+
+    def _make_2_giai_doan_df(self, n=700, seed=9):
+        import numpy as np
+        np.random.seed(seed)
+        dates = pd.bdate_range("2022-01-01", periods=n)
+        nua = n // 2
+        phan_giam = 100 - np.cumsum(np.abs(np.random.normal(0.05, 0.6, nua)))
+        phan_tang = phan_giam[-1] + np.cumsum(np.abs(np.random.normal(0.1, 0.8, n - nua)))
+        closes = np.concatenate([phan_giam, phan_tang])
+        return pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": np.random.randint(500_000, 2_000_000, n).astype(float),
+        })
+
+    def _tinh_chuoi_giai_doan(self, df):
+        from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+        return tinh_chuoi_giai_doan_theo_ngay({"MA_TEST": df})
+
+    def test_so_sanh_2_khoang_rsi_giam_so_phien_khi_loc(self):
+        df = self._make_2_giai_doan_df()
+        chuoi = self._tinh_chuoi_giai_doan(df)
+
+        kq_khong_loc = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
+        kq_uptrend = so_sanh_2_khoang_rsi(
+            df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5,
+            chuoi_giai_doan=chuoi, giai_doan_loc="uptrend",
+        )
+        assert kq_uptrend.get("tong_so_phien_quet", 0) < kq_khong_loc.get("tong_so_phien_quet", 0)
+
+    def test_so_sanh_2_khoang_do_lech_giam_so_phien_khi_loc(self):
+        df = self._make_2_giai_doan_df()
+        chuoi = self._tinh_chuoi_giai_doan(df)
+
+        kq_khong_loc = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(-5, 0), khoang_2=(0, 5), duong_tham_chieu="ma20", so_phien_du_bao=5,
+        )
+        kq_downtrend = so_sanh_2_khoang_do_lech(
+            df, khoang_1=(-5, 0), khoang_2=(0, 5), duong_tham_chieu="ma20", so_phien_du_bao=5,
+            chuoi_giai_doan=chuoi, giai_doan_loc="downtrend",
+        )
+        assert kq_downtrend.get("tong_so_phien_quet", 0) < kq_khong_loc.get("tong_so_phien_quet", 0)
+
+    def test_tinh_thong_ke_tang_giam_lich_su_loc_theo_giai_doan(self):
+        df = self._make_2_giai_doan_df()
+        chuoi = self._tinh_chuoi_giai_doan(df)
+
+        kq_khong_loc = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=5, duong_tham_chieu="ma20",
+        )
+        kq_uptrend = tinh_thong_ke_tang_giam_lich_su(
+            df, ["dieu_kien_nen_ema200"], so_phien_du_bao=5, duong_tham_chieu="ma20",
+            chuoi_giai_doan=chuoi, giai_doan_loc="uptrend",
+        )
+        # Số lần quan sát khi lọc phải <= không lọc (không bao giờ tăng).
+        assert kq_uptrend.get("so_lan_quan_sat", 0) <= kq_khong_loc.get("so_lan_quan_sat", 0)
+
+    def test_khong_loc_khi_giai_doan_loc_la_none(self):
+        # KHÔNG truyền chuoi_giai_doan/giai_doan_loc -> hành vi giữ NGUYÊN
+        # như cũ (tương thích ngược, không ảnh hưởng code gọi trước đây).
+        df = self._make_2_giai_doan_df()
+        kq1 = so_sanh_2_khoang_rsi(df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5)
+        kq2 = so_sanh_2_khoang_rsi(
+            df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5,
+            chuoi_giai_doan=None, giai_doan_loc=None,
+        )
+        assert kq1.get("tong_so_phien_quet") == kq2.get("tong_so_phien_quet")
+
+    def test_loc_theo_ngay_khong_co_trong_chuoi_giai_doan_bi_loai(self):
+        # Nếu chuoi_giai_doan CÓ truyền nhưng THIẾU đúng ngày đang xét ->
+        # ngày đó phải bị loại (không suy diễn khớp).
+        df = self._make_2_giai_doan_df()
+        chuoi_rong = pd.Series(dtype=object)  # rỗng hoàn toàn
+        kq = so_sanh_2_khoang_rsi(
+            df, khoang_1=(0, 30), khoang_2=(70, 101), so_phien_du_bao=5,
+            chuoi_giai_doan=chuoi_rong, giai_doan_loc="uptrend",
+        )
+        assert kq.get("tong_so_phien_quet", 0) == 0

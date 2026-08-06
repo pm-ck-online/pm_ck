@@ -20,6 +20,7 @@ from core.market_regime_detector import (
     detect_market_regime,
     detect_market_regime_quant,
     evaluate_macro_filter,
+    tinh_chuoi_giai_doan_theo_ngay,
 )
 
 
@@ -409,3 +410,72 @@ class TestDetectMarketRegimeQuant:
         )
         assert result["macro_score"] == pytest.approx(1.2)
         assert result["trang_thai"] == "UPTREND"
+
+
+class TestTinhChuoiGiaiDoanTheoNgay:
+    def _make_du_lieu(self, seed=1, n=500):
+        import numpy as np
+        import pandas as pd
+
+        np.random.seed(seed)
+        dates = pd.bdate_range("2023-01-01", periods=n)
+        closes_a = 100 + np.cumsum(np.random.normal(0.15, 0.8, n))   # tăng rõ
+        closes_b = 100 + np.cumsum(np.random.normal(-0.15, 0.8, n))  # giảm rõ
+        closes_c = 100 + np.cumsum(np.random.normal(0.0, 0.3, n))    # đi ngang
+
+        du_lieu = {}
+        for ten, closes in [("A", closes_a), ("B", closes_b), ("C", closes_c)]:
+            du_lieu[ten] = pd.DataFrame({
+                "date": dates, "open": closes, "high": closes * 1.005,
+                "low": closes * 0.995, "close": closes,
+                "volume": [1_000_000.0] * n,
+            })
+        return du_lieu
+
+    def test_returns_series_indexed_by_date(self):
+        import pandas as pd
+        chuoi = tinh_chuoi_giai_doan_theo_ngay(self._make_du_lieu())
+        assert isinstance(chuoi, pd.Series)
+        assert len(chuoi) > 0
+        assert set(chuoi.unique()) <= {"uptrend", "downtrend", "sideway"}
+
+    def test_excludes_days_without_enough_history(self):
+        # Cần tối thiểu 200 phiên cho EMA200 -> các ngày đầu (< phiên 200)
+        # không có kết quả.
+        chuoi = tinh_chuoi_giai_doan_theo_ngay(self._make_du_lieu(n=500))
+        assert len(chuoi) <= 500 - 200 + 1
+
+    def test_empty_input_returns_empty_series(self):
+        chuoi = tinh_chuoi_giai_doan_theo_ngay({})
+        assert len(chuoi) == 0
+
+    def test_skips_symbols_with_too_little_history(self):
+        import pandas as pd
+        du_lieu = self._make_du_lieu()
+        du_lieu["D_qua_ngan"] = pd.DataFrame({
+            "date": pd.bdate_range("2023-01-01", periods=50),
+            "open": [10.0] * 50, "high": [10.0] * 50, "low": [10.0] * 50,
+            "close": [10.0] * 50, "volume": [1000.0] * 50,
+        })
+        # Không được ném lỗi — chỉ đơn giản bỏ qua mã thiếu dữ liệu.
+        chuoi = tinh_chuoi_giai_doan_theo_ngay(du_lieu)
+        assert len(chuoi) > 0
+
+    def test_consistent_with_classify_sector_trend_on_latest_day(self):
+        # Đối chiếu: kết quả ngày CUỐI CÙNG của chuỗi phải khớp với
+        # classify_sector_trend() gọi trực tiếp trên snapshot mới nhất.
+        du_lieu = self._make_du_lieu()
+        chuoi = tinh_chuoi_giai_doan_theo_ngay(du_lieu)
+
+        from core.indicators import calculate_ema
+        snapshots = []
+        for ma, df in du_lieu.items():
+            ema200 = calculate_ema(df, 200)
+            close_cuoi = float(df["close"].iloc[-1])
+            ema_cuoi = float(ema200.iloc[-1])
+            snapshots.append({
+                "close": close_cuoi, "ema200": ema_cuoi,
+                "price_above_ema200": close_cuoi > ema_cuoi,
+            })
+        ket_qua_truc_tiep = classify_sector_trend(snapshots)
+        assert chuoi.iloc[-1] == ket_qua_truc_tiep["raw_regime"]
