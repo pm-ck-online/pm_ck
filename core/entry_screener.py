@@ -907,6 +907,7 @@ def mo_phong_giao_dich_khong_chong_lap(
     giai_doan_loc: Optional[str] = None,
     von_ban_dau: float = 1_000_000_000,
     ty_trong_von_moi_lenh: float = 0.5,
+    khoang_do_lech: Optional[tuple[float, float]] = None,
 ) -> dict:
     """Mô phỏng THỰC TẾ số giao dịch ĐỘC LẬP (KHÔNG CHỒNG LẤN thời gian —
     mỗi giao dịch phải "xong" đủ `so_phien_giu` phiên mới được tính giao
@@ -924,6 +925,12 @@ def mo_phong_giao_dich_khong_chong_lap(
     ràng buộc thời gian thật — phù hợp để biết SỐ TIỀN THẬT, không phải
     xác suất.
 
+    `khoang_do_lech` (bổ sung 06/08/2026): nếu truyền — VD (0, 5) — thì
+    điều kiện vào lệnh đổi thành ĐÚNG khoảng % độ lệch CÓ DẤU này so với
+    đường tham chiếu (thay hẳn cho `tieu_chi_dat`, cho phép chọn khoảng
+    CHẶT HƠN, VD "chỉ khi giá trong khoảng 0-5% so với MA20", thay vì
+    khoảng rộng cố định "-10% tới +∞" của tiêu chí "dieu_kien_nen_ema200").
+
     Đây vẫn là MÔ PHỎNG trên dữ liệu lịch sử, KHÔNG phải cam kết lợi
     nhuận hay dự báo tương lai — chỉ cho biết "nếu quá khứ lặp lại đúng
     như vậy" thì kết quả sẽ ra sao.
@@ -932,9 +939,11 @@ def mo_phong_giao_dich_khong_chong_lap(
         raise InvalidEntryScreenerError("ty_trong_von_moi_lenh phải trong khoảng (0, 1].")
     if von_ban_dau <= 0:
         raise InvalidEntryScreenerError("von_ban_dau phải > 0.")
+    if khoang_do_lech is not None and khoang_do_lech[0] >= khoang_do_lech[1]:
+        raise InvalidEntryScreenerError('khoang_do_lech: giá trị "từ" phải nhỏ hơn "đến".')
 
     tieu_chi_su_dung = [t for t in tieu_chi_dat if t in {"dieu_kien_nen_ema200", "tich_luy_dai_han"}]
-    if not tieu_chi_su_dung:
+    if khoang_do_lech is None and not tieu_chi_su_dung:
         return {
             "so_giao_dich": 0,
             "ghi_chu": (
@@ -970,14 +979,19 @@ def mo_phong_giao_dich_khong_chong_lap(
         close_i = float(closes.iloc[i])
 
         dat_dieu_kien = False
-        if "dieu_kien_nen_ema200" in tieu_chi_su_dung:
+        if khoang_do_lech is not None:
             do_lech = (close_i - duong_i) / duong_i * 100
-            if do_lech >= -10.0:
+            if khoang_do_lech[0] <= do_lech < khoang_do_lech[1]:
                 dat_dieu_kien = True
-        if not dat_dieu_kien and "tich_luy_dai_han" in tieu_chi_su_dung:
-            tich_luy = kiem_tra_tich_luy_dai_han(df_ohlcv.iloc[: i + 1])
-            if tich_luy.get("dat"):
-                dat_dieu_kien = True
+        else:
+            if "dieu_kien_nen_ema200" in tieu_chi_su_dung:
+                do_lech = (close_i - duong_i) / duong_i * 100
+                if do_lech >= -10.0:
+                    dat_dieu_kien = True
+            if not dat_dieu_kien and "tich_luy_dai_han" in tieu_chi_su_dung:
+                tich_luy = kiem_tra_tich_luy_dai_han(df_ohlcv.iloc[: i + 1])
+                if tich_luy.get("dat"):
+                    dat_dieu_kien = True
 
         if not dat_dieu_kien or not _khop_giai_doan(df_ohlcv["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
             i += 1
