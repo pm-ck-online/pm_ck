@@ -2846,41 +2846,87 @@ def render_stock_signal_report_section(storage: Storage) -> None:
             st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
 
 
+def _doc_chuoi_giai_doan_da_luu(storage: Storage, key_luu: str) -> Optional[pd.Series]:
+    """Đọc chuỗi giai đoạn ĐÃ LƯU SẴN (tính bởi `run_market_regime_history_step()`
+    trong main.py, chạy 1 lần/ngày qua run_full_market.py) — RẤT NHANH
+    (1 lượt đọc duy nhất), ưu tiên dùng trước khi phải tính lại (live).
+    Trả về None nếu chưa có dữ liệu lưu sẵn cho `key_luu` này.
+    """
+    record = storage.get_latest("chuoi_giai_doan_lich_su", key_luu)
+    if record is None:
+        return None
+    records = record["data"].get("records", [])
+    if not records:
+        return None
+    df_tam = pd.DataFrame(records)
+    df_tam["date"] = pd.to_datetime(df_tam["date"])
+    return pd.Series(df_tam["giai_doan"].values, index=df_tam["date"])
+
+
 @st.cache_data(ttl=1800, show_spinner="Đang tính giai đoạn ngành/thị trường theo lịch sử (có thể mất chút thời gian)...")
+def _tinh_chuoi_giai_doan_song(_storage: Storage, danh_sach_ma: tuple[str, ...]) -> pd.Series:
+    """TÍNH LẠI TRỰC TIẾP (live) chuỗi giai đoạn — chỉ dùng khi CHƯA có
+    bản lưu sẵn (VD mới thêm ngành mới, hoặc chưa từng chạy pipeline có
+    bước `run_market_regime_history_step`). Cache 30 phút để đỡ tính lại
+    nhiều lần trong cùng phiên làm việc.
+    """
+    from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+
+    du_lieu_theo_ma: dict[str, pd.DataFrame] = {}
+    # 1 LƯỢT TRUY VẤN duy nhất cho TOÀN BỘ danh sách (thay vì lặp từng mã
+    # — xem giải thích chi tiết ở bản ghi chú lịch sử bổ sung 05/08/2026).
+    ohlcv_map = _storage.get_latest_many("ohlcv_history", list(danh_sach_ma))
+    for ma, record in ohlcv_map.items():
+        records = record["data"].get("records", [])
+        if not records:
+            continue
+        df_ma = pd.DataFrame(records)
+        df_ma["date"] = pd.to_datetime(df_ma["date"])
+        df_ma = df_ma.sort_values("date").reset_index(drop=True)
+        du_lieu_theo_ma[ma] = df_ma
+
+    return tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma)
+
+
 def _tinh_chuoi_giai_doan_cached(_storage: Storage, nguon: str, ma_hoac_nganh: str) -> pd.Series:
-    """Tính chuỗi giai đoạn Uptrend/Sideway/Downtrend THEO NGÀY, tổng hợp
-    nhiều mã (bổ sung 05/08/2026) — dùng để lọc thống kê Kelly/kiểm định
-    theo đúng giai đoạn thị trường chung (VNINDEX/toàn thị trường) hoặc
-    riêng ngành của 1 mã. Cache 30 phút vì tính toán khá nặng (fetch +
-    tính EMA200 cho nhiều mã).
+    """Lấy chuỗi giai đoạn Uptrend/Sideway/Downtrend THEO NGÀY, tổng hợp
+    nhiều mã (bổ sung 05/08/2026, tối ưu tốc độ 05/08/2026) — dùng để lọc
+    thống kê Kelly/kiểm định theo đúng giai đoạn thị trường chung (toàn
+    thị trường) hoặc riêng ngành của 1 mã.
+
+    ƯU TIÊN đọc bản ĐÃ LƯU SẴN trong Supabase (tính 1 lần/ngày qua
+    `run_market_regime_history_step()` trong pipeline chính — RẤT NHANH,
+    chỉ 1 lượt đọc). CHỈ khi chưa có dữ liệu lưu sẵn (VD ngành mới, hoặc
+    chưa chạy pipeline bản mới) mới TÍNH LẠI TRỰC TIẾP (live, chậm hơn).
 
     `nguon`: "thi_truong" (toàn bộ mã đang có dữ liệu) hoặc "nganh"
     (chỉ các mã CÙNG NGÀNH với `ma_hoac_nganh`, tra qua symbol_sector).
     """
-    from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+    if nguon == "thi_truong":
+        key_luu = "thi_truong"
+    else:
+        all_keys = _storage.query_all_keys("symbol_sector")
+        sector_map = _storage.get_latest_many("symbol_sector", all_keys)
+        snap = sector_map.get(ma_hoac_nganh)
+        key_luu = snap["data"].get("sector") if snap else None
 
+    if key_luu:
+        da_luu = _doc_chuoi_giai_doan_da_luu(_storage, key_luu)
+        if da_luu is not None and len(da_luu) > 0:
+            return da_luu
+
+    # --- Fallback: chưa có bản lưu sẵn -> tính lại trực tiếp (live) ---
     if nguon == "thi_truong":
         danh_sach_ma = sorted(_storage.query_all_keys("ohlcv_history"))
     else:
         all_keys = _storage.query_all_keys("symbol_sector")
         sector_map = _storage.get_latest_many("symbol_sector", all_keys)
-        ma_goc = ma_hoac_nganh
-        nganh_cua_ma = None
-        snap = sector_map.get(ma_goc)
-        if snap:
-            nganh_cua_ma = snap["data"].get("sector")
         danh_sach_ma = [
             ma for ma, rec in sector_map.items()
-            if nganh_cua_ma is not None and rec["data"].get("sector") == nganh_cua_ma
+            if key_luu is not None and rec["data"].get("sector") == key_luu
         ]
 
-    du_lieu_theo_ma: dict[str, pd.DataFrame] = {}
-    for ma in danh_sach_ma:
-        df_ma = _load_ohlcv_history_df(_storage, ma)
-        if df_ma is not None and not df_ma.empty:
-            du_lieu_theo_ma[ma] = df_ma
-
-    return tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma)
+    return _tinh_chuoi_giai_doan_song(_storage, tuple(danh_sach_ma))
 
 
 def render_tong_hop_section(storage: Storage) -> None:
