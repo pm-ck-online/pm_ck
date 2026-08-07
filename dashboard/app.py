@@ -852,6 +852,20 @@ EVENT_OPTIONS = {
 
 GEOPOLITICAL_EVENT_LOG_CATEGORY = "geopolitical_event_entry"
 
+# ==============================================================================
+# CÁC SỰ KIỆN NGUY CƠ CAO (bổ sung 06/08/2026) — KHÁC HẲN "Sự kiện địa
+# chính trị" ở trên: đây CHỈ LÀ CẢNH BÁO HIỂN THỊ, KHÔNG được tính vào
+# công thức Macro Score (core/macro_score_engine.py) — có chủ đích, vì
+# đây là các sự kiện CỤ THỂ, TỰ DO KHAI BÁO (tên tự đặt, không theo
+# danh mục cố định như EVENT_OPTIONS), phạm vi ảnh hưởng có thể CHỈ 1
+# NGÀNH (không hợp lý để gộp vào 1 điểm vĩ mô chung cho toàn thị trường).
+# ==============================================================================
+
+HIGH_RISK_EVENT_LOG_CATEGORY = "high_risk_event_entry"
+
+LOAI_ANH_HUONG_OPTIONS = {"ngay": "Ảnh hưởng NGAY", "tuong_lai": "Ảnh hưởng TƯƠNG LAI (có thời điểm bắt đầu)"}
+PHAM_VI_ANH_HUONG_OPTIONS = {"nhieu_nganh": "Nhiều ngành / toàn thị trường", "1_nganh": "Chỉ 1 ngành cụ thể"}
+
 
 def _sync_current_geopolitical_event(storage: Storage) -> None:
     """Đồng bộ trạng thái "sự kiện ĐANG ÁP DỤNG" (đọc bởi
@@ -929,11 +943,12 @@ def render_manual_macro_data_section(storage: Storage) -> None:
         remove_entry,
     )
 
-    tab_series, tab_cpi_us, tab_target, tab_event = st.tabs([
+    tab_series, tab_cpi_us, tab_target, tab_event, tab_high_risk = st.tabs([
         "📈 Chuỗi số liệu (Fed/FX/CPI VN/Liên NH)",
         "🇺🇸 CPI Mỹ",
         "🎯 Mục tiêu CPI VN",
         "⚠️ Sự kiện địa chính trị",
+        "🚨 Các sự kiện nguy cơ cao",
     ])
 
     # --- TAB 1: các chuỗi đơn giản (date + value) ---
@@ -1245,6 +1260,172 @@ def render_manual_macro_data_section(storage: Storage) -> None:
 
         st.metric("Macro Score tổng", f"{result['macro_score']:+.3f}", result["nhan"])
 
+    # --- TAB 5: Các sự kiện nguy cơ cao (bổ sung 06/08/2026) — CHỈ LÀ
+    #     CẢNH BÁO, KHÔNG tính vào Macro Score. Tự do khai báo tên sự
+    #     kiện, thời điểm ảnh hưởng (ngay/tương lai), phạm vi (nhiều
+    #     ngành/1 ngành cụ thể). ---
+    with tab_high_risk:
+        st.caption(
+            "🚨 Khai báo các sự kiện nguy cơ cao TỰ DO (không theo danh mục cố định) — "
+            "VD: bão lớn, sự cố nhà máy, thay đổi chính sách ngành, sự kiện pháp lý "
+            "riêng lẻ... **CHỈ LÀ CẢNH BÁO HIỂN THỊ**, KHÔNG được tính vào công thức "
+            "Macro Score — vì phạm vi có thể chỉ ảnh hưởng 1 ngành, không hợp lý để "
+            "gộp vào điểm vĩ mô chung của toàn thị trường."
+        )
+
+        high_risk_ids = storage.query_all_keys(HIGH_RISK_EVENT_LOG_CATEGORY)
+        high_risk_events = []
+        for eid in high_risk_ids:
+            record = storage.get_latest(HIGH_RISK_EVENT_LOG_CATEGORY, eid)
+            if record:
+                high_risk_events.append({"id": eid, **record["data"]})
+
+        today_hr = date_cls.today()
+
+        def _trang_thai_su_kien(e: dict) -> str:
+            if e["loai_anh_huong"] == "ngay":
+                return "🔴 ĐANG ẢNH HƯỞNG"
+            ngay_bd = date_cls.fromisoformat(e["ngay_bat_dau_anh_huong"])
+            if ngay_bd <= today_hr:
+                return "🔴 ĐANG ẢNH HƯỞNG"
+            return f"🟡 SẮP ẢNH HƯỞNG (còn {(ngay_bd - today_hr).days} ngày)"
+
+        high_risk_events.sort(
+            key=lambda e: e["ngay_bat_dau_anh_huong"] if e["loai_anh_huong"] == "tuong_lai" else e.get("created_at", ""),
+            reverse=True,
+        )
+
+        st.markdown("#### ➕ Khai báo sự kiện nguy cơ cao mới")
+        ten_su_kien_moi = st.text_input("Tên sự kiện (tự đặt)", key="new_high_risk_ten")
+
+        col_hr1, col_hr2 = st.columns(2)
+        with col_hr1:
+            loai_anh_huong_moi = st.radio(
+                "Thời điểm ảnh hưởng", list(LOAI_ANH_HUONG_OPTIONS.keys()),
+                format_func=lambda k: LOAI_ANH_HUONG_OPTIONS[k], key="new_high_risk_loai",
+            )
+            ngay_bat_dau_moi = None
+            if loai_anh_huong_moi == "tuong_lai":
+                ngay_bat_dau_moi = st.date_input(
+                    "Ngày dự kiến bắt đầu ảnh hưởng", value=today_hr, key="new_high_risk_ngay_bd",
+                )
+        with col_hr2:
+            pham_vi_moi = st.radio(
+                "Phạm vi ảnh hưởng", list(PHAM_VI_ANH_HUONG_OPTIONS.keys()),
+                format_func=lambda k: PHAM_VI_ANH_HUONG_OPTIONS[k], key="new_high_risk_pham_vi",
+            )
+            nganh_cu_the_moi = None
+            if pham_vi_moi == "1_nganh":
+                nganh_cu_the_moi = st.selectbox(
+                    "Chọn ngành cụ thể", list(SECTOR_LABELS.keys()),
+                    format_func=lambda k: SECTOR_LABELS[k], key="new_high_risk_nganh",
+                )
+
+        ghi_chu_moi = st.text_area("Ghi chú (tùy chọn)", key="new_high_risk_note")
+
+        if st.button("➕ Thêm sự kiện nguy cơ cao", key="add_high_risk_btn"):
+            if not ten_su_kien_moi.strip():
+                st.warning("Cần nhập tên sự kiện.")
+            else:
+                new_id = f"hrisk_{uuid.uuid4().hex[:12]}"
+                storage.save(HIGH_RISK_EVENT_LOG_CATEGORY, new_id, {
+                    "ten_su_kien": ten_su_kien_moi.strip(),
+                    "loai_anh_huong": loai_anh_huong_moi,
+                    "ngay_bat_dau_anh_huong": ngay_bat_dau_moi.isoformat() if ngay_bat_dau_moi else today_hr.isoformat(),
+                    "pham_vi": pham_vi_moi,
+                    "nganh_cu_the": nganh_cu_the_moi,
+                    "ghi_chu": ghi_chu_moi,
+                    "created_at": today_hr.isoformat(),
+                })
+                st.success(f"Đã thêm sự kiện nguy cơ cao: {ten_su_kien_moi.strip()}.")
+                st.rerun()
+
+        st.divider()
+        st.markdown("#### 📋 Danh sách sự kiện nguy cơ cao đã khai báo")
+
+        if not high_risk_events:
+            st.info("Chưa có sự kiện nguy cơ cao nào được khai báo.")
+        else:
+            rows_hr = []
+            for e in high_risk_events:
+                pham_vi_hien_thi = (
+                    SECTOR_LABELS.get(e.get("nganh_cu_the"), e.get("nganh_cu_the"))
+                    if e["pham_vi"] == "1_nganh" else "Nhiều ngành / toàn thị trường"
+                )
+                rows_hr.append({
+                    "Tên sự kiện": e["ten_su_kien"],
+                    "Trạng thái": _trang_thai_su_kien(e),
+                    "Thời điểm": e["ngay_bat_dau_anh_huong"] if e["loai_anh_huong"] == "tuong_lai" else "Ngay lập tức",
+                    "Phạm vi": pham_vi_hien_thi,
+                    "Ghi chú": e.get("ghi_chu") or "—",
+                })
+            st.dataframe(pd.DataFrame(rows_hr), width='stretch', hide_index=True)
+
+            st.markdown("#### ✏️ Sửa / 🗑️ Xóa 1 sự kiện cụ thể")
+            options_nhan_hr = {e["id"]: e["ten_su_kien"] for e in high_risk_events}
+            selected_hr_id = st.selectbox(
+                "Chọn sự kiện cần sửa/xóa", list(options_nhan_hr.keys()),
+                format_func=lambda eid: options_nhan_hr[eid], key="edit_high_risk_select",
+            )
+            sel_hr = next(e for e in high_risk_events if e["id"] == selected_hr_id)
+
+            edit_ten = st.text_input("Tên sự kiện", value=sel_hr["ten_su_kien"], key=f"edit_hr_ten_{selected_hr_id}")
+            col_ehr1, col_ehr2 = st.columns(2)
+            with col_ehr1:
+                edit_loai = st.radio(
+                    "Thời điểm ảnh hưởng", list(LOAI_ANH_HUONG_OPTIONS.keys()),
+                    index=list(LOAI_ANH_HUONG_OPTIONS.keys()).index(sel_hr["loai_anh_huong"]),
+                    format_func=lambda k: LOAI_ANH_HUONG_OPTIONS[k], key=f"edit_hr_loai_{selected_hr_id}",
+                )
+                edit_ngay_bd = None
+                if edit_loai == "tuong_lai":
+                    edit_ngay_bd = st.date_input(
+                        "Ngày dự kiến bắt đầu ảnh hưởng",
+                        value=date_cls.fromisoformat(sel_hr["ngay_bat_dau_anh_huong"]),
+                        key=f"edit_hr_ngay_{selected_hr_id}",
+                    )
+            with col_ehr2:
+                edit_pham_vi = st.radio(
+                    "Phạm vi ảnh hưởng", list(PHAM_VI_ANH_HUONG_OPTIONS.keys()),
+                    index=list(PHAM_VI_ANH_HUONG_OPTIONS.keys()).index(sel_hr["pham_vi"]),
+                    format_func=lambda k: PHAM_VI_ANH_HUONG_OPTIONS[k], key=f"edit_hr_phamvi_{selected_hr_id}",
+                )
+                edit_nganh = None
+                if edit_pham_vi == "1_nganh":
+                    sector_keys_list = list(SECTOR_LABELS.keys())
+                    default_idx = (
+                        sector_keys_list.index(sel_hr["nganh_cu_the"])
+                        if sel_hr.get("nganh_cu_the") in sector_keys_list else 0
+                    )
+                    edit_nganh = st.selectbox(
+                        "Chọn ngành cụ thể", sector_keys_list, index=default_idx,
+                        format_func=lambda k: SECTOR_LABELS[k], key=f"edit_hr_nganh_{selected_hr_id}",
+                    )
+            edit_ghi_chu = st.text_area(
+                "Ghi chú", value=sel_hr.get("ghi_chu", ""), key=f"edit_hr_note_{selected_hr_id}",
+            )
+
+            col_save_hr, col_del_hr = st.columns(2)
+            with col_save_hr:
+                if st.button("💾 Lưu thay đổi", key=f"save_hr_btn_{selected_hr_id}"):
+                    storage.save(HIGH_RISK_EVENT_LOG_CATEGORY, selected_hr_id, {
+                        "ten_su_kien": edit_ten.strip(),
+                        "loai_anh_huong": edit_loai,
+                        "ngay_bat_dau_anh_huong": edit_ngay_bd.isoformat() if edit_ngay_bd else today_hr.isoformat(),
+                        "pham_vi": edit_pham_vi,
+                        "nganh_cu_the": edit_nganh,
+                        "ghi_chu": edit_ghi_chu,
+                        "created_at": sel_hr.get("created_at", today_hr.isoformat()),
+                    })
+                    st.success("Đã lưu thay đổi.")
+                    st.rerun()
+            with col_del_hr:
+                if st.button("🗑️ Xóa sự kiện này", key=f"delete_hr_btn_{selected_hr_id}"):
+                    storage.delete_key(HIGH_RISK_EVENT_LOG_CATEGORY, selected_hr_id)
+                    st.success("Đã xóa sự kiện này.")
+                    st.rerun()
+
+
 
 def render_vcp_scan_section(storage: Storage) -> None:
     """Hiển thị kết quả rà soát mô hình co hẹp biên độ (Volatility
@@ -1536,6 +1717,37 @@ def render_market_summary_report_section(storage: Storage) -> None:
     xem rải rác nhiều bảng riêng lẻ.
     """
     st.subheader("📋 Báo cáo tổng hợp thị trường chung")
+
+    # --- CẢNH BÁO SỰ KIỆN NGUY CƠ CAO (bổ sung 06/08/2026) — hiển thị
+    #     NGAY ĐẦU báo cáo cho dễ thấy, CHỈ LÀ CẢNH BÁO, KHÔNG được tính
+    #     vào bất kỳ điểm số nào bên dưới (Macro Score/breadth/phân bổ vốn). ---
+    from datetime import date as _date_hr
+    _today_hr = _date_hr.today()
+    _high_risk_ids = storage.query_all_keys(HIGH_RISK_EVENT_LOG_CATEGORY)
+    _high_risk_active = []
+    for _eid in _high_risk_ids:
+        _rec = storage.get_latest(HIGH_RISK_EVENT_LOG_CATEGORY, _eid)
+        if not _rec:
+            continue
+        _e = _rec["data"]
+        _dang_hoat_dong = _e["loai_anh_huong"] == "ngay" or _date_hr.fromisoformat(_e["ngay_bat_dau_anh_huong"]) <= _today_hr
+        if _dang_hoat_dong:
+            _high_risk_active.append(_e)
+
+    if _high_risk_active:
+        _dong_canh_bao = []
+        for _e in _high_risk_active:
+            _pham_vi_txt = (
+                SECTOR_LABELS.get(_e.get("nganh_cu_the"), _e.get("nganh_cu_the"))
+                if _e["pham_vi"] == "1_nganh" else "nhiều ngành/toàn thị trường"
+            )
+            _dong_canh_bao.append(f"**{_e['ten_su_kien']}** (phạm vi: {_pham_vi_txt})")
+        st.error(
+            "🚨 **" + str(len(_high_risk_active)) + " sự kiện nguy cơ cao đang hoạt động** — "
+            "CHỈ LÀ CẢNH BÁO, KHÔNG được tính vào điểm số bên dưới:\n\n"
+            + "\n\n".join(f"- {d}" for d in _dong_canh_bao)
+            + "\n\nXem/quản lý chi tiết tại mục \"🌐 Nhập dữ liệu vĩ mô thủ công\" → tab \"🚨 Các sự kiện nguy cơ cao\"."
+        )
 
     from core.capital_allocation_engine import ALLOCATION_TABLE, calculate_stock_allocation_pct
     from core.macro_score_engine import DEFAULT_WEIGHTS
