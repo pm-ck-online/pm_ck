@@ -2071,26 +2071,70 @@ def render_capital_allocation_v2_section(storage: Storage, symbols: list[str]) -
 def render_pattern_section(storage: Storage, symbols: Optional[list[str]] = None) -> None:
     st.subheader("📐 Mã đang có mô hình thu hẹp biên độ")
 
+    # SỬA (06/08/2026): 2 cải tiến theo yêu cầu —
+    #  1) CHỈ hiện mã đang nằm trong danh sách watchlist 212 mã MỚI NHẤT
+    #     (đọc trực tiếp từ config.yaml) — trước đây hiện TẤT CẢ key còn
+    #     tồn đọng trong storage "pattern_result", có thể gồm cả mã CŨ
+    #     đã bị loại khỏi watchlist từ lâu.
+    #  2) LOẠI BỎ mã có khối lượng giao dịch TB 20 phiên < 500.000 —
+    #     tránh gợi ý mã quá thanh khoản thấp, khó vào/ra lệnh thực tế.
+    from main import load_config
+
+    try:
+        config = load_config()
+        danh_sach_watchlist = set(config.get("watchlist", {}).get("symbols", {}).keys())
+    except Exception:  # noqa: BLE001
+        danh_sach_watchlist = None  # không đọc được config -> không lọc theo watchlist
+
     candidate_symbols = symbols or storage.query_all_keys("pattern_result")
+    if danh_sach_watchlist is not None:
+        candidate_symbols = [s for s in candidate_symbols if s in danh_sach_watchlist]
+
+    NGUONG_KHOI_LUONG_TOI_THIEU = 500_000
+    ohlcv_map = storage.get_latest_many("ohlcv_history", list(candidate_symbols))
+
     rows = []
+    so_ma_bi_loai_thanh_khoan = 0
     for symbol in candidate_symbols:
         record = storage.get_latest("pattern_result", symbol)
         if record is None:
             continue
         data = record["data"]
+
+        khoi_luong_tb20 = None
+        ohlcv_record = ohlcv_map.get(symbol)
+        if ohlcv_record:
+            recs = ohlcv_record["data"].get("records", [])
+            if recs:
+                khoi_luong_tb20 = float(pd.DataFrame(recs[-20:])["volume"].mean())
+
+        if khoi_luong_tb20 is not None and khoi_luong_tb20 < NGUONG_KHOI_LUONG_TOI_THIEU:
+            so_ma_bi_loai_thanh_khoan += 1
+            continue
+
         rows.append({
             "Mã": symbol,
             "Độ tin cậy (%)": round(data.get("confidence", 0.0) * 100, 1),
             "Giá đỉnh tích lũy (breakout ref.)": _fmt_price(data.get("accumulation_high")),
             "Số tháng hình thành": data.get("effective_scan_months"),
+            "Khối lượng TB 20 phiên": (
+                f"{khoi_luong_tb20:,.0f}" if khoi_luong_tb20 is not None else "—"
+            ),
         })
 
     if not rows:
-        st.info("Chưa phát hiện mã nào có mô hình thu hẹp biên độ.")
+        st.info("Chưa phát hiện mã nào có mô hình thu hẹp biên độ (sau khi áp dụng các bộ lọc).")
         return
 
     df = pd.DataFrame(rows).sort_values("Độ tin cậy (%)", ascending=False)
     st.dataframe(df, width='stretch', hide_index=True)
+
+    ghi_chu = [f"Đã áp dụng: chỉ hiện mã trong watchlist {len(danh_sach_watchlist)} mã hiện tại" if danh_sach_watchlist else None]
+    if so_ma_bi_loai_thanh_khoan > 0:
+        ghi_chu.append(f"đã loại {so_ma_bi_loai_thanh_khoan} mã có khối lượng TB 20 phiên < {NGUONG_KHOI_LUONG_TOI_THIEU:,}")
+    ghi_chu_hop_le = [g for g in ghi_chu if g]
+    if ghi_chu_hop_le:
+        st.caption("ℹ️ " + "; ".join(ghi_chu_hop_le) + ".")
 
 
 @st.cache_data(ttl=600, show_spinner="Đang quét lịch sử tìm các tình huống tương tự...")
