@@ -2186,7 +2186,7 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
     """
     from core.historical_recovery_probability import DIEU_KIEN_MAC_DINH
 
-    st.subheader("📊 Xác suất phục hồi lịch sử")
+    st.subheader("📊 Xác suất của BullTrap")
     st.caption(
         "⚠️ Đây là TẦN SUẤT THỰC NGHIỆM tính từ chính lịch sử giá của mã đó — "
         "KHÔNG phải xác suất dự báo tương lai được đảm bảo. Quá khứ không chắc "
@@ -2211,10 +2211,10 @@ def render_historical_recovery_probability_section(storage: Storage) -> None:
     st.markdown("### 📋 Danh sách phục hồi ngắn hạn")
     st.caption(
         "Quét TOÀN BỘ watchlist tại thời điểm hiện tại — khác với phần \"Xác suất "
-        "phục hồi lịch sử\" phía dưới (vốn quét ngược quá khứ để tính tần suất). "
+        "của BullTrap\" phía dưới (vốn quét ngược quá khứ để tính tần suất). "
         "Đây là bộ lọc kỹ thuật RÚT GỌN (chỉ 3 tiêu chí cốt lõi), KHÔNG phải tín "
         "hiệu mua/bán. Mã lọt qua bộ lọc nên được xem tiếp mục \"Tính cách giao "
-        "dịch từng mã\" và \"Xác suất phục hồi lịch sử\" cho riêng mã đó trước khi "
+        "dịch từng mã\" và \"Xác suất của BullTrap\" cho riêng mã đó trước khi "
         "cân nhắc bất kỳ quyết định nào."
     )
 
@@ -4314,7 +4314,7 @@ DASHBOARD_GROUPS = [
         "🔎 Mã có mô hình thu hẹp biên độ",
         "🚦 Báo cáo tín hiệu Mua/Bán",
         "🎭 Tính cách giao dịch từng mã",
-        "📊 Xác suất phục hồi lịch sử",
+        "📊 Xác suất của BullTrap",
         "🔍 Rà soát danh sách vào lệnh ngắn hạn",
         "⏱️ Tiêu chí ngắn hạn",
         "💼 Danh mục mô phỏng",
@@ -4431,7 +4431,7 @@ def main() -> None:
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
         ("🚦 Báo cáo tín hiệu Mua/Bán", render_stock_signal_report_section, (storage,)),
         ("🎭 Tính cách giao dịch từng mã", render_stock_character_section, (storage,)),
-        ("📊 Xác suất phục hồi lịch sử", render_historical_recovery_probability_section, (storage,)),
+        ("📊 Xác suất của BullTrap", render_historical_recovery_probability_section, (storage,)),
         ("🔍 Rà soát danh sách vào lệnh ngắn hạn", render_entry_screener_section, (storage,)),
         ("⏱️ Tiêu chí ngắn hạn", render_short_term_signal_section, (storage,)),
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
