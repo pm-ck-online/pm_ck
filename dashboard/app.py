@@ -1598,10 +1598,15 @@ def render_indicator_lab_section(storage: Storage) -> None:
     THẬT (logic thuần túy nằm trong experimental/indicator_lab.py, KHÔNG
     đụng tới core/). Kết quả KHÔNG lưu vào Supabase — chỉ tồn tại tạm
     thời trong st.session_state của phiên làm việc hiện tại.
+
+    ĐIỀU CHỈNH CHO ĐÚNG THỰC TẾ TTCK VIỆT NAM (bổ sung 06/08/2026): engine
+    chỉ giao dịch LONG (không bán khống) và có khóa T+ sau khi mua — xem
+    chi tiết trong docstring `chay_backtest()`.
     """
     from experimental.indicator_lab import (
-        BO_LOC_MAC_DINH, THAM_SO_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
-        InvalidIndicatorLabError, chay_backtest, quet_watchlist_tim_tin_hieu,
+        BO_LOC_MAC_DINH, SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH, THAM_SO_MAC_DINH,
+        TRAILING_TP_TIERS_MAC_DINH, InvalidIndicatorLabError, chay_backtest,
+        quet_watchlist_tim_tin_hieu,
     )
 
     st.subheader("🧪 Phòng thí nghiệm chỉ báo")
@@ -1611,7 +1616,13 @@ def render_indicator_lab_section(storage: Storage) -> None:
         "quá khứ KHÔNG đảm bảo lặp lại tương lai. Kết quả CHƯA tính phí giao dịch/"
         "trượt giá. Hoàn toàn TÁCH BIỆT khỏi hệ thống tín hiệu thật — kết quả KHÔNG "
         "được lưu vào Supabase, chỉ tồn tại tạm trong phiên làm việc này (mất khi tải "
-        "lại trang)."
+        "lại trang).\n\n"
+        "📌 **Đã điều chỉnh đúng thực tế TTCK Việt Nam**: chỉ giao dịch **LONG (mua)** "
+        "— cổ phiếu thường không bán khống được như phái sinh. Tín hiệu SELL không "
+        "còn dùng để mở lệnh, chỉ còn là **cảnh báo kỹ thuật** gợi ý cân nhắc thoát "
+        "lệnh sớm khi đang giữ LONG. Sau khi mua, lệnh bị **khóa T+** (mặc định 2 "
+        "phiên, chỉnh được bên dưới) — không thể cắt lỗ/chốt lời trong thời gian khóa, "
+        "dù giá đã chạm ngưỡng nào."
     )
 
     from main import load_config
@@ -1713,11 +1724,19 @@ def render_indicator_lab_section(storage: Storage) -> None:
             tp_tiers.append({"muc_lai_pct": muc_lai, "chot_pct_khoi_luong": chot_pct})
 
     st.markdown("#### 💵 Vốn giả lập")
-    col_v1, col_v2 = st.columns(2)
+    col_v1, col_v2, col_v3 = st.columns(3)
     with col_v1:
         von_ban_dau = st.number_input("Vốn ban đầu (VNĐ)", min_value=0, value=1_000_000_000, step=10_000_000, key="lab_von_ban_dau")
     with col_v2:
         ty_trong_von_pct = st.number_input("% vốn dùng mỗi lệnh", min_value=1.0, max_value=100.0, value=50.0, step=5.0, key="lab_ty_trong_von")
+    with col_v3:
+        so_phien_khoa = st.number_input(
+            "Số phiên khóa T+ sau khi mua", min_value=0, max_value=10,
+            value=SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH, step=1, key="lab_so_phien_khoa",
+            help="TTCK VN hiện là T+2 — cổ phiếu mua về cần đủ 2 phiên mới bán lại "
+                 "được. Trong thời gian khóa, KHÔNG kiểm tra SL/TP dù giá đã chạm "
+                 "ngưỡng nào.",
+        )
 
     df_ma = _load_ohlcv_history_df(storage, ma_chon)
     du_lieu_khong_du = df_ma is None or df_ma.empty
@@ -1727,6 +1746,7 @@ def render_indicator_lab_section(storage: Storage) -> None:
             ket_qua = chay_backtest(
                 df_ma, tham_so, bo_loc, tp_tiers,
                 von_ban_dau=von_ban_dau, ty_trong_von_pct=ty_trong_von_pct,
+                so_phien_khoa_toi_thieu=int(so_phien_khoa),
             )
             st.session_state["lab_ket_qua"] = ket_qua
             st.session_state["lab_ket_qua_ma"] = ma_chon
@@ -1762,7 +1782,7 @@ def render_indicator_lab_section(storage: Storage) -> None:
 
         if kq["open_position"]:
             op = kq["open_position"]
-            huong_txt = "🟢 LONG (đang mua)" if op["side"] == "LONG" else "🔴 SHORT (đang bán)"
+            huong_txt = "🟢 LONG (đang mua)"  # engine chỉ giao dịch LONG theo đúng thực tế TTCK VN
             st.info(
                 f"📌 **Vị thế đang mở**: {huong_txt} — vào lệnh ngày {op['entry_date']} tại giá "
                 f"{op['entry_price']:,.2f}, hiện tại ({op['as_of_date']}) giá {op['current_price']:,.2f} "
@@ -1838,7 +1858,7 @@ def render_indicator_lab_section(storage: Storage) -> None:
         rows = []
         for t in kq["trades"]:
             rows.append({
-                "Chiều": "LONG" if t["side"] == "LONG" else "SHORT",
+                "Chiều": "LONG",  # engine chỉ giao dịch LONG theo đúng thực tế TTCK VN
                 "Vào lúc": t["entry_date"], "Giá vào": t["entry_price"],
                 "Đóng lúc": t["exit_date"], "Giá ra": t["exit_price"],
                 "Kết quả": f"{t['final_pnl_pct']:+.2f}%",
@@ -1847,7 +1867,7 @@ def render_indicator_lab_section(storage: Storage) -> None:
         if kq["open_position"]:
             op = kq["open_position"]
             rows.append({
-                "Chiều": "LONG" if op["side"] == "LONG" else "SHORT",
+                "Chiều": "LONG",  # engine chỉ giao dịch LONG theo đúng thực tế TTCK VN
                 "Vào lúc": op["entry_date"], "Giá vào": op["entry_price"],
                 "Đóng lúc": "— (đang mở)", "Giá ra": op["current_price"],
                 "Kết quả": f"ĐANG MỞ (tạm tính {op['unrealized_pnl_pct']:+.2f}%)",
