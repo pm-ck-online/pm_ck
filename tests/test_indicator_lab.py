@@ -249,6 +249,29 @@ class TestChayBacktest:
         assert tong_lenh_co_loc <= tong_lenh_khong_loc
 
 
+    def test_chi_giao_dich_mot_chieu_long_bo_qua_short(self):
+        df = _make_realistic_df()
+        kq_ca_2_chieu = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        kq_chi_long = chay_backtest(
+            df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            chi_giao_dich_mot_chieu="LONG",
+        )
+        assert all(t["side"] == "LONG" for t in kq_chi_long["trades"])
+        if kq_chi_long["open_position"]:
+            assert kq_chi_long["open_position"]["side"] == "LONG"
+        tong_ca_2 = kq_ca_2_chieu["so_lenh_da_dong"] + (1 if kq_ca_2_chieu["open_position"] else 0)
+        tong_chi_long = kq_chi_long["so_lenh_da_dong"] + (1 if kq_chi_long["open_position"] else 0)
+        assert tong_chi_long <= tong_ca_2
+
+    def test_raises_for_invalid_chi_giao_dich_mot_chieu(self):
+        df = _make_realistic_df(n=300)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest(
+                df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+                chi_giao_dich_mot_chieu="NGANG",
+            )
+
+
 class TestTinhLoiNhuanRong:
     def test_khong_co_lenh_nao_loi_nhuan_bang_0(self):
         kq = tinh_loi_nhuan_rong([], 1_000_000_000, 50.0)
@@ -300,3 +323,4 @@ class TestQuetWatchlist:
     def test_khong_loi_khi_watchlist_rong(self):
         kq = quet_watchlist_tim_tin_hieu({}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH)
         assert kq == {"buy": [], "sell": []}
+
