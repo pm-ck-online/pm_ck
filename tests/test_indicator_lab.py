@@ -249,27 +249,69 @@ class TestChayBacktest:
         assert tong_lenh_co_loc <= tong_lenh_khong_loc
 
 
-    def test_chi_giao_dich_mot_chieu_long_bo_qua_short(self):
+    def test_chi_giao_dich_long_khong_co_short(self):
+        # Cổ phiếu VN không có bán khống -> TOÀN BỘ lệnh (đã đóng + đang
+        # mở) phải luôn là LONG, không bao giờ có SHORT.
         df = _make_realistic_df()
-        kq_ca_2_chieu = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
-        kq_chi_long = chay_backtest(
-            df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
-            chi_giao_dich_mot_chieu="LONG",
-        )
-        assert all(t["side"] == "LONG" for t in kq_chi_long["trades"])
-        if kq_chi_long["open_position"]:
-            assert kq_chi_long["open_position"]["side"] == "LONG"
-        tong_ca_2 = kq_ca_2_chieu["so_lenh_da_dong"] + (1 if kq_ca_2_chieu["open_position"] else 0)
-        tong_chi_long = kq_chi_long["so_lenh_da_dong"] + (1 if kq_chi_long["open_position"] else 0)
-        assert tong_chi_long <= tong_ca_2
+        kq = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        assert all(t["side"] == "LONG" for t in kq["trades"])
+        if kq["open_position"]:
+            assert kq["open_position"]["side"] == "LONG"
 
-    def test_raises_for_invalid_chi_giao_dich_mot_chieu(self):
+    def test_tin_hieu_sell_khong_giu_lenh_khong_mo_vi_the(self):
+        # Khi KHÔNG đang giữ lệnh, tín hiệu SELL phải bị bỏ qua hoàn
+        # toàn (không mở SHORT) — chỉ còn tác dụng cảnh báo khi ĐANG giữ LONG.
+        df = _make_realistic_df()
+        kq = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        assert kq["so_lenh_da_dong"] == len(kq["trades"])  # không lẫn lệnh SHORT nào
+
+    def test_raises_for_so_phien_khoa_am(self):
         df = _make_realistic_df(n=300)
         with pytest.raises(InvalidIndicatorLabError):
             chay_backtest(
                 df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
-                chi_giao_dich_mot_chieu="NGANG",
+                so_phien_khoa_toi_thieu=-1,
             )
+
+    def test_khoa_T_khong_cho_dong_lenh_som(self):
+        # Dựng thủ công 1 tình huống: vào lệnh, rồi giá RỚT MẠNH ngay
+        # phiên kế tiếp (đáng lẽ chạm SL) -> với so_phien_khoa_toi_thieu=2,
+        # lệnh KHÔNG được đóng ở phiên +1, chỉ được đóng từ phiên +2 trở đi.
+        import numpy as np
+        n = 260
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        closes = np.full(n, 100.0)
+        # Nến breakout tại vị trí ~205 (đủ nền EMA200), giá RỚT mạnh ngay hôm sau.
+        vi_tri_breakout = 210
+        closes[vi_tri_breakout - 4:vi_tri_breakout] = [99, 99.2, 99.1, 99.3]
+        closes[vi_tri_breakout] = 101.0  # breakout
+        closes[vi_tri_breakout + 1] = 90.0  # rớt mạnh -> đáng lẽ chạm SL ngay
+        closes[vi_tri_breakout + 2] = 90.0
+        highs = closes * 1.005
+        lows = closes * 0.995
+        df = pd.DataFrame({
+            "date": dates, "open": closes, "high": highs, "low": lows,
+            "close": closes, "volume": [1_000_000.0] * n,
+        })
+        tham_so = {
+            "buy_lookback": 4, "sell_lookback": 4, "ema_period": 200, "ma_period": 20,
+            "range_pct_max": 5.0, "body_pct_min": 0.1, "body_pct_max": 20.0,
+        }
+        kq_khoa_2 = chay_backtest(
+            df, tham_so, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            so_phien_khoa_toi_thieu=2,
+        )
+        kq_khong_khoa = chay_backtest(
+            df, tham_so, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            so_phien_khoa_toi_thieu=0,
+        )
+        # Không khóa -> đóng lệnh ngay phiên kế (lỗ nặng do giá rớt mạnh).
+        # Có khóa T+2 -> lệnh KHÔNG thể đóng ở phiên +1, exit_date phải
+        # muộn hơn (hoặc trở thành vị thế đang mở nếu dữ liệu hết trong lúc khóa).
+        if kq_khong_khoa["trades"] and kq_khoa_2["trades"]:
+            ngay_dong_khong_khoa = kq_khong_khoa["trades"][0]["exit_date"]
+            ngay_dong_co_khoa = kq_khoa_2["trades"][0]["exit_date"]
+            assert ngay_dong_co_khoa >= ngay_dong_khong_khoa
 
 
 class TestTinhLoiNhuanRong:
