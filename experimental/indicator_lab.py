@@ -65,7 +65,36 @@ TRAILING_TP_TIERS_MAC_DINH = [
 # lại nếu quy định T+ thay đổi trong tương lai.
 SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH = 2
 
+# --- Bổ sung 06/08/2026 — 3 đặc thù TTCK Việt Nam khác ---
+PHI_MOI_GIOI_PCT_MAC_DINH = 0.15   # % mỗi CHIỀU (mua VÀ bán), tham khảo mức phổ biến 0,15-0,35%
+THUE_BAN_PCT_MAC_DINH = 0.1        # % TRÊN GIÁ TRỊ BÁN (thuế TNCN chuyển nhượng chứng khoán, chỉ áp cho chiều BÁN)
+BIEN_DO_DAO_DONG_PCT_MAC_DINH = 7.0  # % — mặc định HOSE (HNX ~10%, UPCOM ~15%, chỉnh nếu cần)
+LO_GIAO_DICH = 100                 # số cổ phiếu tối thiểu/lô — số lượng luôn làm tròn XUỐNG theo lô này
+
 REQUIRED_COLUMNS = {"date", "open", "high", "low", "close", "volume"}
+
+
+def _lam_tron_lo(so_luong: float, lo: int = LO_GIAO_DICH) -> int:
+    """Làm tròn XUỐNG theo lô giao dịch (mặc định 100 cổ phiếu) — số
+    lượng lẻ dưới 1 lô coi như KHÔNG giao dịch được phần đó."""
+    return int(so_luong // lo) * lo
+
+
+def _kiem_tra_gan_bien_do(gia: float, gia_tham_chieu: Optional[float], bien_do_pct: float, dung_sai_pct: float = 0.5) -> Optional[str]:
+    """Kiểm tra `gia` có đang NẰM SÁT biên độ dao động (trần/sàn) so với
+    `gia_tham_chieu` (thường là giá đóng cửa phiên liền trước) hay không
+    — trả về "gan_tran"/"gan_san"/None. CHỈ mang tính CẢNH BÁO (khả năng
+    khớp lệnh thực tế có thể khó khăn do dư mua/dư bán tại trần/sàn) —
+    KHÔNG thay đổi kết quả tính toán P&L.
+    """
+    if gia_tham_chieu is None or gia_tham_chieu <= 0:
+        return None
+    do_lech_pct = (gia - gia_tham_chieu) / gia_tham_chieu * 100
+    if do_lech_pct >= bien_do_pct - dung_sai_pct:
+        return "gan_tran"
+    if do_lech_pct <= -(bien_do_pct - dung_sai_pct):
+        return "gan_san"
+    return None
 
 
 def _validate_df(df: pd.DataFrame) -> None:
@@ -276,20 +305,63 @@ def danh_gia_tin_hieu(df: pd.DataFrame, i: int, tham_so: dict, bo_loc: dict, chi
     return None
 
 
+def danh_gia_tin_hieu_ket_hop(
+    df: pd.DataFrame, i: int, danh_sach_tham_so: list[dict], bo_loc: dict, danh_sach_chi_bao: list[dict],
+) -> Optional[str]:
+    """Đánh giá tín hiệu KẾT HỢP nhiều bộ tham số theo logic OR (bổ sung
+    06/08/2026) — trả về "BUY" nếu ÍT NHẤT 1 trong các bộ tham số thỏa
+    điều kiện BUY tại nến `i` (mỗi bộ dùng ĐÚNG chỉ báo EMA/MA riêng của
+    nó, vì các bộ có thể dùng chu kỳ khác nhau).
+
+    Dùng để mô phỏng chiến lược "vào lệnh nếu mã đạt tiêu chí của BẤT KỲ
+    bộ nào trong N bộ tham số đã chọn" — tăng số lượng tín hiệu (hợp của
+    nhiều bộ lọc) so với chỉ dùng ĐÚNG 1 bộ duy nhất.
+    """
+    for tham_so, chi_bao in zip(danh_sach_tham_so, danh_sach_chi_bao):
+        ket_qua_buy = kiem_tra_dieu_kien_buy_goc(df, i, tham_so, chi_bao)
+        if ket_qua_buy and kiem_tra_bo_loc_bo_sung(df, i, chi_bao, bo_loc, "BUY"):
+            return "BUY"
+
+    for tham_so, chi_bao in zip(danh_sach_tham_so, danh_sach_chi_bao):
+        ket_qua_sell = kiem_tra_dieu_kien_sell_goc(df, i, tham_so, chi_bao)
+        if ket_qua_sell and kiem_tra_bo_loc_bo_sung(df, i, chi_bao, bo_loc, "SELL"):
+            return "SELL"
+
+    return None
+
+
 # ==============================================================================
 # 4. ENGINE CHẠY THỬ (BACKTEST) — quản lý vị thế, SL, trailing TP bậc thang
 # ==============================================================================
 
-def _mo_lenh_moi(side: str, i: int, df: pd.DataFrame, so_tiers: int) -> dict:
+def _mo_lenh_moi(
+    side: str, i: int, df: pd.DataFrame, so_tiers: int,
+    von_tham_chieu: float, ty_trong_von_pct: float,
+    bien_do_dao_dong_pct: float,
+) -> dict:
+    entry_price = float(df["close"].iloc[i])
+    gia_tham_chieu_hom_truoc = float(df["close"].iloc[i - 1]) if i > 0 else None
+
+    # Số cổ phiếu ƯỚC TÍNH (làm tròn XUỐNG lô 100) — dùng `von_tham_chieu`
+    # (vốn ban đầu cố định, KHÔNG phải equity đang lãi/lỗ dồn tích) làm
+    # mốc minh họa nhất quán cho MỌI lệnh, để biết thực tế mua được BAO
+    # NHIÊU CỔ PHIẾU với tỷ trọng vốn đã chọn — chỉ mang tính THAM KHẢO,
+    # KHÔNG ảnh hưởng tới cách tính "lợi nhuận ròng" (vẫn compound theo
+    # % như trước, xem `tinh_loi_nhuan_rong`).
+    von_du_kien = von_tham_chieu * ty_trong_von_pct / 100
+    so_co_phieu_uoc_tinh = _lam_tron_lo(von_du_kien / entry_price) if entry_price > 0 else 0
+
     return {
         "side": side,
         "entry_idx": i,
         "entry_date": str(df["date"].iloc[i]),
-        "entry_price": float(df["close"].iloc[i]),
+        "entry_price": entry_price,
         "body_mid": float((df["high"].iloc[i] + df["low"].iloc[i]) / 2),
         "remaining_pct": 100.0,
         "tiers_kich_hoat": [False] * so_tiers,
         "pnl_tich_luy_co_trong_so": 0.0,
+        "so_co_phieu_uoc_tinh": so_co_phieu_uoc_tinh,
+        "canh_bao_bien_do_vao_lenh": _kiem_tra_gan_bien_do(entry_price, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
     }
 
 
@@ -299,9 +371,20 @@ def _tinh_pnl_hien_tai_pct(vi_the: dict, gia_hien_tai: float) -> float:
     return (vi_the["entry_price"] - gia_hien_tai) / vi_the["entry_price"] * 100
 
 
-def _hoan_tat_dong_lenh(vi_the: dict, i: int, df: pd.DataFrame, pnl_pct_cho_phan_con_lai: float) -> dict:
+def _hoan_tat_dong_lenh(
+    vi_the: dict, i: int, df: pd.DataFrame, pnl_pct_cho_phan_con_lai: float,
+    chi_phi_giao_dich_pct: float, bien_do_dao_dong_pct: float,
+) -> dict:
+    """Đóng lệnh (do chạm Stop Loss). `chi_phi_giao_dich_pct` = tổng phí
+    môi giới (2 chiều) + thuế bán — đã CHỨNG MINH tương đương chính xác
+    với việc trừ TỪNG PHẦN theo trọng số ở mỗi tier (vì tổng trọng số
+    luôn = 100%), nên chỉ cần trừ 1 LẦN vào kết quả cuối cùng."""
     vi_the["pnl_tich_luy_co_trong_so"] += vi_the["remaining_pct"] * pnl_pct_cho_phan_con_lai
-    final_pnl_pct = round(vi_the["pnl_tich_luy_co_trong_so"] / 100, 2)
+    final_pnl_pct_truoc_phi = vi_the["pnl_tich_luy_co_trong_so"] / 100
+    final_pnl_pct = round(final_pnl_pct_truoc_phi - chi_phi_giao_dich_pct, 2)
+
+    gia_tham_chieu_hom_truoc = float(df["close"].iloc[i - 1]) if i > 0 else None
+    exit_price_thi_truong = float(df["close"].iloc[i])  # giá THỊ TRƯỜNG thật (chưa trừ phí) — dùng để cảnh báo biên độ
     if vi_the["side"] == "LONG":
         exit_price = vi_the["entry_price"] * (1 + final_pnl_pct / 100)
     else:
@@ -313,6 +396,9 @@ def _hoan_tat_dong_lenh(vi_the: dict, i: int, df: pd.DataFrame, pnl_pct_cho_phan
         "exit_date": str(df["date"].iloc[i]),
         "exit_price": round(exit_price, 2),
         "final_pnl_pct": final_pnl_pct,
+        "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+        "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+        "canh_bao_bien_do_ra_lenh": _kiem_tra_gan_bien_do(exit_price_thi_truong, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
     }
 
 
@@ -324,6 +410,9 @@ def chay_backtest(
     von_ban_dau: float = 1_000_000_000,
     ty_trong_von_pct: float = 50.0,
     so_phien_khoa_toi_thieu: int = SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH,
+    phi_moi_gioi_pct: float = PHI_MOI_GIOI_PCT_MAC_DINH,
+    thue_ban_pct: float = THUE_BAN_PCT_MAC_DINH,
+    bien_do_dao_dong_pct: float = BIEN_DO_DAO_DONG_PCT_MAC_DINH,
 ) -> dict:
     """Chạy backtest tuần tự trên TOÀN BỘ `df_ohlcv` theo đúng bộ tham số/
     bộ lọc/trailing TP truyền vào. KHÔNG ghi vào storage — chỉ trả về dict
@@ -331,15 +420,23 @@ def chay_backtest(
 
     ĐIỀU CHỈNH CHO ĐÚNG THỰC TẾ TTCK VIỆT NAM (bổ sung 06/08/2026):
       1) CHỈ giao dịch LONG (mua) — cổ phiếu thường KHÔNG có cơ chế bán
-         khống (short-sell) cho nhà đầu tư cá nhân như phái sinh. Tín
-         hiệu SELL (mục 1 prompt) KHÔNG còn dùng để MỞ vị thế mới — chỉ
-         còn tác dụng làm CẢNH BÁO kỹ thuật gợi ý cân nhắc thoát lệnh
-         sớm khi đang giữ LONG (xem `canh_bao_tin_hieu_nguoc`).
-      2) `so_phien_khoa_toi_thieu` (mặc định 2, mô phỏng quy tắc T+2 —
-         cổ phiếu mua về cần đủ 2 phiên mới về tài khoản, giao dịch
-         (bán) lại được): trong khoảng này kể từ ngày vào lệnh, vị thế
-         bị "KHÓA" — KHÔNG kiểm tra Stop Loss/Trailing TP, dù giá đã
-         chạm ngưỡng nào đi nữa. Có thể chỉnh nếu quy định T+ thay đổi.
+         khống (short-sell). Tín hiệu SELL KHÔNG còn dùng để MỞ vị thế
+         mới — chỉ còn là CẢNH BÁO kỹ thuật khi đang giữ LONG.
+      2) `so_phien_khoa_toi_thieu` (mặc định 2, mô phỏng T+2): trong
+         khoảng này kể từ ngày vào lệnh, vị thế bị KHÓA — không kiểm
+         tra SL/TP dù giá đã chạm ngưỡng nào.
+      3) `phi_moi_gioi_pct` (mặc định 0,15%/chiều) + `thue_ban_pct`
+         (mặc định 0,1%, chỉ áp chiều bán) — trừ vào kết quả mỗi lệnh
+         ĐÃ ĐÓNG (tổng phí mua + phí bán + thuế bán, trừ 1 LẦN — đã
+         chứng minh tương đương chính xác với trừ theo trọng số từng
+         tier vì tổng trọng số luôn = 100%).
+      4) `bien_do_dao_dong_pct` (mặc định 7%, HOSE) — CHỈ dùng để CẢNH
+         BÁO khi giá vào/ra lệnh nằm sát trần/sàn (khả năng khớp lệnh
+         thực tế có thể khó khăn), KHÔNG thay đổi kết quả P&L.
+      5) `so_co_phieu_uoc_tinh` (mỗi lệnh) — số cổ phiếu MUA ĐƯỢC (làm
+         tròn XUỐNG lô 100), tính trên `von_ban_dau` cố định làm mốc —
+         CHỈ mang tính THAM KHẢO, KHÔNG ảnh hưởng cách tính lợi nhuận
+         ròng (vẫn compound theo %, xem `tinh_loi_nhuan_rong`).
     """
     _validate_df(df_ohlcv)
     _validate_tp_tiers(tp_tiers)
@@ -349,6 +446,12 @@ def chay_backtest(
         raise InvalidIndicatorLabError("ty_trong_von_pct phải trong khoảng (0, 100].")
     if so_phien_khoa_toi_thieu < 0:
         raise InvalidIndicatorLabError("so_phien_khoa_toi_thieu phải >= 0.")
+    if phi_moi_gioi_pct < 0 or thue_ban_pct < 0:
+        raise InvalidIndicatorLabError("phi_moi_gioi_pct và thue_ban_pct phải >= 0.")
+    if bien_do_dao_dong_pct <= 0:
+        raise InvalidIndicatorLabError("bien_do_dao_dong_pct phải > 0.")
+
+    chi_phi_giao_dich_pct = phi_moi_gioi_pct * 2 + thue_ban_pct  # phí mua + phí bán + thuế bán
 
     df = df_ohlcv.reset_index(drop=True)
     chi_bao = tinh_toan_chi_bao(df, tham_so, bo_loc)
@@ -366,15 +469,14 @@ def chay_backtest(
             da_du_khoa_T = (i - vi_the["entry_idx"]) >= so_phien_khoa_toi_thieu
 
             if not da_du_khoa_T:
-                # --- Đang trong thời gian KHÓA T+ (cổ phiếu chưa về tài
-                #     khoản) — KHÔNG được kiểm tra SL/TP, dù giá đã chạm
-                #     ngưỡng nào cũng phải chờ. ---
                 pass
             else:
                 # --- 1) Kiểm tra Stop Loss trước ---
                 if close_i < vi_the["body_mid"]:
                     pnl_pct = _tinh_pnl_hien_tai_pct(vi_the, close_i)
-                    trades.append(_hoan_tat_dong_lenh(vi_the, i, df, pnl_pct))
+                    trades.append(_hoan_tat_dong_lenh(
+                        vi_the, i, df, pnl_pct, chi_phi_giao_dich_pct, bien_do_dao_dong_pct,
+                    ))
                     vi_the = None
                 else:
                     # --- 2) Trailing Take-Profit theo bậc thang ---
@@ -388,13 +490,18 @@ def chay_backtest(
                             vi_the["pnl_tich_luy_co_trong_so"] += pct_chot * pnl_hien_tai
                             vi_the["remaining_pct"] -= pct_chot
                             if vi_the["remaining_pct"] <= 1e-9:
-                                final_pnl_pct = round(vi_the["pnl_tich_luy_co_trong_so"] / 100, 2)
+                                final_pnl_pct_truoc_phi = vi_the["pnl_tich_luy_co_trong_so"] / 100
+                                final_pnl_pct = round(final_pnl_pct_truoc_phi - chi_phi_giao_dich_pct, 2)
                                 exit_price = vi_the["entry_price"] * (1 + final_pnl_pct / 100)
+                                gia_tham_chieu_hom_truoc = float(df["close"].iloc[i - 1]) if i > 0 else None
                                 trades.append({
                                     "side": "LONG", "entry_date": vi_the["entry_date"],
                                     "entry_price": round(vi_the["entry_price"], 2),
                                     "exit_date": str(df["date"].iloc[i]), "exit_price": round(exit_price, 2),
                                     "final_pnl_pct": final_pnl_pct,
+                                    "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+                                    "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+                                    "canh_bao_bien_do_ra_lenh": _kiem_tra_gan_bien_do(close_i, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
                                 })
                                 vi_the = None
                                 break
@@ -402,14 +509,12 @@ def chay_backtest(
         if vi_the is None:
             tin_hieu = danh_gia_tin_hieu(df, i, tham_so, bo_loc, chi_bao)
             if tin_hieu == "BUY":
-                vi_the = _mo_lenh_moi("LONG", i, df, len(tp_tiers))
+                vi_the = _mo_lenh_moi(
+                    "LONG", i, df, len(tp_tiers), von_ban_dau, ty_trong_von_pct, bien_do_dao_dong_pct,
+                )
             # tin_hieu == "SELL" khi KHÔNG đang giữ lệnh -> KHÔNG làm gì
             # (không mở SHORT, vì cổ phiếu thường không bán khống được).
         else:
-            # Đang giữ LONG mà có tín hiệu SELL -> chỉ ghi log CẢNH BÁO
-            # kỹ thuật (gợi ý cân nhắc thoát lệnh sớm), KHÔNG tự đóng lệnh
-            # (đúng yêu cầu prompt — quyết định thoát lệnh vẫn do người
-            # dùng, module chỉ nêu tín hiệu).
             tin_hieu = danh_gia_tin_hieu(df, i, tham_so, bo_loc, chi_bao)
             if tin_hieu == "SELL":
                 canh_bao_tin_hieu_nguoc.append({
@@ -427,12 +532,18 @@ def chay_backtest(
             "as_of_date": str(df["date"].iloc[-1]),
             "current_price": round(close_cuoi, 2),
             "unrealized_pnl_pct": round(_tinh_pnl_hien_tai_pct(vi_the, close_cuoi), 2),
+            "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+            "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+            "ghi_chu": "Chưa bán nên chưa trừ phí bán/thuế bán — PnL tạm tính ở trên là GROSS.",
         }
 
     ket_qua_loi_nhuan = tinh_loi_nhuan_rong(trades, von_ban_dau, ty_trong_von_pct)
 
     so_lenh = len(trades)
     so_lan_thang = sum(1 for t in trades if t["final_pnl_pct"] > 0)
+    so_lan_canh_bao_bien_do = sum(
+        1 for t in trades if t.get("canh_bao_bien_do_vao_lenh") or t.get("canh_bao_bien_do_ra_lenh")
+    )
 
     return {
         "trades": trades,
@@ -442,6 +553,159 @@ def chay_backtest(
         "so_lan_thang": so_lan_thang,
         "so_lan_thua": so_lenh - so_lan_thang,
         "win_rate_pct": round(so_lan_thang / so_lenh * 100, 1) if so_lenh > 0 else None,
+        "so_lan_canh_bao_bien_do": so_lan_canh_bao_bien_do,
+        "chi_phi_giao_dich_pct_moi_lenh": round(chi_phi_giao_dich_pct, 3),
+        **ket_qua_loi_nhuan,
+    }
+
+
+# ==============================================================================
+# 4B. KẾT HỢP NHIỀU BỘ THAM SỐ THEO LOGIC OR (bổ sung 06/08/2026) — vào
+#     lệnh LONG nếu mã đạt tiêu chí của BẤT KỲ 1 trong N bộ tham số đã
+#     chọn (VD: kết hợp Top 10 bộ tốt nhất từ grid search) — tăng số
+#     lượng tín hiệu, đồng thời giữ nguyên toàn bộ nguyên tắc quản lý
+#     vị thế/SL/Trailing TP/phí/thuế/khóa T+/biên độ đã có.
+# ==============================================================================
+
+def chay_backtest_ket_hop_nhieu_bo(
+    df_ohlcv: pd.DataFrame,
+    danh_sach_tham_so: list[dict],
+    bo_loc: dict,
+    tp_tiers: list[dict],
+    von_ban_dau: float = 1_000_000_000,
+    ty_trong_von_pct: float = 50.0,
+    so_phien_khoa_toi_thieu: int = SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH,
+    phi_moi_gioi_pct: float = PHI_MOI_GIOI_PCT_MAC_DINH,
+    thue_ban_pct: float = THUE_BAN_PCT_MAC_DINH,
+    bien_do_dao_dong_pct: float = BIEN_DO_DAO_DONG_PCT_MAC_DINH,
+) -> dict:
+    """Giống hệt `chay_backtest()` (cùng nguyên tắc LONG-only, khóa T+,
+    phí/thuế, cảnh báo biên độ, làm tròn lô) — CHỈ khác cách đánh giá
+    tín hiệu: dùng `danh_gia_tin_hieu_ket_hop()` để vào lệnh nếu ĐẠT
+    tiêu chí của BẤT KỲ bộ nào trong `danh_sach_tham_so` (logic OR).
+
+    `danh_sach_tham_so`: list các dict tham số (mỗi dict cùng cấu trúc
+    như tham số `tham_so` của `chay_backtest()`) — VD kết hợp Top 10 bộ
+    tốt nhất tìm được từ `experimental/grid_search_lab.py`.
+    """
+    _validate_df(df_ohlcv)
+    _validate_tp_tiers(tp_tiers)
+    if not danh_sach_tham_so:
+        raise InvalidIndicatorLabError("danh_sach_tham_so không được rỗng.")
+    if von_ban_dau <= 0:
+        raise InvalidIndicatorLabError("von_ban_dau phải > 0.")
+    if not (0 < ty_trong_von_pct <= 100):
+        raise InvalidIndicatorLabError("ty_trong_von_pct phải trong khoảng (0, 100].")
+    if so_phien_khoa_toi_thieu < 0:
+        raise InvalidIndicatorLabError("so_phien_khoa_toi_thieu phải >= 0.")
+    if phi_moi_gioi_pct < 0 or thue_ban_pct < 0:
+        raise InvalidIndicatorLabError("phi_moi_gioi_pct và thue_ban_pct phải >= 0.")
+    if bien_do_dao_dong_pct <= 0:
+        raise InvalidIndicatorLabError("bien_do_dao_dong_pct phải > 0.")
+
+    chi_phi_giao_dich_pct = phi_moi_gioi_pct * 2 + thue_ban_pct
+
+    df = df_ohlcv.reset_index(drop=True)
+    # Tính chỉ báo RIÊNG cho TỪNG bộ tham số (vì chu kỳ EMA/MA có thể khác
+    # nhau giữa các bộ) — chỉ tính 1 lần cho mỗi bộ trước khi vào vòng lặp.
+    danh_sach_chi_bao = [tinh_toan_chi_bao(df, ts, bo_loc) for ts in danh_sach_tham_so]
+    n_rows = len(df)
+    start_idx = max(_so_phien_khoi_dong_toi_thieu(ts, bo_loc) for ts in danh_sach_tham_so)
+
+    trades: list[dict] = []
+    canh_bao_tin_hieu_nguoc: list[dict] = []
+    vi_the: Optional[dict] = None
+
+    for i in range(start_idx, n_rows):
+        close_i = float(df["close"].iloc[i])
+
+        if vi_the is not None:
+            da_du_khoa_T = (i - vi_the["entry_idx"]) >= so_phien_khoa_toi_thieu
+
+            if not da_du_khoa_T:
+                pass
+            else:
+                if close_i < vi_the["body_mid"]:
+                    pnl_pct = _tinh_pnl_hien_tai_pct(vi_the, close_i)
+                    trades.append(_hoan_tat_dong_lenh(
+                        vi_the, i, df, pnl_pct, chi_phi_giao_dich_pct, bien_do_dao_dong_pct,
+                    ))
+                    vi_the = None
+                else:
+                    pnl_hien_tai = _tinh_pnl_hien_tai_pct(vi_the, close_i)
+                    for idx_tier, tier in enumerate(tp_tiers):
+                        if vi_the["tiers_kich_hoat"][idx_tier]:
+                            continue
+                        if pnl_hien_tai >= tier["muc_lai_pct"]:
+                            vi_the["tiers_kich_hoat"][idx_tier] = True
+                            pct_chot = tier["chot_pct_khoi_luong"]
+                            vi_the["pnl_tich_luy_co_trong_so"] += pct_chot * pnl_hien_tai
+                            vi_the["remaining_pct"] -= pct_chot
+                            if vi_the["remaining_pct"] <= 1e-9:
+                                final_pnl_pct_truoc_phi = vi_the["pnl_tich_luy_co_trong_so"] / 100
+                                final_pnl_pct = round(final_pnl_pct_truoc_phi - chi_phi_giao_dich_pct, 2)
+                                exit_price = vi_the["entry_price"] * (1 + final_pnl_pct / 100)
+                                gia_tham_chieu_hom_truoc = float(df["close"].iloc[i - 1]) if i > 0 else None
+                                trades.append({
+                                    "side": "LONG", "entry_date": vi_the["entry_date"],
+                                    "entry_price": round(vi_the["entry_price"], 2),
+                                    "exit_date": str(df["date"].iloc[i]), "exit_price": round(exit_price, 2),
+                                    "final_pnl_pct": final_pnl_pct,
+                                    "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+                                    "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+                                    "canh_bao_bien_do_ra_lenh": _kiem_tra_gan_bien_do(close_i, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
+                                })
+                                vi_the = None
+                                break
+
+        if vi_the is None:
+            tin_hieu = danh_gia_tin_hieu_ket_hop(df, i, danh_sach_tham_so, bo_loc, danh_sach_chi_bao)
+            if tin_hieu == "BUY":
+                vi_the = _mo_lenh_moi(
+                    "LONG", i, df, len(tp_tiers), von_ban_dau, ty_trong_von_pct, bien_do_dao_dong_pct,
+                )
+        else:
+            tin_hieu = danh_gia_tin_hieu_ket_hop(df, i, danh_sach_tham_so, bo_loc, danh_sach_chi_bao)
+            if tin_hieu == "SELL":
+                canh_bao_tin_hieu_nguoc.append({
+                    "ngay": str(df["date"].iloc[i]), "tin_hieu_nguoc": tin_hieu,
+                    "dang_giu_lenh": vi_the["side"],
+                })
+
+    open_position = None
+    if vi_the is not None:
+        close_cuoi = float(df["close"].iloc[-1])
+        open_position = {
+            "side": vi_the["side"],
+            "entry_date": vi_the["entry_date"],
+            "entry_price": round(vi_the["entry_price"], 2),
+            "as_of_date": str(df["date"].iloc[-1]),
+            "current_price": round(close_cuoi, 2),
+            "unrealized_pnl_pct": round(_tinh_pnl_hien_tai_pct(vi_the, close_cuoi), 2),
+            "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+            "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+            "ghi_chu": "Chưa bán nên chưa trừ phí bán/thuế bán — PnL tạm tính ở trên là GROSS.",
+        }
+
+    ket_qua_loi_nhuan = tinh_loi_nhuan_rong(trades, von_ban_dau, ty_trong_von_pct)
+
+    so_lenh = len(trades)
+    so_lan_thang = sum(1 for t in trades if t["final_pnl_pct"] > 0)
+    so_lan_canh_bao_bien_do = sum(
+        1 for t in trades if t.get("canh_bao_bien_do_vao_lenh") or t.get("canh_bao_bien_do_ra_lenh")
+    )
+
+    return {
+        "trades": trades,
+        "open_position": open_position,
+        "canh_bao_tin_hieu_nguoc": canh_bao_tin_hieu_nguoc,
+        "so_lenh_da_dong": so_lenh,
+        "so_lan_thang": so_lan_thang,
+        "so_lan_thua": so_lenh - so_lan_thang,
+        "win_rate_pct": round(so_lan_thang / so_lenh * 100, 1) if so_lenh > 0 else None,
+        "so_lan_canh_bao_bien_do": so_lan_canh_bao_bien_do,
+        "chi_phi_giao_dich_pct_moi_lenh": round(chi_phi_giao_dich_pct, 3),
+        "so_bo_tham_so_ket_hop": len(danh_sach_tham_so),
         **ket_qua_loi_nhuan,
     }
 
