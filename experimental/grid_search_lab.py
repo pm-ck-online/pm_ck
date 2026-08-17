@@ -6,9 +6,10 @@ theo thiết kế ban đầu của "Phòng thí nghiệm chỉ báo" (mục 10 p
 "KHÔNG tự động dò grid search trên UI — dò nhiều tổ hợp làm ở script
 riêng ngoài UI nếu cần").
 
-Thử NHIỀU tổ hợp tham số cho 1 mã, CHỈ tính hiệu suất LONG (bỏ qua hoàn
-toàn tín hiệu SHORT — dùng `chi_giao_dich_mot_chieu="LONG"`), xếp hạng
-theo lợi nhuận ròng, in ra bảng kết quả Top N.
+Thử NHIỀU tổ hợp tham số cho 1 mã. Engine (`chay_backtest`) đã tự giới
+hạn CHỈ giao dịch LONG (đúng thực tế TTCK Việt Nam — cổ phiếu thường
+không bán khống được), nên không cần truyền thêm tham số hướng giao
+dịch. Xếp hạng theo lợi nhuận ròng, in ra bảng kết quả Top N.
 
 ⚠️ CẢNH BÁO OVERFIT: dò càng nhiều tổ hợp trên CÙNG 1 bộ dữ liệu lịch sử,
 càng dễ tìm ra 1 bộ "đẹp trên giấy" nhưng KHÔNG chắc lặp lại tương lai.
@@ -17,8 +18,8 @@ phải kết luận cuối cùng.
 
 CÁCH CHẠY:
     set PM_CK_DB_PATH=postgresql://...
-    python experimental/grid_search_lab.py HDB
-    python experimental/grid_search_lab.py HDB --von 1000000000 --top 15
+    python -m experimental.grid_search_lab HDB
+    python -m experimental.grid_search_lab HDB --von 1000000000 --top 15
 """
 
 from __future__ import annotations
@@ -71,9 +72,9 @@ def chay_grid_search(
     ty_trong_von_pct: float = 50.0,
     sell_lookback_bang_buy_lookback: bool = True,
 ) -> list[dict]:
-    """Thử TOÀN BỘ tổ hợp trong `LUOI_THAM_SO`, CHỈ tính LONG (bỏ qua
-    SHORT hoàn toàn), trả về danh sách kết quả đã sắp theo lợi nhuận
-    ròng giảm dần."""
+    """Thử TOÀN BỘ tổ hợp trong `LUOI_THAM_SO` — engine chỉ giao dịch
+    LONG theo đúng thực tế TTCK VN (không bán khống), trả về danh sách
+    kết quả đã sắp theo lợi nhuận ròng giảm dần."""
     ket_qua: list[dict] = []
     cac_khoa = list(LUOI_THAM_SO.keys())
     cac_gia_tri = list(LUOI_THAM_SO.values())
@@ -97,7 +98,6 @@ def chay_grid_search(
             kq = chay_backtest(
                 df_ohlcv, tham_so, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
                 von_ban_dau=von_ban_dau, ty_trong_von_pct=ty_trong_von_pct,
-                chi_giao_dich_mot_chieu="LONG",
             )
         except InvalidIndicatorLabError:
             continue

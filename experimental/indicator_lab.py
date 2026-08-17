@@ -59,6 +59,12 @@ TRAILING_TP_TIERS_MAC_DINH = [
     {"muc_lai_pct": 15.0, "chot_pct_khoi_luong": 40.0},
 ]
 
+# Số phiên "khóa" tối thiểu sau khi mua trước khi được phép bán ra —
+# mô phỏng quy tắc thanh toán T+2 của TTCK Việt Nam (cổ phiếu mua về cần
+# đủ 2 phiên mới thực sự về tài khoản, giao dịch/bán lại được). Chỉnh
+# lại nếu quy định T+ thay đổi trong tương lai.
+SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH = 2
+
 REQUIRED_COLUMNS = {"date", "open", "high", "low", "close", "volume"}
 
 
@@ -317,18 +323,23 @@ def chay_backtest(
     tp_tiers: list[dict],
     von_ban_dau: float = 1_000_000_000,
     ty_trong_von_pct: float = 50.0,
-    chi_giao_dich_mot_chieu: Optional[str] = None,
+    so_phien_khoa_toi_thieu: int = SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH,
 ) -> dict:
     """Chạy backtest tuần tự trên TOÀN BỘ `df_ohlcv` theo đúng bộ tham số/
     bộ lọc/trailing TP truyền vào. KHÔNG ghi vào storage — chỉ trả về dict
     kết quả để lớp gọi (dashboard) tự lưu tạm vào `st.session_state`.
 
-    `chi_giao_dich_mot_chieu` (bổ sung 06/08/2026): "LONG" hoặc "SHORT" —
-    nếu truyền, CHỈ mở lệnh theo đúng chiều này (tín hiệu chiều ngược lại
-    bị bỏ qua hoàn toàn, không mở lệnh, không tính cảnh báo tín hiệu
-    ngược). Dùng để tách riêng hiệu suất LONG/SHORT khi dò tham số
-    (grid search) — mặc định `None` giữ nguyên hành vi cũ (giao dịch cả
-    2 chiều theo đúng tín hiệu).
+    ĐIỀU CHỈNH CHO ĐÚNG THỰC TẾ TTCK VIỆT NAM (bổ sung 06/08/2026):
+      1) CHỈ giao dịch LONG (mua) — cổ phiếu thường KHÔNG có cơ chế bán
+         khống (short-sell) cho nhà đầu tư cá nhân như phái sinh. Tín
+         hiệu SELL (mục 1 prompt) KHÔNG còn dùng để MỞ vị thế mới — chỉ
+         còn tác dụng làm CẢNH BÁO kỹ thuật gợi ý cân nhắc thoát lệnh
+         sớm khi đang giữ LONG (xem `canh_bao_tin_hieu_nguoc`).
+      2) `so_phien_khoa_toi_thieu` (mặc định 2, mô phỏng quy tắc T+2 —
+         cổ phiếu mua về cần đủ 2 phiên mới về tài khoản, giao dịch
+         (bán) lại được): trong khoảng này kể từ ngày vào lệnh, vị thế
+         bị "KHÓA" — KHÔNG kiểm tra Stop Loss/Trailing TP, dù giá đã
+         chạm ngưỡng nào đi nữa. Có thể chỉnh nếu quy định T+ thay đổi.
     """
     _validate_df(df_ohlcv)
     _validate_tp_tiers(tp_tiers)
@@ -336,8 +347,8 @@ def chay_backtest(
         raise InvalidIndicatorLabError("von_ban_dau phải > 0.")
     if not (0 < ty_trong_von_pct <= 100):
         raise InvalidIndicatorLabError("ty_trong_von_pct phải trong khoảng (0, 100].")
-    if chi_giao_dich_mot_chieu is not None and chi_giao_dich_mot_chieu not in ("LONG", "SHORT"):
-        raise InvalidIndicatorLabError('chi_giao_dich_mot_chieu phải là "LONG", "SHORT", hoặc None.')
+    if so_phien_khoa_toi_thieu < 0:
+        raise InvalidIndicatorLabError("so_phien_khoa_toi_thieu phải >= 0.")
 
     df = df_ohlcv.reset_index(drop=True)
     chi_bao = tinh_toan_chi_bao(df, tham_so, bo_loc)
@@ -352,55 +363,55 @@ def chay_backtest(
         close_i = float(df["close"].iloc[i])
 
         if vi_the is not None:
-            # --- 1) Kiểm tra Stop Loss trước ---
-            da_dong_boi_sl = False
-            if vi_the["side"] == "LONG" and close_i < vi_the["body_mid"]:
-                da_dong_boi_sl = True
-            elif vi_the["side"] == "SHORT" and close_i > vi_the["body_mid"]:
-                da_dong_boi_sl = True
+            da_du_khoa_T = (i - vi_the["entry_idx"]) >= so_phien_khoa_toi_thieu
 
-            if da_dong_boi_sl:
-                pnl_pct = _tinh_pnl_hien_tai_pct(vi_the, close_i)
-                trades.append(_hoan_tat_dong_lenh(vi_the, i, df, pnl_pct))
-                vi_the = None
+            if not da_du_khoa_T:
+                # --- Đang trong thời gian KHÓA T+ (cổ phiếu chưa về tài
+                #     khoản) — KHÔNG được kiểm tra SL/TP, dù giá đã chạm
+                #     ngưỡng nào cũng phải chờ. ---
+                pass
             else:
-                # --- 2) Trailing Take-Profit theo bậc thang ---
-                pnl_hien_tai = _tinh_pnl_hien_tai_pct(vi_the, close_i)
-                for idx_tier, tier in enumerate(tp_tiers):
-                    if vi_the["tiers_kich_hoat"][idx_tier]:
-                        continue
-                    if pnl_hien_tai >= tier["muc_lai_pct"]:
-                        vi_the["tiers_kich_hoat"][idx_tier] = True
-                        pct_chot = tier["chot_pct_khoi_luong"]
-                        vi_the["pnl_tich_luy_co_trong_so"] += pct_chot * pnl_hien_tai
-                        vi_the["remaining_pct"] -= pct_chot
-                        if vi_the["remaining_pct"] <= 1e-9:
-                            final_pnl_pct = round(vi_the["pnl_tich_luy_co_trong_so"] / 100, 2)
-                            if vi_the["side"] == "LONG":
+                # --- 1) Kiểm tra Stop Loss trước ---
+                if close_i < vi_the["body_mid"]:
+                    pnl_pct = _tinh_pnl_hien_tai_pct(vi_the, close_i)
+                    trades.append(_hoan_tat_dong_lenh(vi_the, i, df, pnl_pct))
+                    vi_the = None
+                else:
+                    # --- 2) Trailing Take-Profit theo bậc thang ---
+                    pnl_hien_tai = _tinh_pnl_hien_tai_pct(vi_the, close_i)
+                    for idx_tier, tier in enumerate(tp_tiers):
+                        if vi_the["tiers_kich_hoat"][idx_tier]:
+                            continue
+                        if pnl_hien_tai >= tier["muc_lai_pct"]:
+                            vi_the["tiers_kich_hoat"][idx_tier] = True
+                            pct_chot = tier["chot_pct_khoi_luong"]
+                            vi_the["pnl_tich_luy_co_trong_so"] += pct_chot * pnl_hien_tai
+                            vi_the["remaining_pct"] -= pct_chot
+                            if vi_the["remaining_pct"] <= 1e-9:
+                                final_pnl_pct = round(vi_the["pnl_tich_luy_co_trong_so"] / 100, 2)
                                 exit_price = vi_the["entry_price"] * (1 + final_pnl_pct / 100)
-                            else:
-                                exit_price = vi_the["entry_price"] * (1 - final_pnl_pct / 100)
-                            trades.append({
-                                "side": vi_the["side"], "entry_date": vi_the["entry_date"],
-                                "entry_price": round(vi_the["entry_price"], 2),
-                                "exit_date": str(df["date"].iloc[i]), "exit_price": round(exit_price, 2),
-                                "final_pnl_pct": final_pnl_pct,
-                            })
-                            vi_the = None
-                            break
+                                trades.append({
+                                    "side": "LONG", "entry_date": vi_the["entry_date"],
+                                    "entry_price": round(vi_the["entry_price"], 2),
+                                    "exit_date": str(df["date"].iloc[i]), "exit_price": round(exit_price, 2),
+                                    "final_pnl_pct": final_pnl_pct,
+                                })
+                                vi_the = None
+                                break
 
         if vi_the is None:
             tin_hieu = danh_gia_tin_hieu(df, i, tham_so, bo_loc, chi_bao)
-            if tin_hieu == "BUY" and chi_giao_dich_mot_chieu != "SHORT":
+            if tin_hieu == "BUY":
                 vi_the = _mo_lenh_moi("LONG", i, df, len(tp_tiers))
-            elif tin_hieu == "SELL" and chi_giao_dich_mot_chieu != "LONG":
-                vi_the = _mo_lenh_moi("SHORT", i, df, len(tp_tiers))
+            # tin_hieu == "SELL" khi KHÔNG đang giữ lệnh -> KHÔNG làm gì
+            # (không mở SHORT, vì cổ phiếu thường không bán khống được).
         else:
-            # Đang giữ lệnh mà có tín hiệu NGƯỢC CHIỀU -> chỉ ghi log cảnh
-            # báo, KHÔNG tự đóng/mở/đảo chiều (đúng yêu cầu prompt).
+            # Đang giữ LONG mà có tín hiệu SELL -> chỉ ghi log CẢNH BÁO
+            # kỹ thuật (gợi ý cân nhắc thoát lệnh sớm), KHÔNG tự đóng lệnh
+            # (đúng yêu cầu prompt — quyết định thoát lệnh vẫn do người
+            # dùng, module chỉ nêu tín hiệu).
             tin_hieu = danh_gia_tin_hieu(df, i, tham_so, bo_loc, chi_bao)
-            huong_hien_tai = "BUY" if vi_the["side"] == "LONG" else "SELL"
-            if tin_hieu is not None and tin_hieu != huong_hien_tai:
+            if tin_hieu == "SELL":
                 canh_bao_tin_hieu_nguoc.append({
                     "ngay": str(df["date"].iloc[i]), "tin_hieu_nguoc": tin_hieu,
                     "dang_giu_lenh": vi_the["side"],
