@@ -1592,6 +1592,319 @@ def render_vcp_scan_section(storage: Storage) -> None:
                 st.caption(data["canh_bao_phap_ly"])
 
 
+def render_indicator_lab_section(storage: Storage) -> None:
+    """🧪 Phòng thí nghiệm chỉ báo (bổ sung 06/08/2026) — module NGHIÊN
+    CỨU/THỬ NGHIỆM, TÁCH BIỆT HOÀN TOÀN khỏi hệ thống tín hiệu/backtest
+    THẬT (logic thuần túy nằm trong experimental/indicator_lab.py, KHÔNG
+    đụng tới core/). Kết quả KHÔNG lưu vào Supabase — chỉ tồn tại tạm
+    thời trong st.session_state của phiên làm việc hiện tại.
+    """
+    from experimental.indicator_lab import (
+        BO_LOC_MAC_DINH, THAM_SO_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+        InvalidIndicatorLabError, chay_backtest, quet_watchlist_tim_tin_hieu,
+    )
+
+    st.subheader("🧪 Phòng thí nghiệm chỉ báo")
+    st.warning(
+        "⚠️ Đây là công cụ NGHIÊN CỨU/THỬ NGHIỆM — dò nhiều tổ hợp tham số trên CÙNG "
+        "1 bộ dữ liệu lịch sử có rủi ro \"khớp quá vừa\" (overfit). Hiệu suất tốt trong "
+        "quá khứ KHÔNG đảm bảo lặp lại tương lai. Kết quả CHƯA tính phí giao dịch/"
+        "trượt giá. Hoàn toàn TÁCH BIỆT khỏi hệ thống tín hiệu thật — kết quả KHÔNG "
+        "được lưu vào Supabase, chỉ tồn tại tạm trong phiên làm việc này (mất khi tải "
+        "lại trang)."
+    )
+
+    from main import load_config
+    try:
+        config = load_config()
+        danh_sach_watchlist = sorted(config.get("watchlist", {}).get("symbols", {}).keys())
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Không đọc được danh sách watchlist: {exc}")
+        return
+
+    if not danh_sach_watchlist:
+        st.info("Watchlist hiện đang trống.")
+        return
+
+    danh_sach_hien_thi = render_search_box_if_needed(
+        danh_sach_watchlist, key="lab_symbol_search", label="🔍 Tìm mã để thử nghiệm"
+    )
+    ma_chon = st.selectbox("Chọn mã cổ phiếu để thử nghiệm", danh_sach_hien_thi, key="lab_ma_chon")
+
+    # --- Nút preset: gán TRỰC TIẾP vào st.session_state rồi rerun (widget
+    #     chỉ đọc value= ở lần render ĐẦU, sau đó value= bị bỏ qua nếu key
+    #     đã có trong session_state). ---
+    if st.button("🎯 Dùng bộ tham số gợi ý", key="lab_preset_btn"):
+        st.session_state["lab_buy_lookback"] = THAM_SO_MAC_DINH["buy_lookback"]
+        st.session_state["lab_sell_lookback"] = THAM_SO_MAC_DINH["sell_lookback"]
+        st.session_state["lab_ema_period"] = THAM_SO_MAC_DINH["ema_period"]
+        st.session_state["lab_ma_period"] = THAM_SO_MAC_DINH["ma_period"]
+        st.session_state["lab_range_pct_max"] = THAM_SO_MAC_DINH["range_pct_max"]
+        st.session_state["lab_body_pct_min"] = THAM_SO_MAC_DINH["body_pct_min"]
+        st.session_state["lab_body_pct_max"] = THAM_SO_MAC_DINH["body_pct_max"]
+        for idx, tier in enumerate(TRAILING_TP_TIERS_MAC_DINH):
+            st.session_state[f"lab_tp_muc_lai_{idx}"] = tier["muc_lai_pct"]
+            st.session_state[f"lab_tp_chot_pct_{idx}"] = tier["chot_pct_khoi_luong"]
+        st.session_state["lab_rsi_enabled"] = False
+        st.session_state["lab_volume_enabled"] = False
+        st.session_state["lab_atr_enabled"] = False
+        st.session_state["lab_bollinger_enabled"] = False
+        st.rerun()
+
+    st.markdown("#### ⚙️ Tham số cốt lõi")
+    col_p1, col_p2, col_p3 = st.columns(3)
+    with col_p1:
+        buy_lookback = st.number_input("Số nến xét trước BUY", min_value=1, max_value=30, value=4, step=1, key="lab_buy_lookback")
+        sell_lookback = st.number_input("Số nến xét trước SELL", min_value=1, max_value=30, value=4, step=1, key="lab_sell_lookback")
+    with col_p2:
+        ema_period = st.number_input("Chu kỳ EMA", min_value=5, max_value=300, value=200, step=5, key="lab_ema_period")
+        ma_period = st.number_input("Chu kỳ MA", min_value=5, max_value=300, value=20, step=5, key="lab_ma_period")
+    with col_p3:
+        range_pct_max = st.number_input("Biên độ nén tối đa (%)", min_value=0.1, max_value=50.0, value=5.0, step=0.5, key="lab_range_pct_max")
+        body_pct_min = st.number_input("Thân nến tối thiểu (%)", min_value=0.0, max_value=50.0, value=1.0, step=0.5, key="lab_body_pct_min")
+        body_pct_max = st.number_input("Thân nến tối đa (%)", min_value=0.1, max_value=50.0, value=6.0, step=0.5, key="lab_body_pct_max")
+
+    tham_so = {
+        "buy_lookback": int(buy_lookback), "sell_lookback": int(sell_lookback),
+        "ema_period": int(ema_period), "ma_period": int(ma_period),
+        "range_pct_max": range_pct_max, "body_pct_min": body_pct_min, "body_pct_max": body_pct_max,
+    }
+
+    st.markdown("#### 🔍 4 bộ lọc thử nghiệm (tùy chọn — kết hợp VÀ với điều kiện gốc)")
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    with col_f1:
+        rsi_enabled = st.checkbox("RSI momentum", key="lab_rsi_enabled")
+        rsi_period = st.number_input("Chu kỳ RSI", min_value=2, max_value=100, value=14, step=1, key="lab_rsi_period", disabled=not rsi_enabled)
+    with col_f2:
+        volume_enabled = st.checkbox("Xác nhận Volume", key="lab_volume_enabled")
+        volume_period = st.number_input("Chu kỳ Volume MA", min_value=2, max_value=100, value=20, step=1, key="lab_volume_period", disabled=not volume_enabled)
+    with col_f3:
+        atr_enabled = st.checkbox("ATR biến động cao", key="lab_atr_enabled")
+        atr_period = st.number_input("Chu kỳ ATR", min_value=2, max_value=100, value=14, step=1, key="lab_atr_period", disabled=not atr_enabled)
+    with col_f4:
+        bollinger_enabled = st.checkbox("Bollinger breakout", key="lab_bollinger_enabled")
+        bollinger_period = st.number_input("Chu kỳ Bollinger", min_value=2, max_value=100, value=20, step=1, key="lab_bollinger_period", disabled=not bollinger_enabled)
+        bollinger_num_std = st.number_input("Số độ lệch chuẩn", min_value=0.5, max_value=5.0, value=2.0, step=0.1, key="lab_bollinger_num_std", disabled=not bollinger_enabled)
+
+    bo_loc = {
+        "rsi_enabled": rsi_enabled, "rsi_period": int(rsi_period),
+        "volume_enabled": volume_enabled, "volume_period": int(volume_period),
+        "atr_enabled": atr_enabled, "atr_period": int(atr_period),
+        "bollinger_enabled": bollinger_enabled, "bollinger_period": int(bollinger_period),
+        "bollinger_num_std": bollinger_num_std,
+    }
+
+    st.markdown("#### 📶 Trailing Take-Profit (3 bậc thang, mức lãi % tăng dần)")
+    tp_tiers = []
+    col_t1, col_t2, col_t3 = st.columns(3)
+    for idx, col in enumerate((col_t1, col_t2, col_t3)):
+        with col:
+            st.caption(f"Tier {idx + 1}")
+            muc_lai = st.number_input(
+                "Mức lãi % kích hoạt", min_value=0.1, max_value=100.0,
+                value=TRAILING_TP_TIERS_MAC_DINH[idx]["muc_lai_pct"], step=0.5,
+                key=f"lab_tp_muc_lai_{idx}",
+            )
+            chot_pct = st.number_input(
+                "% khối lượng chốt", min_value=0.0, max_value=100.0,
+                value=TRAILING_TP_TIERS_MAC_DINH[idx]["chot_pct_khoi_luong"], step=5.0,
+                key=f"lab_tp_chot_pct_{idx}",
+            )
+            tp_tiers.append({"muc_lai_pct": muc_lai, "chot_pct_khoi_luong": chot_pct})
+
+    st.markdown("#### 💵 Vốn giả lập")
+    col_v1, col_v2 = st.columns(2)
+    with col_v1:
+        von_ban_dau = st.number_input("Vốn ban đầu (VNĐ)", min_value=0, value=1_000_000_000, step=10_000_000, key="lab_von_ban_dau")
+    with col_v2:
+        ty_trong_von_pct = st.number_input("% vốn dùng mỗi lệnh", min_value=1.0, max_value=100.0, value=50.0, step=5.0, key="lab_ty_trong_von")
+
+    df_ma = _load_ohlcv_history_df(storage, ma_chon)
+    du_lieu_khong_du = df_ma is None or df_ma.empty
+
+    if st.button("🚀 Chạy thử nghiệm cho mã này", key="lab_run_btn", disabled=du_lieu_khong_du):
+        try:
+            ket_qua = chay_backtest(
+                df_ma, tham_so, bo_loc, tp_tiers,
+                von_ban_dau=von_ban_dau, ty_trong_von_pct=ty_trong_von_pct,
+            )
+            st.session_state["lab_ket_qua"] = ket_qua
+            st.session_state["lab_ket_qua_ma"] = ma_chon
+            st.session_state["lab_ket_qua_df"] = df_ma
+            st.session_state["lab_ket_qua_tham_so"] = tham_so
+        except InvalidIndicatorLabError as exc:
+            st.error(f"⚠️ {exc}")
+        st.rerun()
+
+    if du_lieu_khong_du:
+        st.info(f"Chưa có dữ liệu OHLCV cho mã {ma_chon}.")
+
+    # ==========================================================================
+    # KHU VỰC KẾT QUẢ (chỉ hiện khi đã có kết quả trong session_state)
+    # ==========================================================================
+    if st.session_state.get("lab_ket_qua") and st.session_state.get("lab_ket_qua_ma") == ma_chon:
+        kq = st.session_state["lab_ket_qua"]
+        df_kq = st.session_state["lab_ket_qua_df"]
+        tham_so_kq = st.session_state["lab_ket_qua_tham_so"]
+
+        st.divider()
+        st.markdown(f"### 📊 Kết quả thử nghiệm — {ma_chon}")
+
+        col_r1, col_r2, col_r3, col_r4 = st.columns(4)
+        col_r1.metric("Tổng số lệnh ĐÃ ĐÓNG", f"{kq['so_lenh_da_dong']:,}")
+        col_r2.metric("Lệnh lãi / lệnh lỗ", f"{kq['so_lan_thang']}/{kq['so_lan_thua']}")
+        col_r3.metric("Win rate", f"{kq['win_rate_pct']:.1f}%" if kq["win_rate_pct"] is not None else "—")
+        col_r4.metric(
+            "Lợi nhuận ròng ĐÃ CHỐT",
+            f"{kq['loi_nhuan_rong']:,.0f} đ",
+            f"{kq['loi_nhuan_rong_pct']:+.2f}%" if kq["loi_nhuan_rong_pct"] is not None else None,
+        )
+
+        if kq["open_position"]:
+            op = kq["open_position"]
+            huong_txt = "🟢 LONG (đang mua)" if op["side"] == "LONG" else "🔴 SHORT (đang bán)"
+            st.info(
+                f"📌 **Vị thế đang mở**: {huong_txt} — vào lệnh ngày {op['entry_date']} tại giá "
+                f"{op['entry_price']:,.2f}, hiện tại ({op['as_of_date']}) giá {op['current_price']:,.2f} "
+                f"— PnL **TẠM TÍNH: {op['unrealized_pnl_pct']:+.2f}%** — chưa chạm SL/mốc chốt lời nào "
+                f"nên KHÔNG có trong lợi nhuận ròng đã chốt ở trên."
+            )
+
+        if kq["canh_bao_tin_hieu_nguoc"]:
+            with st.expander(f"⚠️ {len(kq['canh_bao_tin_hieu_nguoc'])} lần có tín hiệu ngược chiều khi đang giữ lệnh (chỉ ghi log, không tự đóng/đảo chiều)"):
+                st.dataframe(pd.DataFrame(kq["canh_bao_tin_hieu_nguoc"]), width='stretch', hide_index=True)
+
+        # --- Chart Plotly: nến nền + EMA/MA + điểm vào/ra từng lệnh ---
+        from core.indicators import calculate_ema, calculate_ma
+
+        ema_series = calculate_ema(df_kq, tham_so_kq["ema_period"])
+        ma_series = calculate_ma(df_kq, tham_so_kq["ma_period"])
+
+        fig = go.Figure()
+        fig.add_trace(go.Candlestick(
+            x=df_kq["date"], open=df_kq["open"], high=df_kq["high"],
+            low=df_kq["low"], close=df_kq["close"], name=ma_chon,
+            increasing_line_color="#26a69a", decreasing_line_color="#ef5350",
+            increasing_fillcolor="#26a69a", decreasing_fillcolor="#ef5350",
+        ))
+        fig.add_trace(go.Scatter(x=df_kq["date"], y=ema_series, name=f"EMA{tham_so_kq['ema_period']}", line=dict(color="#f59e0b", width=1.2)))
+        fig.add_trace(go.Scatter(x=df_kq["date"], y=ma_series, name=f"MA{tham_so_kq['ma_period']}", line=dict(color="#3b82f6", width=1.2)))
+
+        # Điểm vào lệnh (tam giác lên) + ra lệnh (tròn), màu theo kết quả
+        entry_x, entry_y, entry_color = [], [], []
+        exit_x, exit_y, exit_color = [], [], []
+        for t in kq["trades"]:
+            mau = "#22c55e" if t["final_pnl_pct"] > 0 else ("#ef4444" if t["final_pnl_pct"] < 0 else "#9ca3af")
+            entry_x.append(t["entry_date"]); entry_y.append(t["entry_price"]); entry_color.append(mau)
+            exit_x.append(t["exit_date"]); exit_y.append(t["exit_price"]); exit_color.append(mau)
+
+        if entry_x:
+            fig.add_trace(go.Scatter(
+                x=entry_x, y=entry_y, mode="markers", name="Vào lệnh",
+                marker=dict(symbol="triangle-up", size=11, color=entry_color, line=dict(width=1, color="#000000")),
+            ))
+            fig.add_trace(go.Scatter(
+                x=exit_x, y=exit_y, mode="markers", name="Ra lệnh",
+                marker=dict(symbol="circle", size=9, color=exit_color, line=dict(width=1, color="#000000")),
+            ))
+
+        if kq["open_position"]:
+            op = kq["open_position"]
+            fig.add_trace(go.Scatter(
+                x=[op["entry_date"]], y=[op["entry_price"]], mode="markers", name="Vị thế đang mở",
+                marker=dict(symbol="diamond", size=13, color="#3b82f6", line=dict(width=1.5, color="#000000")),
+            ))
+
+        # Ẩn khoảng trống cuối tuần/nghỉ lễ, VẪN giữ trục thời gian thật + rangeselector
+        fig.update_xaxes(
+            rangebreaks=[dict(bounds=["sat", "mon"])],
+            rangeslider_visible=False,
+            rangeselector=dict(buttons=[
+                dict(count=3, label="3T", step="month", stepmode="backward"),
+                dict(count=6, label="6T", step="month", stepmode="backward"),
+                dict(count=1, label="1N", step="year", stepmode="backward"),
+                dict(step="all", label="Tất cả"),
+            ]),
+        )
+        fig.update_layout(
+            height=550, margin=dict(l=10, r=10, t=40, b=10),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02),
+            hovermode="x unified",
+        )
+        st.plotly_chart(fig, width='stretch')
+
+        # --- Bảng chi tiết từng lệnh (kèm dòng vị thế đang mở, mới nhất lên trên) ---
+        st.markdown("#### 📋 Chi tiết từng lệnh")
+        rows = []
+        for t in kq["trades"]:
+            rows.append({
+                "Chiều": "LONG" if t["side"] == "LONG" else "SHORT",
+                "Vào lúc": t["entry_date"], "Giá vào": t["entry_price"],
+                "Đóng lúc": t["exit_date"], "Giá ra": t["exit_price"],
+                "Kết quả": f"{t['final_pnl_pct']:+.2f}%",
+                "_sort_date": t["entry_date"],
+            })
+        if kq["open_position"]:
+            op = kq["open_position"]
+            rows.append({
+                "Chiều": "LONG" if op["side"] == "LONG" else "SHORT",
+                "Vào lúc": op["entry_date"], "Giá vào": op["entry_price"],
+                "Đóng lúc": "— (đang mở)", "Giá ra": op["current_price"],
+                "Kết quả": f"ĐANG MỞ (tạm tính {op['unrealized_pnl_pct']:+.2f}%)",
+                "_sort_date": op["entry_date"],
+            })
+        if rows:
+            df_rows = pd.DataFrame(rows).sort_values("_sort_date", ascending=False).drop(columns=["_sort_date"])
+            st.dataframe(df_rows, width='stretch', hide_index=True)
+        else:
+            st.info("Không có lệnh nào (đã đóng hoặc đang mở) trong dữ liệu đã quét.")
+
+    st.divider()
+
+    # ==========================================================================
+    # MỤC 7 — QUÉT TOÀN BỘ WATCHLIST TÌM DANH SÁCH MÃ ĐÁP ỨNG ĐỦ ĐIỀU KIỆN
+    # ==========================================================================
+    st.markdown("### 🔍 Quét toàn bộ watchlist theo đúng bộ tham số đang cấu hình ở trên")
+    st.caption(
+        "Dùng CHÍNH bộ tham số + bộ lọc bạn đang cấu hình ở phần trên, áp dụng cho TOÀN "
+        "BỘ watchlist hiện tại — kiểm tra ĐÚNG NẾN CUỐI CÙNG (phiên gần nhất) của mỗi mã. "
+        "GIỮ NGUYÊN 100% nguyên tắc lọc, không nới lỏng khi quét hàng loạt. Danh sách này "
+        "chỉ phản ánh ĐÚNG bộ tham số đang cấu hình ở trên tại thời điểm quét — đổi tham "
+        "số cần bấm quét lại. Kết quả KHÔNG lưu vào Supabase."
+    )
+
+    if st.button("🔍 Quét toàn bộ watchlist", key="lab_scan_btn"):
+        ohlcv_map = storage.get_latest_many("ohlcv_history", danh_sach_watchlist)
+        du_lieu_theo_ma = {}
+        for ma, record in ohlcv_map.items():
+            records = record["data"].get("records", [])
+            if not records:
+                continue
+            df_ma_scan = pd.DataFrame(records)
+            df_ma_scan["date"] = pd.to_datetime(df_ma_scan["date"])
+            du_lieu_theo_ma[ma] = df_ma_scan.sort_values("date").reset_index(drop=True)
+
+        ket_qua_quet = quet_watchlist_tim_tin_hieu(du_lieu_theo_ma, tham_so, bo_loc)
+        st.session_state["lab_scan_result"] = ket_qua_quet
+        st.rerun()
+
+    if st.session_state.get("lab_scan_result"):
+        kq_quet = st.session_state["lab_scan_result"]
+        tab_buy, tab_sell = st.tabs([
+            f"🟢 Đang thỏa BUY ({len(kq_quet['buy'])})", f"🔴 Đang thỏa SELL ({len(kq_quet['sell'])})",
+        ])
+        with tab_buy:
+            if kq_quet["buy"]:
+                st.dataframe(pd.DataFrame(kq_quet["buy"]), width='stretch', hide_index=True)
+            else:
+                st.info("Không có mã nào đang thỏa tín hiệu BUY theo bộ tham số này.")
+        with tab_sell:
+            if kq_quet["sell"]:
+                st.dataframe(pd.DataFrame(kq_quet["sell"]), width='stretch', hide_index=True)
+            else:
+                st.info("Không có mã nào đang thỏa tín hiệu SELL theo bộ tham số này.")
+
+
 def render_hdtl_vn30_section(storage: Storage) -> None:
     """Công cụ tính toán HĐTL VN30 (bổ sung 04/08/2026) — entry range,
     phân bổ vốn (ràng buộc kép: rủi ro 2% NAV + trần ký quỹ), và R:R.
@@ -4318,6 +4631,7 @@ DASHBOARD_GROUPS = [
         "🔍 Rà soát danh sách vào lệnh ngắn hạn",
         "⏱️ Tiêu chí ngắn hạn",
         "💼 Danh mục mô phỏng",
+        "🧪 Phòng thí nghiệm chỉ báo",
     ]),
 ]
 
@@ -4435,6 +4749,7 @@ def main() -> None:
         ("🔍 Rà soát danh sách vào lệnh ngắn hạn", render_entry_screener_section, (storage,)),
         ("⏱️ Tiêu chí ngắn hạn", render_short_term_signal_section, (storage,)),
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
+        ("🧪 Phòng thí nghiệm chỉ báo", render_indicator_lab_section, (storage,)),
     ]
 
     # --- Tra cứu nhanh render_fn + args theo label, dùng chung cho cả 2 chế độ ---
