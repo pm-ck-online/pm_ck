@@ -317,10 +317,18 @@ def chay_backtest(
     tp_tiers: list[dict],
     von_ban_dau: float = 1_000_000_000,
     ty_trong_von_pct: float = 50.0,
+    chi_giao_dich_mot_chieu: Optional[str] = None,
 ) -> dict:
     """Chạy backtest tuần tự trên TOÀN BỘ `df_ohlcv` theo đúng bộ tham số/
     bộ lọc/trailing TP truyền vào. KHÔNG ghi vào storage — chỉ trả về dict
     kết quả để lớp gọi (dashboard) tự lưu tạm vào `st.session_state`.
+
+    `chi_giao_dich_mot_chieu` (bổ sung 06/08/2026): "LONG" hoặc "SHORT" —
+    nếu truyền, CHỈ mở lệnh theo đúng chiều này (tín hiệu chiều ngược lại
+    bị bỏ qua hoàn toàn, không mở lệnh, không tính cảnh báo tín hiệu
+    ngược). Dùng để tách riêng hiệu suất LONG/SHORT khi dò tham số
+    (grid search) — mặc định `None` giữ nguyên hành vi cũ (giao dịch cả
+    2 chiều theo đúng tín hiệu).
     """
     _validate_df(df_ohlcv)
     _validate_tp_tiers(tp_tiers)
@@ -328,6 +336,8 @@ def chay_backtest(
         raise InvalidIndicatorLabError("von_ban_dau phải > 0.")
     if not (0 < ty_trong_von_pct <= 100):
         raise InvalidIndicatorLabError("ty_trong_von_pct phải trong khoảng (0, 100].")
+    if chi_giao_dich_mot_chieu is not None and chi_giao_dich_mot_chieu not in ("LONG", "SHORT"):
+        raise InvalidIndicatorLabError('chi_giao_dich_mot_chieu phải là "LONG", "SHORT", hoặc None.')
 
     df = df_ohlcv.reset_index(drop=True)
     chi_bao = tinh_toan_chi_bao(df, tham_so, bo_loc)
@@ -381,9 +391,9 @@ def chay_backtest(
 
         if vi_the is None:
             tin_hieu = danh_gia_tin_hieu(df, i, tham_so, bo_loc, chi_bao)
-            if tin_hieu == "BUY":
+            if tin_hieu == "BUY" and chi_giao_dich_mot_chieu != "SHORT":
                 vi_the = _mo_lenh_moi("LONG", i, df, len(tp_tiers))
-            elif tin_hieu == "SELL":
+            elif tin_hieu == "SELL" and chi_giao_dich_mot_chieu != "LONG":
                 vi_the = _mo_lenh_moi("SHORT", i, df, len(tp_tiers))
         else:
             # Đang giữ lệnh mà có tín hiệu NGƯỢC CHIỀU -> chỉ ghi log cảnh
