@@ -17,7 +17,9 @@ from experimental.indicator_lab import (
     candle_body_pct,
     candle_range_pct,
     chay_backtest,
+    chay_backtest_ket_hop_nhieu_bo,
     danh_gia_tin_hieu,
+    danh_gia_tin_hieu_ket_hop,
     kiem_tra_bo_loc_bo_sung,
     kiem_tra_dieu_kien_buy_goc,
     kiem_tra_dieu_kien_sell_goc,
@@ -314,6 +316,64 @@ class TestChayBacktest:
             assert ngay_dong_co_khoa >= ngay_dong_khong_khoa
 
 
+    def test_phi_va_thue_tru_dung_moi_lenh(self):
+        # Chênh lệch final_pnl_pct giữa CÓ và KHÔNG phí/thuế phải luôn
+        # bằng ĐÚNG (phi_moi_gioi_pct*2 + thue_ban_pct), bất kể đóng qua
+        # SL hay qua nhiều tier TP (đã chứng minh tương đương toán học).
+        df = _make_realistic_df()
+        kq_khong_phi = chay_backtest(
+            df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            phi_moi_gioi_pct=0.0, thue_ban_pct=0.0,
+        )
+        kq_co_phi = chay_backtest(
+            df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            phi_moi_gioi_pct=0.15, thue_ban_pct=0.1,
+        )
+        assert len(kq_khong_phi["trades"]) == len(kq_co_phi["trades"])
+        for t1, t2 in zip(kq_khong_phi["trades"], kq_co_phi["trades"]):
+            chenh_lech = round(t1["final_pnl_pct"] - t2["final_pnl_pct"], 3)
+            assert chenh_lech == pytest.approx(0.4, abs=0.01)
+
+    def test_raises_for_phi_am(self):
+        df = _make_realistic_df(n=300)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, phi_moi_gioi_pct=-0.1)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, thue_ban_pct=-0.1)
+
+    def test_raises_for_bien_do_khong_hop_le(self):
+        df = _make_realistic_df(n=300)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, bien_do_dao_dong_pct=0)
+
+    def test_so_co_phieu_uoc_tinh_lam_tron_lo_100(self):
+        df = _make_realistic_df()
+        kq = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        for t in kq["trades"]:
+            assert t["so_co_phieu_uoc_tinh"] % 100 == 0
+
+    def test_canh_bao_bien_do_phat_hien_dung_khi_gan_tran(self):
+        import numpy as np
+        n = 260
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        closes = np.full(n, 100.0)
+        vi_tri = 210
+        closes[vi_tri - 4:vi_tri] = [99, 99.2, 99.1, 99.3]
+        closes[vi_tri] = 106.8  # +6,8% so với hôm trước (99.3) -> gần trần 7%
+        closes[vi_tri + 1:] = 106.8
+        df = pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.005, "low": closes * 0.995,
+            "close": closes, "volume": [1_000_000.0] * n,
+        })
+        tham_so = {
+            "buy_lookback": 4, "sell_lookback": 4, "ema_period": 200, "ma_period": 20,
+            "range_pct_max": 5.0, "body_pct_min": 0.1, "body_pct_max": 20.0,
+        }
+        kq = chay_backtest(df, tham_so, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, bien_do_dao_dong_pct=7.0)
+        if kq["open_position"]:
+            assert kq["open_position"]["canh_bao_bien_do_vao_lenh"] == "gan_tran"
+
+
 class TestTinhLoiNhuanRong:
     def test_khong_co_lenh_nao_loi_nhuan_bang_0(self):
         kq = tinh_loi_nhuan_rong([], 1_000_000_000, 50.0)
@@ -366,3 +426,69 @@ class TestQuetWatchlist:
         kq = quet_watchlist_tim_tin_hieu({}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH)
         assert kq == {"buy": [], "sell": []}
 
+
+
+class TestKetHopNhieuBoThamSo:
+    def _tao_2_bo_tach_biet(self):
+        import numpy as np
+        np.random.seed(11)
+        n = 700
+        dates = pd.bdate_range("2022-01-01", periods=n)
+        closes = 50 + np.cumsum(np.random.normal(0.02, 1.0, n))
+        opens = closes * (1 + np.random.normal(0, 0.005, n))
+        highs = np.maximum(opens, closes) * (1 + np.abs(np.random.normal(0, 0.01, n)))
+        lows = np.minimum(opens, closes) * (1 - np.abs(np.random.normal(0, 0.01, n)))
+        volumes = np.random.randint(500_000, 2_000_000, n).astype(float)
+        df = pd.DataFrame({
+            "date": dates, "open": opens, "high": highs, "low": lows,
+            "close": closes, "volume": volumes,
+        })
+        ts_a = {"buy_lookback": 3, "sell_lookback": 3, "ema_period": 200, "ma_period": 20,
+                "range_pct_max": 3.0, "body_pct_min": 0.5, "body_pct_max": 2.0}
+        ts_b = {"buy_lookback": 8, "sell_lookback": 8, "ema_period": 50, "ma_period": 5,
+                "range_pct_max": 3.0, "body_pct_min": 0.5, "body_pct_max": 2.0}
+        return df, ts_a, ts_b
+
+    def test_danh_gia_tin_hieu_ket_hop_tang_hoac_bang_tung_bo(self):
+        df, ts_a, ts_b = self._tao_2_bo_tach_biet()
+        chi_bao_a = tinh_toan_chi_bao(df, ts_a, BO_LOC_MAC_DINH)
+        chi_bao_b = tinh_toan_chi_bao(df, ts_b, BO_LOC_MAC_DINH)
+
+        so_lan_a = sum(1 for i in range(250, len(df)) if danh_gia_tin_hieu(df, i, ts_a, BO_LOC_MAC_DINH, chi_bao_a) == "BUY")
+        so_lan_b = sum(1 for i in range(250, len(df)) if danh_gia_tin_hieu(df, i, ts_b, BO_LOC_MAC_DINH, chi_bao_b) == "BUY")
+        so_lan_ket_hop = sum(
+            1 for i in range(250, len(df))
+            if danh_gia_tin_hieu_ket_hop(df, i, [ts_a, ts_b], BO_LOC_MAC_DINH, [chi_bao_a, chi_bao_b]) == "BUY"
+        )
+        assert so_lan_ket_hop >= max(so_lan_a, so_lan_b)
+        assert so_lan_ket_hop <= so_lan_a + so_lan_b
+
+    def test_chay_backtest_ket_hop_hoat_dong_dung(self):
+        df, ts_a, ts_b = self._tao_2_bo_tach_biet()
+        kq = chay_backtest_ket_hop_nhieu_bo(df, [ts_a, ts_b], BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        assert "trades" in kq and "open_position" in kq
+        assert kq["so_bo_tham_so_ket_hop"] == 2
+        assert kq["so_lenh_da_dong"] == len(kq["trades"])
+
+    def test_chay_backtest_ket_hop_so_lenh_tang_hon_hoac_bang_tung_bo_rieng(self):
+        df, ts_a, ts_b = self._tao_2_bo_tach_biet()
+        kq_a = chay_backtest(df, ts_a, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        kq_b = chay_backtest(df, ts_b, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        kq_ket_hop = chay_backtest_ket_hop_nhieu_bo(df, [ts_a, ts_b], BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+
+        tong_a = kq_a["so_lenh_da_dong"] + (1 if kq_a["open_position"] else 0)
+        tong_b = kq_b["so_lenh_da_dong"] + (1 if kq_b["open_position"] else 0)
+        tong_ket_hop = kq_ket_hop["so_lenh_da_dong"] + (1 if kq_ket_hop["open_position"] else 0)
+        assert tong_ket_hop >= max(tong_a, tong_b)
+
+    def test_raises_for_danh_sach_rong(self):
+        df, ts_a, _ = self._tao_2_bo_tach_biet()
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest_ket_hop_nhieu_bo(df, [], BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+
+    def test_chi_giao_dich_long_khong_co_short_khi_ket_hop(self):
+        df, ts_a, ts_b = self._tao_2_bo_tach_biet()
+        kq = chay_backtest_ket_hop_nhieu_bo(df, [ts_a, ts_b], BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        assert all(t["side"] == "LONG" for t in kq["trades"])
+        if kq["open_position"]:
+            assert kq["open_position"]["side"] == "LONG"
