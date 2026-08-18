@@ -1008,13 +1008,28 @@ def quet_watchlist_tim_tin_hieu(
             "ngay_tin_hieu": str(df_reset["date"].iloc[i]),
             "gia_dong_cua": gia_dong_cua,
             "body_pct": candle_body_pct(df_reset, i),
-            "gia_de_nghi_vao_lenh": round(gia_dong_cua, 2),
-            "gia_cutloss": round(body_mid, 2),
             "volume": float(df_reset["volume"].iloc[i]),
             "volume_ma20": round(float(volume_ma20_i)) if not pd.isna(volume_ma20_i) else None,
         }
-        for muc_pct in muc_chot_loi_pct:
-            hang[f"gia_chot_loi_{muc_pct:g}pct"] = round(gia_dong_cua * (1 + muc_pct / 100), 2)
+
+        # SỬA LỖI (06/08/2026): "Giá đề nghị vào lệnh"/"Cutloss"/"Chốt lời"
+        # CHỈ áp dụng cho BUY (mở lệnh LONG thật) — với SELL, hệ thống
+        # KHÔNG mở vị thế mới (VN không bán khống), SELL CHỈ LÀ CẢNH BÁO
+        # kỹ thuật gợi ý cân nhắc thoát lệnh nếu đang giữ LONG. Trước đây
+        # code SAI khi tính các giá này bằng công thức LONG (giá tăng =
+        # lãi) ngay cả cho hàng SELL — vô nghĩa vì SELL không phải lệnh
+        # mua mới, và "chốt lời" kiểu tăng giá hoàn toàn sai hướng cho
+        # 1 tín hiệu mang bản chất GIẢM giá.
+        if tin_hieu == "BUY":
+            hang["gia_de_nghi_vao_lenh"] = round(gia_dong_cua, 2)
+            hang["gia_cutloss"] = round(body_mid, 2)
+            for muc_pct in muc_chot_loi_pct:
+                hang[f"gia_chot_loi_{muc_pct:g}pct"] = round(gia_dong_cua * (1 + muc_pct / 100), 2)
+        else:
+            hang["ghi_chu"] = (
+                "Cảnh báo kỹ thuật — gợi ý cân nhắc THOÁT LỆNH nếu đang giữ LONG mã này. "
+                "KHÔNG phải đề xuất vào lệnh mới (hệ thống không mở SHORT)."
+            )
 
         if bo_loc.get("rsi_enabled"):
             rsi_i = chi_bao["rsi"].iloc[i]
