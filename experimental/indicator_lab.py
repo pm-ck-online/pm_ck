@@ -711,6 +711,192 @@ def chay_backtest_ket_hop_nhieu_bo(
 
 
 # ==============================================================================
+# 4C. DANH MỤC NHIỀU MÃ — MỖI MÃ 1 BỘ TIÊU CHÍ RIÊNG (bổ sung 06/08/2026)
+#     — cho phép GIỮ ĐỒNG THỜI nhiều vị thế (mỗi mã 1 vị thế riêng, dùng
+#     CHUNG 1 quỹ vốn) — KHÁC với chay_backtest_ket_hop_nhieu_bo() (đó
+#     là NHIỀU BỘ tiêu chí cho CÙNG 1 mã, chỉ giữ 1 vị thế tại 1 thời điểm).
+# ==============================================================================
+
+def chay_backtest_nhieu_ma(
+    danh_sach_ma: list[dict],
+    bo_loc: dict,
+    tp_tiers: list[dict],
+    von_ban_dau: float = 1_000_000_000,
+    max_tong_von_su_dung_pct: float = 80.0,
+    so_phien_khoa_toi_thieu: int = SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH,
+    phi_moi_gioi_pct: float = PHI_MOI_GIOI_PCT_MAC_DINH,
+    thue_ban_pct: float = THUE_BAN_PCT_MAC_DINH,
+    bien_do_dao_dong_pct: float = BIEN_DO_DAO_DONG_PCT_MAC_DINH,
+) -> dict:
+    """Chạy backtest ĐỒNG THỜI cho NHIỀU MÃ — mỗi mã dùng ĐÚNG bộ tiêu
+    chí (tham_so) RIÊNG của nó, và có thể GIỮ ĐỒNG THỜI vị thế ở nhiều
+    mã cùng lúc (khác hẳn `chay_backtest()`/`chay_backtest_ket_hop_nhieu_bo()`
+    — cả 2 hàm đó chỉ giữ ĐÚNG 1 vị thế tại 1 thời điểm).
+
+    `danh_sach_ma`: list các dict {"ma": str, "df": pd.DataFrame, "tham_so": dict}
+    — mỗi phần tử là 1 mã kèm dữ liệu OHLCV VÀ bộ tham số RIÊNG của mã đó
+    (VD tham số đã tìm được tốt nhất cho từng mã qua grid search riêng biệt).
+
+    PHÂN BỔ VỐN — "chia đều, không bao giờ vượt trần" (đã thống nhất
+    06/08/2026): mỗi mã dùng CỐ ĐỊNH `max_tong_von_su_dung_pct / số mã`
+    % vốn cho MỌI lệnh của nó — đảm bảo TOÁN HỌC rằng dù bao nhiêu mã
+    cùng mở vị thế lúc nào, tổng % vốn sử dụng KHÔNG BAO GIỜ vượt
+    `max_tong_von_su_dung_pct` (vì có đúng N mã, mỗi mã tối đa max/N%).
+
+    `equity` (vốn chung) được cập nhật THEO ĐÚNG THỨ TỰ THỜI GIAN THẬT
+    (không phải theo thứ tự trong danh sách mã) — vì các vị thế có thể
+    CHỒNG LẤN thời gian giữa các mã khác nhau, không thể dùng lại cách
+    "compound tuần tự theo trades list" như hàm đơn-mã.
+    """
+    if not danh_sach_ma:
+        raise InvalidIndicatorLabError("danh_sach_ma không được rỗng.")
+    _validate_tp_tiers(tp_tiers)
+    if von_ban_dau <= 0:
+        raise InvalidIndicatorLabError("von_ban_dau phải > 0.")
+    if not (0 < max_tong_von_su_dung_pct <= 100):
+        raise InvalidIndicatorLabError("max_tong_von_su_dung_pct phải trong khoảng (0, 100].")
+    if so_phien_khoa_toi_thieu < 0:
+        raise InvalidIndicatorLabError("so_phien_khoa_toi_thieu phải >= 0.")
+    if phi_moi_gioi_pct < 0 or thue_ban_pct < 0:
+        raise InvalidIndicatorLabError("phi_moi_gioi_pct và thue_ban_pct phải >= 0.")
+    if bien_do_dao_dong_pct <= 0:
+        raise InvalidIndicatorLabError("bien_do_dao_dong_pct phải > 0.")
+
+    chi_phi_giao_dich_pct = phi_moi_gioi_pct * 2 + thue_ban_pct
+    so_luong_ma = len(danh_sach_ma)
+    ty_trong_von_pct_moi_ma = max_tong_von_su_dung_pct / so_luong_ma
+
+    # --- Chuẩn bị: tính chỉ báo 1 lần/mã, dựng map ngày -> vị trí dòng ---
+    ma_states: dict[str, dict] = {}
+    for muc in danh_sach_ma:
+        ma = muc["ma"]
+        df = muc["df"].reset_index(drop=True)
+        _validate_df(df)
+        tham_so = muc["tham_so"]
+        chi_bao = tinh_toan_chi_bao(df, tham_so, bo_loc)
+        ma_states[ma] = {
+            "df": df,
+            "tham_so": tham_so,
+            "chi_bao": chi_bao,
+            "date_to_idx": {d: i for i, d in enumerate(df["date"])},
+            "start_idx": _so_phien_khoi_dong_toi_thieu(tham_so, bo_loc),
+            "vi_the": None,
+            "trades": [],
+        }
+
+    tat_ca_ngay = sorted(set().union(*[set(s["df"]["date"]) for s in ma_states.values()]))
+
+    equity = von_ban_dau
+    canh_bao_tin_hieu_nguoc: list[dict] = []
+
+    for ngay in tat_ca_ngay:
+        for ma, s in ma_states.items():
+            idx = s["date_to_idx"].get(ngay)
+            if idx is None or idx < s["start_idx"]:
+                continue  # mã này không có dữ liệu ngày này, hoặc chưa đủ nền
+
+            df, chi_bao, tham_so = s["df"], s["chi_bao"], s["tham_so"]
+            close_i = float(df["close"].iloc[idx])
+            vi_the = s["vi_the"]
+
+            if vi_the is not None:
+                da_du_khoa_T = (idx - vi_the["entry_idx"]) >= so_phien_khoa_toi_thieu
+                if da_du_khoa_T:
+                    if close_i < vi_the["body_mid"]:
+                        pnl_pct = _tinh_pnl_hien_tai_pct(vi_the, close_i)
+                        trade_info = _hoan_tat_dong_lenh(
+                            vi_the, idx, df, pnl_pct, chi_phi_giao_dich_pct, bien_do_dao_dong_pct,
+                        )
+                        equity += vi_the["equity_luc_mo_lenh"] * (ty_trong_von_pct_moi_ma / 100) * (trade_info["final_pnl_pct"] / 100)
+                        trade_info["ma"] = ma
+                        s["trades"].append(trade_info)
+                        s["vi_the"] = None
+                        vi_the = None
+                    else:
+                        pnl_hien_tai = _tinh_pnl_hien_tai_pct(vi_the, close_i)
+                        for idx_tier, tier in enumerate(tp_tiers):
+                            if vi_the["tiers_kich_hoat"][idx_tier]:
+                                continue
+                            if pnl_hien_tai >= tier["muc_lai_pct"]:
+                                vi_the["tiers_kich_hoat"][idx_tier] = True
+                                pct_chot = tier["chot_pct_khoi_luong"]
+                                vi_the["pnl_tich_luy_co_trong_so"] += pct_chot * pnl_hien_tai
+                                vi_the["remaining_pct"] -= pct_chot
+                                if vi_the["remaining_pct"] <= 1e-9:
+                                    final_pnl_pct_truoc_phi = vi_the["pnl_tich_luy_co_trong_so"] / 100
+                                    final_pnl_pct = round(final_pnl_pct_truoc_phi - chi_phi_giao_dich_pct, 2)
+                                    exit_price = vi_the["entry_price"] * (1 + final_pnl_pct / 100)
+                                    gia_tham_chieu_hom_truoc = float(df["close"].iloc[idx - 1]) if idx > 0 else None
+                                    equity += vi_the["equity_luc_mo_lenh"] * (ty_trong_von_pct_moi_ma / 100) * (final_pnl_pct / 100)
+                                    s["trades"].append({
+                                        "ma": ma, "side": "LONG", "entry_date": vi_the["entry_date"],
+                                        "entry_price": round(vi_the["entry_price"], 2),
+                                        "exit_date": str(df["date"].iloc[idx]), "exit_price": round(exit_price, 2),
+                                        "final_pnl_pct": final_pnl_pct,
+                                        "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+                                        "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+                                        "canh_bao_bien_do_ra_lenh": _kiem_tra_gan_bien_do(close_i, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
+                                    })
+                                    s["vi_the"] = None
+                                    vi_the = None
+                                    break
+
+            if s["vi_the"] is None:
+                tin_hieu = danh_gia_tin_hieu(df, idx, tham_so, bo_loc, chi_bao)
+                if tin_hieu == "BUY":
+                    vi_the_moi = _mo_lenh_moi(
+                        "LONG", idx, df, len(tp_tiers), von_ban_dau, ty_trong_von_pct_moi_ma, bien_do_dao_dong_pct,
+                    )
+                    vi_the_moi["equity_luc_mo_lenh"] = equity  # LƯU equity TẠI THỜI ĐIỂM MỞ LỆNH (để compound đúng lúc đóng)
+                    s["vi_the"] = vi_the_moi
+            else:
+                tin_hieu = danh_gia_tin_hieu(df, idx, tham_so, bo_loc, chi_bao)
+                if tin_hieu == "SELL":
+                    canh_bao_tin_hieu_nguoc.append({
+                        "ma": ma, "ngay": str(ngay), "tin_hieu_nguoc": tin_hieu,
+                    })
+
+    open_positions_theo_ma: dict[str, Optional[dict]] = {}
+    for ma, s in ma_states.items():
+        vi_the = s["vi_the"]
+        if vi_the is None:
+            open_positions_theo_ma[ma] = None
+            continue
+        df = s["df"]
+        close_cuoi = float(df["close"].iloc[-1])
+        open_positions_theo_ma[ma] = {
+            "side": vi_the["side"], "entry_date": vi_the["entry_date"],
+            "entry_price": round(vi_the["entry_price"], 2),
+            "as_of_date": str(df["date"].iloc[-1]), "current_price": round(close_cuoi, 2),
+            "unrealized_pnl_pct": round(_tinh_pnl_hien_tai_pct(vi_the, close_cuoi), 2),
+            "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+            "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+        }
+
+    trades_theo_ma = {ma: s["trades"] for ma, s in ma_states.items()}
+    tat_ca_trades = [t for trades in trades_theo_ma.values() for t in trades]
+    tong_so_lenh = len(tat_ca_trades)
+    tong_so_lan_thang = sum(1 for t in tat_ca_trades if t["final_pnl_pct"] > 0)
+
+    return {
+        "trades_theo_ma": trades_theo_ma,
+        "open_positions_theo_ma": open_positions_theo_ma,
+        "canh_bao_tin_hieu_nguoc": canh_bao_tin_hieu_nguoc,
+        "tong_so_lenh_da_dong": tong_so_lenh,
+        "tong_so_lan_thang": tong_so_lan_thang,
+        "tong_so_lan_thua": tong_so_lenh - tong_so_lan_thang,
+        "win_rate_pct": round(tong_so_lan_thang / tong_so_lenh * 100, 1) if tong_so_lenh > 0 else None,
+        "von_ban_dau": von_ban_dau,
+        "von_cuoi_cung": round(equity),
+        "loi_nhuan_rong": round(equity - von_ban_dau),
+        "loi_nhuan_rong_pct": round((equity - von_ban_dau) / von_ban_dau * 100, 2) if von_ban_dau > 0 else None,
+        "ty_trong_von_pct_moi_ma": round(ty_trong_von_pct_moi_ma, 2),
+        "so_luong_ma_ket_hop": so_luong_ma,
+        "chi_phi_giao_dich_pct_moi_lenh": round(chi_phi_giao_dich_pct, 3),
+    }
+
+
+# ==============================================================================
 # 5. CÔNG THỨC LỢI NHUẬN RÒNG (compound theo đúng thứ tự thời gian)
 # ==============================================================================
 
