@@ -221,7 +221,19 @@ def kiem_tra_dieu_kien_buy_goc(df: pd.DataFrame, i: int, tham_so: dict, chi_bao:
     body_pct = candle_body_pct(df, i)
     if body_pct is None:
         return False
-    return tham_so["body_pct_min"] <= body_pct <= tham_so["body_pct_max"]
+    if not (tham_so["body_pct_min"] <= body_pct <= tham_so["body_pct_max"]):
+        return False
+
+    # SỬA LỖI NGHIÊM TRỌNG (06/08/2026): Stop Loss = body_mid = (High+Low)/2
+    # CỦA CHÍNH NẾN TÍN HIỆU — nếu giá đóng cửa (giá vào lệnh) nằm ở NỬA
+    # DƯỚI của chính nến đó (đóng cửa yếu), body_mid sẽ CAO HƠN giá vào
+    # lệnh -> Stop Loss vô lý cho LONG (SL phải LUÔN thấp hơn giá vào).
+    # Bắt buộc giá đóng cửa phải nằm ở NỬA TRÊN của chính nến tín hiệu.
+    high_i, low_i = df["high"].iloc[i], df["low"].iloc[i]
+    if pd.isna(high_i) or pd.isna(low_i):
+        return False
+    body_mid_i = (high_i + low_i) / 2
+    return bool(close_i > body_mid_i)
 
 
 def kiem_tra_dieu_kien_sell_goc(df: pd.DataFrame, i: int, tham_so: dict, chi_bao: dict) -> Optional[bool]:
@@ -251,7 +263,18 @@ def kiem_tra_dieu_kien_sell_goc(df: pd.DataFrame, i: int, tham_so: dict, chi_bao
     body_pct = candle_body_pct(df, i)
     if body_pct is None:
         return False
-    return tham_so["body_pct_min"] <= body_pct <= tham_so["body_pct_max"]
+    if not (tham_so["body_pct_min"] <= body_pct <= tham_so["body_pct_max"]):
+        return False
+
+    # Đối xứng với BUY ở trên: với SELL, body_mid (Cutloss nếu SELL từng
+    # dùng để mở SHORT) phải CAO HƠN giá đóng cửa — giữ điều kiện này để
+    # tín hiệu SELL nhất quán về logic (dùng làm cảnh báo kỹ thuật khi
+    # đang giữ LONG), dù hiện KHÔNG dùng để mở SHORT.
+    high_i, low_i = df["high"].iloc[i], df["low"].iloc[i]
+    if pd.isna(high_i) or pd.isna(low_i):
+        return False
+    body_mid_i = (high_i + low_i) / 2
+    return bool(close_i < body_mid_i)
 
 
 def kiem_tra_bo_loc_bo_sung(df: pd.DataFrame, i: int, chi_bao: dict, bo_loc: dict, huong: str) -> bool:
