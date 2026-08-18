@@ -427,6 +427,64 @@ class TestQuetWatchlist:
         kq = quet_watchlist_tim_tin_hieu({}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH)
         assert kq == {"buy": [], "sell": []}
 
+    def test_loai_ma_khoi_luong_thap(self):
+        df = _make_realistic_df()
+        kq_full = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        entry_date_dau_tien = kq_full["trades"][0]["entry_date"]
+        df_cat = df[df["date"].astype(str) <= entry_date_dau_tien].reset_index(drop=True)
+        df_khoi_luong_thap = df_cat.copy()
+        df_khoi_luong_thap["volume"] = 50_000.0  # dưới ngưỡng 300.000 mặc định
+
+        kq_mac_dinh = quet_watchlist_tim_tin_hieu({"MA_TEST": df_cat}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH)
+        kq_khoi_luong_thap = quet_watchlist_tim_tin_hieu({"MA_TEST": df_khoi_luong_thap}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH)
+
+        assert len(kq_mac_dinh["buy"]) + len(kq_mac_dinh["sell"]) == 1
+        assert len(kq_khoi_luong_thap["buy"]) + len(kq_khoi_luong_thap["sell"]) == 0
+
+    def test_tat_bo_loc_volume_bang_none(self):
+        df = _make_realistic_df()
+        kq_full = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        entry_date_dau_tien = kq_full["trades"][0]["entry_date"]
+        df_cat = df[df["date"].astype(str) <= entry_date_dau_tien].reset_index(drop=True)
+        df_cat["volume"] = 50_000.0
+
+        kq = quet_watchlist_tim_tin_hieu(
+            {"MA_TEST": df_cat}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH,
+            nguong_volume_ma20_toi_thieu=None,
+        )
+        assert len(kq["buy"]) + len(kq["sell"]) == 1
+
+    def test_co_du_cac_truong_gia_moi(self):
+        df = _make_realistic_df()
+        kq_full = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        entry_date_dau_tien = kq_full["trades"][0]["entry_date"]
+        df_cat = df[df["date"].astype(str) <= entry_date_dau_tien].reset_index(drop=True)
+
+        kq = quet_watchlist_tim_tin_hieu({"MA_TEST": df_cat}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH)
+        hang = kq["buy"][0] if kq["buy"] else kq["sell"][0]
+        for truong in ("gia_de_nghi_vao_lenh", "gia_cutloss", "volume", "volume_ma20",
+                       "gia_chot_loi_5pct", "gia_chot_loi_10pct", "gia_chot_loi_15pct"):
+            assert truong in hang
+
+        # Giá chốt lời phải tăng dần đúng theo % (5% < 10% < 15%).
+        assert hang["gia_chot_loi_5pct"] < hang["gia_chot_loi_10pct"] < hang["gia_chot_loi_15pct"]
+        # Giá chốt lời 5% phải khớp công thức entry*(1+0.05).
+        assert hang["gia_chot_loi_5pct"] == pytest.approx(hang["gia_de_nghi_vao_lenh"] * 1.05, abs=0.01)
+
+    def test_tuy_chinh_muc_chot_loi_pct(self):
+        df = _make_realistic_df()
+        kq_full = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        entry_date_dau_tien = kq_full["trades"][0]["entry_date"]
+        df_cat = df[df["date"].astype(str) <= entry_date_dau_tien].reset_index(drop=True)
+
+        kq = quet_watchlist_tim_tin_hieu(
+            {"MA_TEST": df_cat}, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, muc_chot_loi_pct=(3.0, 7.0),
+        )
+        hang = kq["buy"][0] if kq["buy"] else kq["sell"][0]
+        assert "gia_chot_loi_3pct" in hang
+        assert "gia_chot_loi_7pct" in hang
+        assert "gia_chot_loi_5pct" not in hang
+
 
 
 class TestKetHopNhieuBoThamSo:
