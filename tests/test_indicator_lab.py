@@ -125,6 +125,47 @@ class TestKiemTraDieuKienGoc:
         chi_bao = tinh_toan_chi_bao(df, tham_so, BO_LOC_MAC_DINH)
         assert kiem_tra_dieu_kien_sell_goc(df, 5, tham_so, chi_bao) is True
 
+    def test_buy_false_khi_dong_cua_yeu_gay_cutloss_cao_hon_gia_vao(self):
+        # Tái hiện ĐÚNG lỗi thật đã phát hiện: nến "breakout" so với quá
+        # khứ NHƯNG đóng cửa ở NỬA DƯỚI của chính nến đó (High=108, Low=101,
+        # Close=103 -> body_mid=104.5 > close=103) -> PHẢI bị loại, vì
+        # Cutloss (body_mid) sẽ cao hơn giá vào lệnh — vô lý cho LONG.
+        highs = [100, 101, 100.5, 101, 100.8, 108]
+        lows = [98, 99, 98.5, 99.2, 98.8, 101]
+        closes = [99, 100, 99.8, 100.2, 99.9, 103]  # đóng cửa YẾU (nửa dưới nến, dù vẫn phá đỉnh)
+        opens = [98.5, 99.5, 100, 99.9, 100, 101.5]
+        n = len(highs)
+        df = pd.DataFrame({
+            "date": pd.bdate_range("2024-01-01", periods=n),
+            "open": opens, "high": highs, "low": lows, "close": closes,
+            "volume": [1_000_000.0] * n,
+        })
+        tham_so = {
+            "buy_lookback": 4, "sell_lookback": 4, "ema_period": 3, "ma_period": 2,
+            "range_pct_max": 10.0, "body_pct_min": 0.1, "body_pct_max": 20.0,
+        }
+        chi_bao = tinh_toan_chi_bao(df, tham_so, BO_LOC_MAC_DINH)
+
+        # Xác nhận trước: đúng là close < body_mid trong kịch bản này
+        # (tái hiện chính xác lỗi thật) — nếu không còn đúng nữa, test tự sai.
+        body_mid = (highs[5] + lows[5]) / 2
+        assert closes[5] < body_mid
+
+        assert kiem_tra_dieu_kien_buy_goc(df, 5, tham_so, chi_bao) is False
+
+    def test_cutloss_luon_thap_hon_gia_vao_lenh_khi_dat_buy(self):
+        # Kiểm tra TỔNG QUÁT trên dữ liệu ngẫu nhiên thật: BẤT KỲ khi nào
+        # kiem_tra_dieu_kien_buy_goc() trả về True, Cutloss (body_mid) PHẢI
+        # luôn THẤP HƠN giá đóng cửa (giá vào lệnh) — không có ngoại lệ.
+        df = _make_realistic_df(n=1000)
+        tham_so = THAM_SO_MAC_DINH
+        chi_bao = tinh_toan_chi_bao(df, tham_so, BO_LOC_MAC_DINH)
+        for i in range(300, len(df) - 1):
+            if kiem_tra_dieu_kien_buy_goc(df, i, tham_so, chi_bao) is True:
+                close_i = float(df["close"].iloc[i])
+                body_mid = float((df["high"].iloc[i] + df["low"].iloc[i]) / 2)
+                assert close_i > body_mid, f"Vi phạm tại phiên {i}: close={close_i}, body_mid={body_mid}"
+
 
 class TestBoLocBoSung:
     def _chi_bao_gia_lap(self, gia_tri):
@@ -561,8 +602,11 @@ class TestChayBacktestNhieuMa:
         closes[vi_tri_breakout - 4:vi_tri_breakout] = closes[vi_tri_breakout - 5] + np.array([0.1, 0.3, 0.2, 0.4])
         closes[vi_tri_breakout] = closes[vi_tri_breakout - 1] + 5.0
         closes[vi_tri_breakout + 1:] = closes[vi_tri_breakout] + 1.0
+        # high/low KHÔNG đối xứng quanh close — đảm bảo close nằm ở NỬA
+        # TRÊN của mỗi nến (high sát close, low xa hơn hẳn) để không vô
+        # tình vi phạm điều kiện "Cutloss phải thấp hơn giá vào lệnh".
         return pd.DataFrame({
-            "date": dates, "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "date": dates, "open": closes, "high": closes * 1.003, "low": closes * 0.97,
             "close": closes, "volume": [1_000_000.0] * n,
         })
 
