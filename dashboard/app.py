@@ -1974,7 +1974,7 @@ def render_indicator_lab_section(storage: Storage) -> None:
             "ma": "Mã", "ngay_tin_hieu": "Ngày tín hiệu", "gia_dong_cua": "Giá đóng cửa",
             "body_pct": "Thân nến (%)", "gia_de_nghi_vao_lenh": "Giá đề nghị vào lệnh",
             "gia_cutloss": "Giá cutloss", "volume": "Volume", "volume_ma20": "Volume MA20",
-            "rsi": "RSI(14)", "atr": "ATR(14)",
+            "rsi": "RSI(14)", "atr": "ATR(14)", "ghi_chu": "Ghi chú",
         }
         for col in df_hien_thi.columns:
             if col.startswith("gia_chot_loi_"):
@@ -2006,6 +2006,12 @@ def render_indicator_lab_section(storage: Storage) -> None:
         with tab_sell:
             if kq_quet["sell"]:
                 st.dataframe(_dinh_dang_bang_quet(kq_quet["sell"]), width='stretch', hide_index=True)
+                st.caption(
+                    "⚠️ Đây là CẢNH BÁO KỸ THUẬT — gợi ý cân nhắc THOÁT LỆNH nếu bạn đang giữ LONG "
+                    "các mã này. KHÔNG phải đề xuất vào lệnh mới/bán khống (hệ thống không mở SHORT, "
+                    "TTCK VN không hỗ trợ bán khống cổ phiếu) — vì vậy KHÔNG hiển thị giá vào lệnh/"
+                    "cutloss/chốt lời cho các mã này."
+                )
             else:
                 st.info("Không có mã nào đang thỏa tín hiệu SELL theo bộ tham số này.")
 
