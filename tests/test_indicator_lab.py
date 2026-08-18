@@ -18,6 +18,7 @@ from experimental.indicator_lab import (
     candle_range_pct,
     chay_backtest,
     chay_backtest_ket_hop_nhieu_bo,
+    chay_backtest_nhieu_ma,
     danh_gia_tin_hieu,
     danh_gia_tin_hieu_ket_hop,
     kiem_tra_bo_loc_bo_sung,
@@ -492,3 +493,93 @@ class TestKetHopNhieuBoThamSo:
         assert all(t["side"] == "LONG" for t in kq["trades"])
         if kq["open_position"]:
             assert kq["open_position"]["side"] == "LONG"
+
+
+class TestChayBacktestNhieuMa:
+    def _tao_df_breakout(self, n, vi_tri_breakout, seed=1):
+        np.random.seed(seed)
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        closes = np.full(n, 100.0) + np.cumsum(np.random.normal(0, 0.05, n))
+        closes[vi_tri_breakout - 4:vi_tri_breakout] = closes[vi_tri_breakout - 5] + np.array([0.1, 0.3, 0.2, 0.4])
+        closes[vi_tri_breakout] = closes[vi_tri_breakout - 1] + 5.0
+        closes[vi_tri_breakout + 1:] = closes[vi_tri_breakout] + 1.0
+        return pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.01, "low": closes * 0.99,
+            "close": closes, "volume": [1_000_000.0] * n,
+        })
+
+    def _tham_so_de_khop(self):
+        return {
+            "buy_lookback": 4, "sell_lookback": 4, "ema_period": 200, "ma_period": 20,
+            "range_pct_max": 5.0, "body_pct_min": 0.1, "body_pct_max": 20.0,
+        }
+
+    def test_chia_deu_von_dung_theo_so_ma(self):
+        df_a = self._tao_df_breakout(260, 210, seed=1)
+        df_b = self._tao_df_breakout(260, 210, seed=2)
+        tham_so = self._tham_so_de_khop()
+        danh_sach = [
+            {"ma": "A", "df": df_a, "tham_so": tham_so},
+            {"ma": "B", "df": df_b, "tham_so": tham_so},
+        ]
+        kq = chay_backtest_nhieu_ma(danh_sach, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+                                     von_ban_dau=1_000_000_000, max_tong_von_su_dung_pct=80.0)
+        assert kq["ty_trong_von_pct_moi_ma"] == 40.0
+        assert kq["so_luong_ma_ket_hop"] == 2
+
+    def test_giu_dong_thoi_2_vi_the_chong_lan(self):
+        df_a = self._tao_df_breakout(260, 210, seed=1)
+        df_b = self._tao_df_breakout(260, 210, seed=1)  # giống hệt A -> breakout CÙNG ngày
+        tham_so = self._tham_so_de_khop()
+        danh_sach = [
+            {"ma": "A", "df": df_a, "tham_so": tham_so},
+            {"ma": "B", "df": df_b, "tham_so": tham_so},
+        ]
+        kq = chay_backtest_nhieu_ma(danh_sach, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+                                     so_phien_khoa_toi_thieu=0)
+        assert kq["open_positions_theo_ma"]["A"] is not None
+        assert kq["open_positions_theo_ma"]["B"] is not None
+        assert kq["open_positions_theo_ma"]["A"]["entry_date"] == kq["open_positions_theo_ma"]["B"]["entry_date"]
+
+    def test_tong_khong_bao_gio_vuot_tran(self):
+        # Với NHIỀU mã (5 mã), tổng % vốn tối đa dùng phải luôn <= max_tong_von_su_dung_pct
+        # dù giả sử TẤT CẢ đều mở đồng thời.
+        so_ma = 5
+        danh_sach = []
+        for i in range(so_ma):
+            df = self._tao_df_breakout(260, 210, seed=i)
+            danh_sach.append({"ma": f"MA{i}", "df": df, "tham_so": self._tham_so_de_khop()})
+        kq = chay_backtest_nhieu_ma(danh_sach, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+                                     max_tong_von_su_dung_pct=80.0, so_phien_khoa_toi_thieu=0)
+        tong_pct_toi_da_co_the = kq["ty_trong_von_pct_moi_ma"] * kq["so_luong_ma_ket_hop"]
+        assert tong_pct_toi_da_co_the <= 80.0 + 1e-6
+
+    def test_raises_for_danh_sach_rong(self):
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest_nhieu_ma([], BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+
+    def test_raises_for_max_tong_von_khong_hop_le(self):
+        df_a = self._tao_df_breakout(260, 210)
+        danh_sach = [{"ma": "A", "df": df_a, "tham_so": self._tham_so_de_khop()}]
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest_nhieu_ma(danh_sach, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, max_tong_von_su_dung_pct=0)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest_nhieu_ma(danh_sach, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, max_tong_von_su_dung_pct=150)
+
+    def test_moi_ma_dung_dung_tham_so_rieng(self):
+        # Mã A dùng tham số CHẶT (không khớp được), mã B dùng tham số LỎNG
+        # (khớp được) -> chỉ B có lệnh, A không có, xác nhận mỗi mã dùng
+        # ĐÚNG tham số riêng của nó, không bị lẫn.
+        df_a = self._tao_df_breakout(260, 210, seed=3)
+        df_b = self._tao_df_breakout(260, 210, seed=3)
+        tham_so_chat = {**self._tham_so_de_khop(), "body_pct_max": 0.01}  # gần như không thể khớp
+        tham_so_long = self._tham_so_de_khop()
+        danh_sach = [
+            {"ma": "A", "df": df_a, "tham_so": tham_so_chat},
+            {"ma": "B", "df": df_b, "tham_so": tham_so_long},
+        ]
+        kq = chay_backtest_nhieu_ma(danh_sach, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH, so_phien_khoa_toi_thieu=0)
+        tong_lenh_a = len(kq["trades_theo_ma"]["A"]) + (1 if kq["open_positions_theo_ma"]["A"] else 0)
+        tong_lenh_b = len(kq["trades_theo_ma"]["B"]) + (1 if kq["open_positions_theo_ma"]["B"] else 0)
+        assert tong_lenh_a == 0
+        assert tong_lenh_b > 0
