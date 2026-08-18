@@ -1604,7 +1604,8 @@ def render_indicator_lab_section(storage: Storage) -> None:
     chi tiết trong docstring `chay_backtest()`.
     """
     from experimental.indicator_lab import (
-        BO_LOC_MAC_DINH, SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH, THAM_SO_MAC_DINH,
+        BIEN_DO_DAO_DONG_PCT_MAC_DINH, BO_LOC_MAC_DINH, PHI_MOI_GIOI_PCT_MAC_DINH,
+        SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH, THAM_SO_MAC_DINH, THUE_BAN_PCT_MAC_DINH,
         TRAILING_TP_TIERS_MAC_DINH, InvalidIndicatorLabError, chay_backtest,
         quet_watchlist_tim_tin_hieu,
     )
@@ -1738,6 +1739,29 @@ def render_indicator_lab_section(storage: Storage) -> None:
                  "ngưỡng nào.",
         )
 
+    st.markdown("#### 🇻🇳 Đặc thù TTCK Việt Nam khác")
+    col_vn1, col_vn2, col_vn3 = st.columns(3)
+    with col_vn1:
+        phi_moi_gioi_pct = st.number_input(
+            "Phí môi giới (%/chiều)", min_value=0.0, max_value=2.0,
+            value=PHI_MOI_GIOI_PCT_MAC_DINH, step=0.05, key="lab_phi_moi_gioi",
+            help="Áp dụng cả 2 chiều mua VÀ bán, tham khảo mức phổ biến 0,15-0,35%.",
+        )
+    with col_vn2:
+        thue_ban_pct = st.number_input(
+            "Thuế bán (%)", min_value=0.0, max_value=2.0,
+            value=THUE_BAN_PCT_MAC_DINH, step=0.05, key="lab_thue_ban",
+            help="Thuế TNCN chuyển nhượng chứng khoán — chỉ áp CHIỀU BÁN, mặc định 0,1%.",
+        )
+    with col_vn3:
+        bien_do_dao_dong_pct = st.number_input(
+            "Biên độ dao động (%)", min_value=1.0, max_value=20.0,
+            value=BIEN_DO_DAO_DONG_PCT_MAC_DINH, step=0.5, key="lab_bien_do",
+            help="HOSE ~7%, HNX ~10%, UPCOM ~15% — chỉ dùng để CẢNH BÁO khi giá vào/"
+                 "ra lệnh nằm sát trần/sàn (khả năng khớp lệnh thực tế khó khăn), "
+                 "KHÔNG thay đổi kết quả P&L.",
+        )
+
     df_ma = _load_ohlcv_history_df(storage, ma_chon)
     du_lieu_khong_du = df_ma is None or df_ma.empty
 
@@ -1747,6 +1771,8 @@ def render_indicator_lab_section(storage: Storage) -> None:
                 df_ma, tham_so, bo_loc, tp_tiers,
                 von_ban_dau=von_ban_dau, ty_trong_von_pct=ty_trong_von_pct,
                 so_phien_khoa_toi_thieu=int(so_phien_khoa),
+                phi_moi_gioi_pct=phi_moi_gioi_pct, thue_ban_pct=thue_ban_pct,
+                bien_do_dao_dong_pct=bien_do_dao_dong_pct,
             )
             st.session_state["lab_ket_qua"] = ket_qua
             st.session_state["lab_ket_qua_ma"] = ma_chon
@@ -1778,6 +1804,16 @@ def render_indicator_lab_section(storage: Storage) -> None:
             "Lợi nhuận ròng ĐÃ CHỐT",
             f"{kq['loi_nhuan_rong']:,.0f} đ",
             f"{kq['loi_nhuan_rong_pct']:+.2f}%" if kq["loi_nhuan_rong_pct"] is not None else None,
+        )
+        st.caption(
+            f"💰 Đã trừ **{kq['chi_phi_giao_dich_pct_moi_lenh']}%/lệnh** (phí môi giới 2 chiều + thuế bán) vào "
+            f"kết quả trên. "
+            + (
+                f"⚠️ {kq['so_lan_canh_bao_bien_do']} lệnh có giá vào/ra nằm SÁT TRẦN/SÀN — "
+                f"xem chi tiết ở bảng bên dưới, khả năng khớp lệnh thực tế có thể khó khăn hơn."
+                if kq["so_lan_canh_bao_bien_do"] > 0 else
+                "Không có lệnh nào vào/ra sát biên độ trần/sàn."
+            )
         )
 
         if kq["open_position"]:
@@ -1857,11 +1893,19 @@ def render_indicator_lab_section(storage: Storage) -> None:
         st.markdown("#### 📋 Chi tiết từng lệnh")
         rows = []
         for t in kq["trades"]:
+            canh_bao_txt = "; ".join(filter(None, [
+                "Vào sát trần" if t.get("canh_bao_bien_do_vao_lenh") == "gan_tran" else
+                ("Vào sát sàn" if t.get("canh_bao_bien_do_vao_lenh") == "gan_san" else None),
+                "Ra sát trần" if t.get("canh_bao_bien_do_ra_lenh") == "gan_tran" else
+                ("Ra sát sàn" if t.get("canh_bao_bien_do_ra_lenh") == "gan_san" else None),
+            ])) or "—"
             rows.append({
                 "Chiều": "LONG",  # engine chỉ giao dịch LONG theo đúng thực tế TTCK VN
                 "Vào lúc": t["entry_date"], "Giá vào": t["entry_price"],
                 "Đóng lúc": t["exit_date"], "Giá ra": t["exit_price"],
                 "Kết quả": f"{t['final_pnl_pct']:+.2f}%",
+                "Số CP ước tính": f"{t.get('so_co_phieu_uoc_tinh', 0):,}",
+                "Cảnh báo biên độ": canh_bao_txt,
                 "_sort_date": t["entry_date"],
             })
         if kq["open_position"]:
@@ -1871,6 +1915,8 @@ def render_indicator_lab_section(storage: Storage) -> None:
                 "Vào lúc": op["entry_date"], "Giá vào": op["entry_price"],
                 "Đóng lúc": "— (đang mở)", "Giá ra": op["current_price"],
                 "Kết quả": f"ĐANG MỞ (tạm tính {op['unrealized_pnl_pct']:+.2f}%)",
+                "Số CP ước tính": f"{op.get('so_co_phieu_uoc_tinh', 0):,}",
+                "Cảnh báo biên độ": "Vào sát trần" if op.get("canh_bao_bien_do_vao_lenh") == "gan_tran" else ("Vào sát sàn" if op.get("canh_bao_bien_do_vao_lenh") == "gan_san" else "—"),
                 "_sort_date": op["entry_date"],
             })
         if rows:
@@ -1893,6 +1939,15 @@ def render_indicator_lab_section(storage: Storage) -> None:
         "số cần bấm quét lại. Kết quả KHÔNG lưu vào Supabase."
     )
 
+    col_nguong_vol, _ = st.columns(2)
+    with col_nguong_vol:
+        nguong_volume_scan = st.number_input(
+            "Loại trừ mã có Volume MA20 dưới (cổ phiếu/phiên)",
+            min_value=0, value=300_000, step=50_000, key="lab_nguong_volume_scan",
+            help="Luôn tính MA20 cố định (độc lập với chu kỳ Volume MA ở bộ lọc tùy chọn "
+                 "phía trên) — để 0 để tắt bộ lọc này.",
+        )
+
     if st.button("🔍 Quét toàn bộ watchlist", key="lab_scan_btn"):
         ohlcv_map = storage.get_latest_many("ohlcv_history", danh_sach_watchlist)
         du_lieu_theo_ma = {}
@@ -1904,9 +1959,35 @@ def render_indicator_lab_section(storage: Storage) -> None:
             df_ma_scan["date"] = pd.to_datetime(df_ma_scan["date"])
             du_lieu_theo_ma[ma] = df_ma_scan.sort_values("date").reset_index(drop=True)
 
-        ket_qua_quet = quet_watchlist_tim_tin_hieu(du_lieu_theo_ma, tham_so, bo_loc)
+        ket_qua_quet = quet_watchlist_tim_tin_hieu(
+            du_lieu_theo_ma, tham_so, bo_loc,
+            nguong_volume_ma20_toi_thieu=(nguong_volume_scan if nguong_volume_scan > 0 else None),
+        )
         st.session_state["lab_scan_result"] = ket_qua_quet
         st.rerun()
+
+    def _dinh_dang_bang_quet(danh_sach_hang: list[dict]) -> pd.DataFrame:
+        """Định dạng số kiểu Việt Nam (dấu \".\" phân cách hàng nghìn) cho
+        các cột khối lượng, và đặt tên cột tiếng Việt dễ đọc."""
+        df_hien_thi = pd.DataFrame(danh_sach_hang)
+        doi_ten = {
+            "ma": "Mã", "ngay_tin_hieu": "Ngày tín hiệu", "gia_dong_cua": "Giá đóng cửa",
+            "body_pct": "Thân nến (%)", "gia_de_nghi_vao_lenh": "Giá đề nghị vào lệnh",
+            "gia_cutloss": "Giá cutloss", "volume": "Volume", "volume_ma20": "Volume MA20",
+            "rsi": "RSI(14)", "atr": "ATR(14)",
+        }
+        for col in df_hien_thi.columns:
+            if col.startswith("gia_chot_loi_"):
+                muc = col.replace("gia_chot_loi_", "").replace("pct", "")
+                doi_ten[col] = f"Chốt lời +{muc}%"
+        df_hien_thi = df_hien_thi.rename(columns=doi_ten)
+
+        for col in ("Volume", "Volume MA20"):
+            if col in df_hien_thi.columns:
+                df_hien_thi[col] = df_hien_thi[col].apply(
+                    lambda v: f"{v:,.0f}".replace(",", ".") if pd.notna(v) else "—"
+                )
+        return df_hien_thi
 
     if st.session_state.get("lab_scan_result"):
         kq_quet = st.session_state["lab_scan_result"]
@@ -1915,12 +1996,16 @@ def render_indicator_lab_section(storage: Storage) -> None:
         ])
         with tab_buy:
             if kq_quet["buy"]:
-                st.dataframe(pd.DataFrame(kq_quet["buy"]), width='stretch', hide_index=True)
+                st.dataframe(_dinh_dang_bang_quet(kq_quet["buy"]), width='stretch', hide_index=True)
+                st.caption(
+                    "📌 \"Giá đề nghị vào lệnh\"/\"Giá cutloss\"/\"Chốt lời\" chỉ mang tính THAM KHẢO "
+                    "(tính từ nến tín hiệu gần nhất) — không phải lệnh tự động."
+                )
             else:
                 st.info("Không có mã nào đang thỏa tín hiệu BUY theo bộ tham số này.")
         with tab_sell:
             if kq_quet["sell"]:
-                st.dataframe(pd.DataFrame(kq_quet["sell"]), width='stretch', hide_index=True)
+                st.dataframe(_dinh_dang_bang_quet(kq_quet["sell"]), width='stretch', hide_index=True)
             else:
                 st.info("Không có mã nào đang thỏa tín hiệu SELL theo bộ tham số này.")
 
