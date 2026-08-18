@@ -526,6 +526,36 @@ class TestQuetWatchlist:
         assert "gia_chot_loi_7pct" in hang
         assert "gia_chot_loi_5pct" not in hang
 
+    def test_sell_khong_co_gia_vao_lenh_cutloss_chot_loi(self):
+        # SỬA LỖI (06/08/2026): hàng SELL KHÔNG được có "gia_de_nghi_vao_lenh"/
+        # "gia_cutloss"/"gia_chot_loi_*" (các công thức đó chỉ đúng cho
+        # LONG) — SELL chỉ là cảnh báo, phải có "ghi_chu" giải thích rõ.
+        n = 260
+        dates = pd.bdate_range("2024-01-01", periods=n)
+        closes = np.full(n, 100.0)
+        vi_tri = 210
+        closes[vi_tri - 4:vi_tri] = [100.8, 100.5, 100.6, 100.3]
+        closes[vi_tri] = 92.0  # breakdown mạnh (thấp hơn hẳn các đáy trước)
+        closes[vi_tri + 1:] = 91.0
+        df = pd.DataFrame({
+            "date": dates, "open": closes, "high": closes * 1.03, "low": closes * 0.997,
+            "close": closes, "volume": [1_000_000.0] * n,
+        })
+        tham_so = {
+            "buy_lookback": 4, "sell_lookback": 4, "ema_period": 200, "ma_period": 20,
+            "range_pct_max": 5.0, "body_pct_min": 0.1, "body_pct_max": 20.0,
+        }
+        df_cat = df.iloc[: vi_tri + 1].reset_index(drop=True)
+        kq = quet_watchlist_tim_tin_hieu({"MA_TEST": df_cat}, tham_so, BO_LOC_MAC_DINH, nguong_volume_ma20_toi_thieu=None)
+
+        assert len(kq["sell"]) == 1
+        hang = kq["sell"][0]
+        assert "gia_de_nghi_vao_lenh" not in hang
+        assert "gia_cutloss" not in hang
+        assert "gia_chot_loi_5pct" not in hang
+        assert "ghi_chu" in hang
+        assert "THOÁT LỆNH" in hang["ghi_chu"]
+
 
 
 class TestKetHopNhieuBoThamSo:
