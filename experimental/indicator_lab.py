@@ -923,10 +923,21 @@ def tinh_loi_nhuan_rong(trades: list[dict], von_ban_dau: float, ty_trong_von_pct
 # ==============================================================================
 
 def quet_watchlist_tim_tin_hieu(
-    du_lieu_theo_ma: dict[str, pd.DataFrame], tham_so: dict, bo_loc: dict
+    du_lieu_theo_ma: dict[str, pd.DataFrame], tham_so: dict, bo_loc: dict,
+    nguong_volume_ma20_toi_thieu: Optional[float] = 300_000,
+    muc_chot_loi_pct: tuple[float, ...] = (5.0, 10.0, 15.0),
 ) -> dict:
     """Với mỗi mã trong `du_lieu_theo_ma`, chỉ kiểm tra ĐÚNG NẾN CUỐI CÙNG
     hiện có xem có thỏa mãn đầy đủ điều kiện BUY hoặc SELL hay không.
+
+    `nguong_volume_ma20_toi_thieu` (bổ sung 06/08/2026): LOẠI TRỪ mã có
+    khối lượng TB 20 phiên (MA20 — LUÔN tính cố định chu kỳ 20, độc lập
+    với bộ lọc Volume tùy chọn ở `bo_loc` có thể dùng chu kỳ khác) dưới
+    ngưỡng này — tránh gợi ý mã quá thanh khoản thấp. Để `None` để tắt.
+
+    `muc_chot_loi_pct` (bổ sung 06/08/2026): các mốc % để tính GIÁ CHỐT
+    LỜI gợi ý (mặc định 5%/10%/15%, khớp đúng 3 tier Trailing TP mặc
+    định) — chỉ mang tính THAM KHẢO, KHÔNG phải lệnh tự động.
 
     Trả về {"buy": [...], "sell": [...]} — mỗi phần tử là 1 dict thông
     tin gọn cho 1 mã (không chạy backtest đầy đủ, chỉ đánh giá 1 điểm).
@@ -942,7 +953,7 @@ def quet_watchlist_tim_tin_hieu(
         except InvalidIndicatorLabError:
             continue
 
-        so_phien_can = _so_phien_khoi_dong_toi_thieu(tham_so, bo_loc)
+        so_phien_can = max(_so_phien_khoi_dong_toi_thieu(tham_so, bo_loc), 20)
         if len(df) <= so_phien_can:
             continue
 
@@ -953,26 +964,41 @@ def quet_watchlist_tim_tin_hieu(
             continue
 
         i = len(df_reset) - 1
+
+        # --- Bộ lọc loại trừ thanh khoản thấp (LUÔN tính MA20 cố định,
+        #     độc lập với bộ lọc Volume tùy chọn ở bo_loc) ---
+        volume_ma20_series = calculate_volume_ma(df_reset, period=20)
+        volume_ma20_i = volume_ma20_series.iloc[i]
+        if nguong_volume_ma20_toi_thieu is not None:
+            if pd.isna(volume_ma20_i) or volume_ma20_i < nguong_volume_ma20_toi_thieu:
+                continue
+
         tin_hieu = danh_gia_tin_hieu(df_reset, i, tham_so, bo_loc, chi_bao)
         if tin_hieu is None:
             continue
 
+        gia_dong_cua = float(df_reset["close"].iloc[i])
+        body_mid = float((df_reset["high"].iloc[i] + df_reset["low"].iloc[i]) / 2)
+
         hang = {
             "ma": ma,
             "ngay_tin_hieu": str(df_reset["date"].iloc[i]),
-            "gia_dong_cua": float(df_reset["close"].iloc[i]),
+            "gia_dong_cua": gia_dong_cua,
             "body_pct": candle_body_pct(df_reset, i),
+            "gia_de_nghi_vao_lenh": round(gia_dong_cua, 2),
+            "gia_cutloss": round(body_mid, 2),
+            "volume": float(df_reset["volume"].iloc[i]),
+            "volume_ma20": round(float(volume_ma20_i)) if not pd.isna(volume_ma20_i) else None,
         }
+        for muc_pct in muc_chot_loi_pct:
+            hang[f"gia_chot_loi_{muc_pct:g}pct"] = round(gia_dong_cua * (1 + muc_pct / 100), 2)
+
         if bo_loc.get("rsi_enabled"):
             rsi_i = chi_bao["rsi"].iloc[i]
             hang["rsi"] = round(float(rsi_i), 1) if not pd.isna(rsi_i) else None
         if bo_loc.get("atr_enabled"):
             atr_i = chi_bao["atr"].iloc[i]
             hang["atr"] = round(float(atr_i), 2) if not pd.isna(atr_i) else None
-        if bo_loc.get("volume_enabled"):
-            hang["volume"] = float(df_reset["volume"].iloc[i])
-            vol_ma_i = chi_bao["volume_ma"].iloc[i]
-            hang["volume_ma"] = round(float(vol_ma_i)) if not pd.isna(vol_ma_i) else None
 
         if tin_hieu == "BUY":
             ket_qua_buy.append(hang)
