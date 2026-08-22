@@ -11,6 +11,7 @@ import pytest
 
 from core.capital_allocation_engine import (
     ALLOCATION_TABLE,
+    HE_SO_GIAM_KHI_DO_TIN_CAY_ENSEMBLE_THAP,
     InvalidCapitalAllocationError,
     allocate_capital_by_breadth,
     calculate_capital_allocation,
@@ -19,6 +20,7 @@ from core.capital_allocation_engine import (
     calculate_stock_allocation_pct,
     calculate_stop_loss_range,
     calculate_take_profit_range,
+    dieu_chinh_ty_trong_theo_do_tin_cay_ensemble,
     find_support_resistance,
     round_to_lot,
 )
@@ -367,3 +369,26 @@ class TestCalculateCapitalAllocation:
             "ty_le_rui_ro_tren_nav",
         }
         assert expected_symbol_keys.issubset(first_symbol.keys())
+
+
+# ==============================================================================
+# Test: dieu_chinh_ty_trong_theo_do_tin_cay_ensemble (bổ sung 06/08/2026)
+# ==============================================================================
+
+class TestDieuChinhTyTrongTheoDoTinCayEnsemble:
+    def test_giam_dung_he_so_khi_thap(self):
+        ket_qua = dieu_chinh_ty_trong_theo_do_tin_cay_ensemble(20.0, "THAP")
+        assert ket_qua == pytest.approx(20.0 * HE_SO_GIAM_KHI_DO_TIN_CAY_ENSEMBLE_THAP)
+
+    def test_giu_nguyen_khi_cao(self):
+        assert dieu_chinh_ty_trong_theo_do_tin_cay_ensemble(20.0, "CAO") == 20.0
+
+    def test_giu_nguyen_khi_trung_binh(self):
+        assert dieu_chinh_ty_trong_theo_do_tin_cay_ensemble(20.0, "TRUNG_BINH") == 20.0
+
+    def test_raises_cho_gia_tri_khong_hop_le(self):
+        with pytest.raises(InvalidCapitalAllocationError):
+            dieu_chinh_ty_trong_theo_do_tin_cay_ensemble(20.0, "KHONG_HOP_LE")
+
+    def test_he_so_giam_bang_0_7(self):
+        assert HE_SO_GIAM_KHI_DO_TIN_CAY_ENSEMBLE_THAP == 0.7
