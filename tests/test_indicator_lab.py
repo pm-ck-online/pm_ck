@@ -18,12 +18,15 @@ from experimental.indicator_lab import (
     candle_range_pct,
     chay_backtest,
     chay_backtest_ket_hop_nhieu_bo,
+    chay_backtest_ma_crossover,
     chay_backtest_nhieu_ma,
     danh_gia_tin_hieu,
     danh_gia_tin_hieu_ket_hop,
     kiem_tra_bo_loc_bo_sung,
     kiem_tra_dieu_kien_buy_goc,
     kiem_tra_dieu_kien_sell_goc,
+    phat_hien_death_cross,
+    phat_hien_golden_cross,
     quet_watchlist_tim_tin_hieu,
     tinh_loi_nhuan_rong,
     tinh_toan_chi_bao,
@@ -738,3 +741,98 @@ class TestChayBacktestNhieuMa:
         tong_lenh_b = len(kq["trades_theo_ma"]["B"]) + (1 if kq["open_positions_theo_ma"]["B"] else 0)
         assert tong_lenh_a == 0
         assert tong_lenh_b > 0
+
+
+class TestGoldenCrossDeathCross:
+    def test_phat_hien_golden_cross_dung_diem_cat(self):
+        ma_nhanh = pd.Series([5.0, 6.0, 7.0, 9.0, 10.0])
+        ma_cham = pd.Series([8.0, 8.0, 8.0, 8.0, 8.0])
+        # nhanh: 5<8, 6<8, 7<8, 9>8 (cắt lên tại index 3), 10>8
+        ket_qua = phat_hien_golden_cross(ma_nhanh, ma_cham)
+        assert list(ket_qua) == [False, False, False, True, False]
+
+    def test_phat_hien_death_cross_dung_diem_cat(self):
+        ma_nhanh = pd.Series([10.0, 9.0, 8.0, 6.0, 5.0])
+        ma_dai_han = pd.Series([7.0, 7.0, 7.0, 7.0, 7.0])
+        # nhanh: 10>7, 9>7, 8>7, 6<7 (cắt xuống tại index 3), 5<7
+        ket_qua = phat_hien_death_cross(ma_nhanh, ma_dai_han)
+        assert list(ket_qua) == [False, False, False, True, False]
+
+    def test_khong_cat_thi_luon_false(self):
+        ma_nhanh = pd.Series([10.0, 11.0, 12.0, 13.0])
+        ma_cham = pd.Series([5.0, 5.0, 5.0, 5.0])  # nhanh luôn > chậm, không có điểm cắt
+        assert not phat_hien_golden_cross(ma_nhanh, ma_cham).any()
+
+
+class TestChayBacktestMaCrossover:
+    def _tao_du_lieu_xu_huong(self, n=700, seed=1):
+        np.random.seed(seed)
+        dates = pd.bdate_range("2021-01-01", periods=n)
+        phan_ngang = np.full(150, 10.0) + np.random.normal(0, 0.1, 150)
+        phan_tang = phan_ngang[-1] + np.cumsum(np.random.normal(0.03, 0.3, 400))
+        phan_giam = phan_tang[-1] - np.cumsum(np.abs(np.random.normal(0.05, 0.3, n - 550)))
+        closes = np.concatenate([phan_ngang, phan_tang, phan_giam])
+        opens = closes * (1 + np.random.normal(0, 0.005, n))
+        highs = np.maximum(opens, closes) * 1.01
+        lows = np.minimum(opens, closes) * 0.99
+        volumes = np.random.randint(500_000, 2_000_000, n).astype(float)
+        return pd.DataFrame({
+            "date": dates, "open": opens, "high": highs, "low": lows,
+            "close": closes, "volume": volumes,
+        })
+
+    def test_engine_chay_khong_loi(self):
+        df = self._tao_du_lieu_xu_huong()
+        kq = chay_backtest_ma_crossover(df, von_ban_dau=1_000_000_000, ty_trong_von_pct=50.0)
+        assert "trades" in kq and "open_position" in kq
+        assert kq["so_lenh_da_dong"] == len(kq["trades"])
+        assert kq["so_lan_thoat_boi_stop_loss"] + kq["so_lan_thoat_boi_death_cross"] == kq["so_lenh_da_dong"]
+
+    def test_chi_giao_dich_long(self):
+        df = self._tao_du_lieu_xu_huong()
+        kq = chay_backtest_ma_crossover(df)
+        assert all(t["side"] == "LONG" for t in kq["trades"])
+
+    def test_stop_loss_chat_lam_tang_so_lan_thoat_boi_sl(self):
+        df = self._tao_du_lieu_xu_huong()
+        kq_sl_rong = chay_backtest_ma_crossover(df, stop_loss_pct=50.0)
+        kq_sl_chat = chay_backtest_ma_crossover(df, stop_loss_pct=2.0)
+        assert kq_sl_chat["so_lan_thoat_boi_stop_loss"] >= kq_sl_rong["so_lan_thoat_boi_stop_loss"]
+
+    def test_phi_va_thue_tru_dung(self):
+        df = self._tao_du_lieu_xu_huong()
+        kq_khong_phi = chay_backtest_ma_crossover(df, phi_moi_gioi_pct=0.0, thue_ban_pct=0.0)
+        kq_co_phi = chay_backtest_ma_crossover(df, phi_moi_gioi_pct=0.15, thue_ban_pct=0.1)
+        assert len(kq_khong_phi["trades"]) == len(kq_co_phi["trades"])
+        for t1, t2 in zip(kq_khong_phi["trades"], kq_co_phi["trades"]):
+            assert round(t1["final_pnl_pct"] - t2["final_pnl_pct"], 3) == pytest.approx(0.4, abs=0.01)
+
+    def test_raises_for_thu_tu_ma_sai(self):
+        df = _make_realistic_df(n=300)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest_ma_crossover(df, ma_nhanh_period=50, ma_cham_period=20, ma_dai_han_period=100)
+
+    def test_raises_for_stop_loss_khong_hop_le(self):
+        df = _make_realistic_df(n=300)
+        with pytest.raises(InvalidIndicatorLabError):
+            chay_backtest_ma_crossover(df, stop_loss_pct=0)
+
+    def test_so_co_phieu_uoc_tinh_lam_tron_lo(self):
+        df = self._tao_du_lieu_xu_huong()
+        kq = chay_backtest_ma_crossover(df)
+        for t in kq["trades"]:
+            assert t["so_co_phieu_uoc_tinh"] % 100 == 0
+
+    def test_loc_theo_giai_doan_giam_so_lenh(self):
+        from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+        df = self._tao_du_lieu_xu_huong()
+        chuoi = tinh_chuoi_giai_doan_theo_ngay({"MA_TEST": df})
+        kq_khong_loc = chay_backtest_ma_crossover(df)
+        kq_uptrend = chay_backtest_ma_crossover(df, chuoi_giai_doan=chuoi, giai_doan_loc="uptrend")
+        assert kq_uptrend["so_lenh_da_dong"] <= kq_khong_loc["so_lenh_da_dong"]
+
+    def test_ly_do_thoat_hop_le(self):
+        df = self._tao_du_lieu_xu_huong()
+        kq = chay_backtest_ma_crossover(df)
+        for t in kq["trades"]:
+            assert t["ly_do_thoat"] in ("Stop Loss an toàn", "Death Cross (MA nhanh cắt xuống MA dài hạn)")
