@@ -46,6 +46,7 @@ plotly>=5.20
 # --- PostgreSQL/Supabase (tùy chọn — chỉ cần khi dùng chung dữ liệu
 #     nhiều máy qua Supabase; không cần nếu chỉ dùng SQLite cục bộ) ---
 psycopg2-binary>=2.9
+statsmodels>=0.14
 
 # --- Kiểm thử ---
 pytest>=8.0
