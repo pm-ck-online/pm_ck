@@ -758,6 +758,171 @@ def chay_backtest_ket_hop_nhieu_bo(
 
 
 # ==============================================================================
+# 4D. CHIẾN LƯỢC GOLDEN CROSS / DEATH CROSS (bổ sung 06/08/2026) — KHÁC
+#     HẲN chiến lược breakout ở trên: vào lệnh khi MA nhanh cắt LÊN MA
+#     trung bình (Golden Cross), thoát lệnh khi MA nhanh cắt XUỐNG MA
+#     dài hạn (Death Cross) — HOẶC chạm Stop Loss an toàn (% lỗ tối đa)
+#     giữa chừng, tùy điều kiện nào tới trước. Tái sử dụng TOÀN BỘ hạ
+#     tầng phí/thuế/làm tròn lô/khóa T+2/cảnh báo biên độ đã có.
+# ==============================================================================
+
+def phat_hien_golden_cross(ma_nhanh: pd.Series, ma_cham: pd.Series) -> pd.Series:
+    """True tại đúng ngày `ma_nhanh` CẮT LÊN `ma_cham` (hôm qua <=, hôm
+    nay >) — "Golden Cross". Ngày đầu tiên (không có hôm qua) luôn False."""
+    duoi_hom_qua = ma_nhanh.shift(1) <= ma_cham.shift(1)
+    tren_hom_nay = ma_nhanh > ma_cham
+    ket_qua = duoi_hom_qua & tren_hom_nay
+    return ket_qua.fillna(False)
+
+
+def phat_hien_death_cross(ma_nhanh: pd.Series, ma_dai_han: pd.Series) -> pd.Series:
+    """True tại đúng ngày `ma_nhanh` CẮT XUỐNG `ma_dai_han` (hôm qua >=,
+    hôm nay <) — "Death Cross". Ngày đầu tiên luôn False."""
+    tren_hom_qua = ma_nhanh.shift(1) >= ma_dai_han.shift(1)
+    duoi_hom_nay = ma_nhanh < ma_dai_han
+    ket_qua = tren_hom_qua & duoi_hom_nay
+    return ket_qua.fillna(False)
+
+
+def chay_backtest_ma_crossover(
+    df_ohlcv: pd.DataFrame,
+    ma_nhanh_period: int = 20,
+    ma_cham_period: int = 50,
+    ma_dai_han_period: int = 100,
+    stop_loss_pct: float = 10.0,
+    von_ban_dau: float = 1_000_000_000,
+    ty_trong_von_pct: float = 50.0,
+    so_phien_khoa_toi_thieu: int = SO_PHIEN_KHOA_TOI_THIEU_MAC_DINH,
+    phi_moi_gioi_pct: float = PHI_MOI_GIOI_PCT_MAC_DINH,
+    thue_ban_pct: float = THUE_BAN_PCT_MAC_DINH,
+    bien_do_dao_dong_pct: float = BIEN_DO_DAO_DONG_PCT_MAC_DINH,
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
+) -> dict:
+    """Backtest chiến lược Golden Cross / Death Cross — KHÁC HẲN
+    `chay_backtest()` (breakout) về logic tín hiệu, nhưng DÙNG CHUNG toàn
+    bộ hạ tầng: chỉ giao dịch LONG, khóa T+ sau khi mua, phí môi giới +
+    thuế bán, làm tròn lô 100, cảnh báo biên độ trần/sàn.
+
+    - **Vào lệnh**: ngày `MA(ma_nhanh_period)` CẮT LÊN `MA(ma_cham_period)`
+      (Golden Cross) — VD mặc định MA20 cắt lên MA50.
+    - **Thoát lệnh** (điều kiện nào tới TRƯỚC thì áp dụng):
+      1) Stop Loss an toàn: `Close < entry_price * (1 - stop_loss_pct/100)`.
+      2) `MA(ma_nhanh_period)` CẮT XUỐNG `MA(ma_dai_han_period)` (Death
+         Cross) — VD mặc định MA20 cắt xuống MA100.
+    - Không dùng Trailing Take-Profit theo bậc thang (khác breakout) —
+      giữ NGUYÊN VẸN vị thế cho tới khi 1 trong 2 điều kiện thoát ở trên
+      xảy ra (đúng bản chất chiến lược theo TREND, không chốt lời sớm).
+
+    `chuoi_giai_doan` + `giai_doan_loc`: cùng cơ chế lọc giai đoạn thị
+    trường/ngành như `chay_backtest()` — chỉ áp dụng tại thời điểm VÀO LỆNH.
+    """
+    _validate_df(df_ohlcv)
+    if von_ban_dau <= 0:
+        raise InvalidIndicatorLabError("von_ban_dau phải > 0.")
+    if not (0 < ty_trong_von_pct <= 100):
+        raise InvalidIndicatorLabError("ty_trong_von_pct phải trong khoảng (0, 100].")
+    if so_phien_khoa_toi_thieu < 0:
+        raise InvalidIndicatorLabError("so_phien_khoa_toi_thieu phải >= 0.")
+    if phi_moi_gioi_pct < 0 or thue_ban_pct < 0:
+        raise InvalidIndicatorLabError("phi_moi_gioi_pct và thue_ban_pct phải >= 0.")
+    if bien_do_dao_dong_pct <= 0:
+        raise InvalidIndicatorLabError("bien_do_dao_dong_pct phải > 0.")
+    if stop_loss_pct <= 0:
+        raise InvalidIndicatorLabError("stop_loss_pct phải > 0.")
+    if not (ma_nhanh_period < ma_cham_period < ma_dai_han_period):
+        raise InvalidIndicatorLabError(
+            "Yêu cầu ma_nhanh_period < ma_cham_period < ma_dai_han_period "
+            "(VD MA20 < MA50 < MA100)."
+        )
+
+    chi_phi_giao_dich_pct = phi_moi_gioi_pct * 2 + thue_ban_pct
+
+    df = df_ohlcv.reset_index(drop=True)
+    ma_nhanh = calculate_ma(df, ma_nhanh_period)
+    ma_cham = calculate_ma(df, ma_cham_period)
+    ma_dai_han = calculate_ma(df, ma_dai_han_period)
+    golden_cross = phat_hien_golden_cross(ma_nhanh, ma_cham)
+    death_cross = phat_hien_death_cross(ma_nhanh, ma_dai_han)
+
+    n_rows = len(df)
+    start_idx = ma_dai_han_period  # cần đủ dữ liệu cho đường MA dài nhất
+
+    trades: list[dict] = []
+    vi_the: Optional[dict] = None
+
+    for i in range(start_idx, n_rows):
+        close_i = float(df["close"].iloc[i])
+
+        if vi_the is not None:
+            da_du_khoa_T = (i - vi_the["entry_idx"]) >= so_phien_khoa_toi_thieu
+            if da_du_khoa_T:
+                nguong_stop_loss = vi_the["entry_price"] * (1 - stop_loss_pct / 100)
+                thoat_boi_sl = close_i < nguong_stop_loss
+                thoat_boi_death_cross = bool(death_cross.iloc[i])
+
+                if thoat_boi_sl or thoat_boi_death_cross:
+                    pnl_pct_gross = (close_i - vi_the["entry_price"]) / vi_the["entry_price"] * 100
+                    final_pnl_pct = round(pnl_pct_gross - chi_phi_giao_dich_pct, 2)
+                    exit_price = vi_the["entry_price"] * (1 + final_pnl_pct / 100)
+                    gia_tham_chieu_hom_truoc = float(df["close"].iloc[i - 1]) if i > 0 else None
+                    trades.append({
+                        "side": "LONG", "entry_date": vi_the["entry_date"],
+                        "entry_price": round(vi_the["entry_price"], 2),
+                        "exit_date": str(df["date"].iloc[i]), "exit_price": round(exit_price, 2),
+                        "final_pnl_pct": final_pnl_pct,
+                        "ly_do_thoat": "Stop Loss an toàn" if thoat_boi_sl else "Death Cross (MA nhanh cắt xuống MA dài hạn)",
+                        "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+                        "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+                        "canh_bao_bien_do_ra_lenh": _kiem_tra_gan_bien_do(close_i, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
+                    })
+                    vi_the = None
+
+        if vi_the is None:
+            if bool(golden_cross.iloc[i]) and _khop_giai_doan(df["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
+                entry_price = close_i
+                gia_tham_chieu_hom_truoc = float(df["close"].iloc[i - 1]) if i > 0 else None
+                von_du_kien = von_ban_dau * ty_trong_von_pct / 100
+                so_co_phieu_uoc_tinh = _lam_tron_lo(von_du_kien / entry_price) if entry_price > 0 else 0
+                vi_the = {
+                    "entry_idx": i, "entry_date": str(df["date"].iloc[i]), "entry_price": entry_price,
+                    "so_co_phieu_uoc_tinh": so_co_phieu_uoc_tinh,
+                    "canh_bao_bien_do_vao_lenh": _kiem_tra_gan_bien_do(entry_price, gia_tham_chieu_hom_truoc, bien_do_dao_dong_pct),
+                }
+
+    open_position = None
+    if vi_the is not None:
+        close_cuoi = float(df["close"].iloc[-1])
+        open_position = {
+            "side": "LONG", "entry_date": vi_the["entry_date"],
+            "entry_price": round(vi_the["entry_price"], 2),
+            "as_of_date": str(df["date"].iloc[-1]), "current_price": round(close_cuoi, 2),
+            "unrealized_pnl_pct": round((close_cuoi - vi_the["entry_price"]) / vi_the["entry_price"] * 100, 2),
+            "so_co_phieu_uoc_tinh": vi_the["so_co_phieu_uoc_tinh"],
+            "canh_bao_bien_do_vao_lenh": vi_the["canh_bao_bien_do_vao_lenh"],
+            "ghi_chu": "Chưa bán nên chưa trừ phí bán/thuế bán — PnL tạm tính ở trên là GROSS.",
+        }
+
+    ket_qua_loi_nhuan = tinh_loi_nhuan_rong(trades, von_ban_dau, ty_trong_von_pct)
+    so_lenh = len(trades)
+    so_lan_thang = sum(1 for t in trades if t["final_pnl_pct"] > 0)
+    so_lan_thoat_boi_sl = sum(1 for t in trades if t["ly_do_thoat"] == "Stop Loss an toàn")
+
+    return {
+        "trades": trades,
+        "open_position": open_position,
+        "so_lenh_da_dong": so_lenh,
+        "so_lan_thang": so_lan_thang,
+        "so_lan_thua": so_lenh - so_lan_thang,
+        "win_rate_pct": round(so_lan_thang / so_lenh * 100, 1) if so_lenh > 0 else None,
+        "so_lan_thoat_boi_stop_loss": so_lan_thoat_boi_sl,
+        "so_lan_thoat_boi_death_cross": so_lenh - so_lan_thoat_boi_sl,
+        "chi_phi_giao_dich_pct_moi_lenh": round(chi_phi_giao_dich_pct, 3),
+        **ket_qua_loi_nhuan,
+    }
+
+
+# ==============================================================================
 # 4C. DANH MỤC NHIỀU MÃ — MỖI MÃ 1 BỘ TIÊU CHÍ RIÊNG (bổ sung 06/08/2026)
 #     — cho phép GIỮ ĐỒNG THỜI nhiều vị thế (mỗi mã 1 vị thế riêng, dùng
 #     CHUNG 1 quỹ vốn) — KHÁC với chay_backtest_ket_hop_nhieu_bo() (đó
