@@ -306,6 +306,13 @@ def run_full_market(
     #     module "Tổng hợp" -> "Lọc theo giai đoạn thị trường/ngành"). ---
     run_market_regime_history_step(storage)
 
+    # --- Tính và LƯU LẠI bảng ensemble 3 phương pháp (Breadth/Peak-
+    #     Trough/Markov) — bổ sung 06/08/2026, để dashboard đọc nhanh
+    #     thay vì phải fit lại mô hình Markov (tốn tài nguyên) mỗi lần
+    #     (xem module "🧭 Ensemble 3 phương pháp"). ---
+    from main import run_market_regime_ensemble_step
+    run_market_regime_ensemble_step(storage)
+
     storage.close()
     logger.info("Hoàn tất toàn bộ pipeline (dữ liệu + giai đoạn thị trường theo ngành).")
 

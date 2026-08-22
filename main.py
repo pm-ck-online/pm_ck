@@ -1043,6 +1043,80 @@ def run_market_regime_history_step(storage: Storage) -> None:
     )
 
 
+def run_market_regime_ensemble_step(storage: Storage) -> None:
+    """Tính và LƯU LẠI (bổ sung 06/08/2026) bảng ensemble 3 phương pháp
+    (Breadth/Peak-Trough/Markov) cho TOÀN THỊ TRƯỜNG + TỪNG NGÀNH — chạy
+    1 LẦN/NGÀY như 1 bước trong pipeline chính, để dashboard CHỈ CẦN ĐỌC
+    (nhanh) thay vì phải FIT LẠI mô hình Markov (tốn tài nguyên tính
+    toán nhất trong 3 phương pháp) mỗi lần người dùng mở mục "Ensemble 3
+    phương pháp" trên dashboard.
+    """
+    from datetime import datetime
+    from core.market_regime_ensemble import (
+        dung_chi_so_dai_dien_tu_gia_dong_cua, phan_tich_ensemble_toan_bo,
+    )
+
+    all_symbols = storage.query_all_keys("indicator_snapshot")
+    if not all_symbols:
+        logger.warning("Không có dữ liệu chỉ báo nào để tính ensemble giai đoạn thị trường — bỏ qua bước này.")
+        return
+
+    snapshot_map = storage.get_latest_many("indicator_snapshot", all_symbols)
+    all_snapshots = [rec["data"] for rec in snapshot_map.values()]
+
+    sector_keys = storage.query_all_keys("symbol_sector")
+    sector_map_raw = storage.get_latest_many("symbol_sector", sector_keys)
+    nganh_theo_ma = {ma: rec["data"].get("sector") for ma, rec in sector_map_raw.items()}
+    snapshot_theo_ma = {ma: rec["data"] for ma, rec in snapshot_map.items()}
+
+    vnindex_record = storage.get_latest("ohlcv_history", "VNINDEX")
+    df_vnindex = None
+    if vnindex_record:
+        recs = vnindex_record["data"].get("records", [])
+        if recs:
+            df_vnindex = pd.DataFrame(recs)
+            df_vnindex["date"] = pd.to_datetime(df_vnindex["date"])
+            df_vnindex = df_vnindex.sort_values("date").reset_index(drop=True)
+
+    # 1 LƯỢT TRUY VẤN duy nhất cho TOÀN BỘ OHLCV (để dựng chỉ số đại diện
+    # từng ngành) — thay vì lặp get_latest() cho từng mã.
+    all_ohlcv_keys = storage.query_all_keys("ohlcv_history")
+    ohlcv_map = storage.get_latest_many("ohlcv_history", all_ohlcv_keys)
+    gia_dong_cua_theo_ma: dict[str, pd.Series] = {}
+    for ma, rec in ohlcv_map.items():
+        recs = rec["data"].get("records", [])
+        if len(recs) < 20:
+            continue
+        df_ma = pd.DataFrame(recs)
+        df_ma["date"] = pd.to_datetime(df_ma["date"])
+        df_ma = df_ma.sort_values("date").set_index("date")
+        gia_dong_cua_theo_ma[ma] = df_ma["close"]
+
+    tat_ca_nganh = sorted({v for v in nganh_theo_ma.values() if v})
+    danh_sach_nganh: dict[str, tuple] = {}
+    for nganh in tat_ca_nganh:
+        ma_trong_nganh = [ma for ma, ng in nganh_theo_ma.items() if ng == nganh]
+        snaps_nganh = [snapshot_theo_ma[ma] for ma in ma_trong_nganh if ma in snapshot_theo_ma]
+        chuoi_gia_nganh = [gia_dong_cua_theo_ma[ma] for ma in ma_trong_nganh if ma in gia_dong_cua_theo_ma]
+        df_chi_so_nganh = dung_chi_so_dai_dien_tu_gia_dong_cua(chuoi_gia_nganh)
+        danh_sach_nganh[nganh] = (snaps_nganh, df_chi_so_nganh)
+
+    try:
+        df_ket_qua = phan_tich_ensemble_toan_bo(all_snapshots, df_vnindex, danh_sach_nganh)
+    except Exception as exc:  # noqa: BLE001 — không để 1 lỗi tính ensemble làm hỏng cả pipeline chính
+        logger.warning("Lỗi khi tính ensemble giai đoạn thị trường: %s", exc)
+        return
+
+    storage.save("market_regime_ensemble", "bang_ket_qua", {
+        "records": df_ket_qua.to_dict("records"),
+        "tinh_luc": datetime.now().isoformat(),
+    })
+    logger.info(
+        "Đã lưu bảng ensemble giai đoạn thị trường cho %d nhóm (toàn thị trường + %d ngành).",
+        len(df_ket_qua), len(tat_ca_nganh),
+    )
+
+
 def main() -> None:
     print("pm_ck — Phần mềm theo dõi & mô phỏng giao dịch CK Việt Nam")
     print("⚠️  Đây là công cụ THEO DÕI VÀ MÔ PHỎNG — không đặt lệnh giao dịch thật.\n")
