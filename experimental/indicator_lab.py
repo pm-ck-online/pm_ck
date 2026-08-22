@@ -315,6 +315,21 @@ def kiem_tra_bo_loc_bo_sung(df: pd.DataFrame, i: int, chi_bao: dict, bo_loc: dic
     return True
 
 
+def _khop_giai_doan(ngay, chuoi_giai_doan, giai_doan_loc: Optional[str]) -> bool:
+    """Kiểm tra ngày `ngay` có thuộc đúng `giai_doan_loc` (uptrend/downtrend/
+    sideway) theo `chuoi_giai_doan` (pd.Series index=ngày, xem
+    `core.market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`) hay không
+    — cùng nguyên tắc với `core.entry_screener._khop_giai_doan()`.
+
+    Không lọc (`giai_doan_loc` là None) -> luôn khớp. Ngày không có
+    trong chuỗi (thiếu dữ liệu) -> KHÔNG khớp (loại, không suy diễn).
+    """
+    if giai_doan_loc is None or chuoi_giai_doan is None:
+        return True
+    gia_tri = chuoi_giai_doan.get(pd.Timestamp(ngay))
+    return gia_tri == giai_doan_loc
+
+
 def danh_gia_tin_hieu(df: pd.DataFrame, i: int, tham_so: dict, bo_loc: dict, chi_bao: dict) -> Optional[str]:
     """Trả về "BUY", "SELL", hoặc None (không có tín hiệu / là "trap")."""
     ket_qua_buy = kiem_tra_dieu_kien_buy_goc(df, i, tham_so, chi_bao)
@@ -436,10 +451,19 @@ def chay_backtest(
     phi_moi_gioi_pct: float = PHI_MOI_GIOI_PCT_MAC_DINH,
     thue_ban_pct: float = THUE_BAN_PCT_MAC_DINH,
     bien_do_dao_dong_pct: float = BIEN_DO_DAO_DONG_PCT_MAC_DINH,
+    chuoi_giai_doan: Optional[pd.Series] = None,
+    giai_doan_loc: Optional[str] = None,
 ) -> dict:
     """Chạy backtest tuần tự trên TOÀN BỘ `df_ohlcv` theo đúng bộ tham số/
     bộ lọc/trailing TP truyền vào. KHÔNG ghi vào storage — chỉ trả về dict
     kết quả để lớp gọi (dashboard) tự lưu tạm vào `st.session_state`.
+
+    `chuoi_giai_doan` + `giai_doan_loc` (bổ sung 06/08/2026, cùng cơ chế
+    với `core.entry_screener`): nếu truyền cả 2, CHỈ MỞ LỆNH MỚI vào
+    đúng những ngày khớp giai đoạn thị trường/ngành mong muốn
+    ("uptrend"/"downtrend"/"sideway") — SL/Trailing TP của lệnh ĐANG GIỮ
+    vẫn hoạt động bình thường xuyên suốt vòng đời lệnh, kể cả khi giai
+    đoạn sau đó đổi khác (chỉ áp dụng bộ lọc tại THỜI ĐIỂM VÀO LỆNH).
 
     ĐIỀU CHỈNH CHO ĐÚNG THỰC TẾ TTCK VIỆT NAM (bổ sung 06/08/2026):
       1) CHỈ giao dịch LONG (mua) — cổ phiếu thường KHÔNG có cơ chế bán
@@ -531,7 +555,7 @@ def chay_backtest(
 
         if vi_the is None:
             tin_hieu = danh_gia_tin_hieu(df, i, tham_so, bo_loc, chi_bao)
-            if tin_hieu == "BUY":
+            if tin_hieu == "BUY" and _khop_giai_doan(df["date"].iloc[i], chuoi_giai_doan, giai_doan_loc):
                 vi_the = _mo_lenh_moi(
                     "LONG", i, df, len(tp_tiers), von_ban_dau, ty_trong_von_pct, bien_do_dao_dong_pct,
                 )

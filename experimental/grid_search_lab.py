@@ -72,10 +72,19 @@ def chay_grid_search(
     von_ban_dau: float = 1_000_000_000,
     ty_trong_von_pct: float = 50.0,
     sell_lookback_bang_buy_lookback: bool = True,
+    chuoi_giai_doan=None,
+    giai_doan_loc: str = None,
+    hien_tien_do: bool = True,
 ) -> list[dict]:
     """Thử TOÀN BỘ tổ hợp trong `LUOI_THAM_SO` — engine chỉ giao dịch
     LONG theo đúng thực tế TTCK VN (không bán khống), trả về danh sách
-    kết quả đã sắp theo lợi nhuận ròng giảm dần."""
+    kết quả đã sắp theo lợi nhuận ròng giảm dần.
+
+    `chuoi_giai_doan` + `giai_doan_loc` (bổ sung 06/08/2026): nếu truyền
+    cả 2, CHỈ tính các lần vào lệnh khớp đúng giai đoạn thị trường/ngành
+    mong muốn (xem `core.market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`
+    và `chay_backtest`).
+    """
     ket_qua: list[dict] = []
     cac_khoa = list(LUOI_THAM_SO.keys())
     cac_gia_tri = list(LUOI_THAM_SO.values())
@@ -83,7 +92,8 @@ def chay_grid_search(
     for gt in cac_gia_tri:
         tong_to_hop *= len(gt)
 
-    print(f"Tổng số tổ hợp cần thử: {tong_to_hop}")
+    if hien_tien_do:
+        print(f"Tổng số tổ hợp cần thử: {tong_to_hop}")
     da_thu = 0
 
     for combo in itertools.product(*cac_gia_tri):
@@ -99,6 +109,7 @@ def chay_grid_search(
             kq = chay_backtest(
                 df_ohlcv, tham_so, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
                 von_ban_dau=von_ban_dau, ty_trong_von_pct=ty_trong_von_pct,
+                chuoi_giai_doan=chuoi_giai_doan, giai_doan_loc=giai_doan_loc,
             )
         except InvalidIndicatorLabError:
             continue
@@ -120,7 +131,7 @@ def chay_grid_search(
             "co_vi_the_dang_mo": kq["open_position"] is not None,
         })
 
-        if da_thu % 200 == 0:
+        if hien_tien_do and da_thu % 200 == 0:
             print(f"  ... đã thử {da_thu}/{tong_to_hop} tổ hợp")
 
     ket_qua.sort(key=lambda r: r["loi_nhuan_rong"], reverse=True)
