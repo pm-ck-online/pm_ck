@@ -1078,10 +1078,21 @@ def run_market_regime_ensemble_step(storage: Storage) -> None:
             df_vnindex["date"] = pd.to_datetime(df_vnindex["date"])
             df_vnindex = df_vnindex.sort_values("date").reset_index(drop=True)
 
-    # 1 LƯỢT TRUY VẤN duy nhất cho TOÀN BỘ OHLCV (để dựng chỉ số đại diện
-    # từng ngành) — thay vì lặp get_latest() cho từng mã.
+    # SỬA LỖI TIMEOUT SUPABASE (bổ sung 06/08/2026): lấy OHLCV toàn bộ
+    # 212+ mã (mỗi mã có thể tới ~1400 dòng lịch sử) TRONG 1 CÂU TRUY VẤN
+    # DUY NHẤT bị Supabase HỦY do vượt quá statement timeout (dữ liệu
+    # quá lớn cho 1 lượt). Chia thành nhiều LÔ NHỎ (mặc định 30 mã/lô) —
+    # mỗi lô là 1 câu truy vấn riêng, nhẹ hơn nhiều, không bị timeout.
+    KICH_THUOC_LO_OHLCV = 30
     all_ohlcv_keys = storage.query_all_keys("ohlcv_history")
-    ohlcv_map = storage.get_latest_many("ohlcv_history", all_ohlcv_keys)
+    ohlcv_map: dict[str, dict] = {}
+    for i in range(0, len(all_ohlcv_keys), KICH_THUOC_LO_OHLCV):
+        lo_ma = all_ohlcv_keys[i:i + KICH_THUOC_LO_OHLCV]
+        try:
+            ohlcv_map.update(storage.get_latest_many("ohlcv_history", lo_ma))
+        except Exception as exc:  # noqa: BLE001 — 1 lô lỗi không được làm hỏng cả bước này
+            logger.warning("Lỗi khi lấy OHLCV cho lô mã %s: %s — bỏ qua lô này.", lo_ma, exc)
+
     gia_dong_cua_theo_ma: dict[str, pd.Series] = {}
     for ma, rec in ohlcv_map.items():
         recs = rec["data"].get("records", [])
