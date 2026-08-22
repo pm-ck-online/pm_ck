@@ -2310,6 +2310,159 @@ def render_market_summary_report_section(storage: Storage) -> None:
     )
 
 
+def _dung_chi_so_dai_dien_tu_cac_ma(storage: Storage, danh_sach_ma: list[str]) -> Optional[pd.DataFrame]:
+    """Dựng 1 "chỉ số đại diện" PROXY cho 1 nhóm mã (VD 1 ngành) khi
+    KHÔNG có sẵn chỉ số ngành thật — lấy trung bình giá đóng cửa đã
+    CHUẨN HÓA (mỗi mã quy về gốc 100 tại ngày đầu tiên) của các mã trong
+    nhóm, dùng CHUNG 1 lượt get_latest_many để tối ưu tốc độ.
+    """
+    if not danh_sach_ma:
+        return None
+    ohlcv_map = storage.get_latest_many("ohlcv_history", danh_sach_ma)
+    danh_sach_df_chuan_hoa = []
+    for ma, record in ohlcv_map.items():
+        records = record["data"].get("records", [])
+        if len(records) < 20:
+            continue
+        df_ma = pd.DataFrame(records)
+        df_ma["date"] = pd.to_datetime(df_ma["date"])
+        df_ma = df_ma.sort_values("date").set_index("date")
+        gia_dau = df_ma["close"].iloc[0]
+        if gia_dau and gia_dau > 0:
+            danh_sach_df_chuan_hoa.append(df_ma["close"] / gia_dau * 100)
+
+    if not danh_sach_df_chuan_hoa:
+        return None
+
+    chi_so_trung_binh = pd.concat(danh_sach_df_chuan_hoa, axis=1).mean(axis=1).dropna()
+    if chi_so_trung_binh.empty:
+        return None
+
+    return pd.DataFrame({
+        "date": chi_so_trung_binh.index, "close": chi_so_trung_binh.values,
+        "open": chi_so_trung_binh.values, "high": chi_so_trung_binh.values * 1.001,
+        "low": chi_so_trung_binh.values * 0.999, "volume": [0.0] * len(chi_so_trung_binh),
+    }).reset_index(drop=True)
+
+
+def render_market_regime_ensemble_section(storage: Storage) -> None:
+    """🧭 Ensemble 3 phương pháp xác định giai đoạn thị trường/ngành (bổ
+    sung 06/08/2026) — nâng cấp so với "Giai đoạn thị trường (định
+    tính)" (chỉ dùng 1 phương pháp Breadth): kết hợp 3 phương pháp học
+    thuật độc lập (Breadth, Peak-Trough Dow Theory, Markov
+    Regime-Switching), biểu quyết đa số có trọng số.
+    """
+    from core.market_regime_ensemble import phan_tich_ensemble_toan_bo
+
+    st.subheader("🧭 Ensemble 3 phương pháp xác định giai đoạn thị trường/ngành")
+    st.warning(
+        "⚠️ Đây là công cụ PHÂN LOẠI THAM KHẢO tổng hợp từ 3 phương pháp học thuật "
+        "(Market Breadth, Peak-Trough Dow Theory, Markov Regime-Switching) — KHÔNG "
+        "phải khuyến nghị đầu tư hay dự báo được đảm bảo. Dù đồng thuận 3/3 phương "
+        "pháp cũng KHÔNG loại trừ khả năng thị trường đảo chiều bất ngờ do sự kiện "
+        "đột biến."
+    )
+
+    da_luu = storage.get_latest("market_regime_ensemble", "bang_ket_qua")
+    if da_luu is not None:
+        records = da_luu["data"].get("records", [])
+        tinh_luc = da_luu["data"].get("tinh_luc", "không rõ")
+        if records:
+            st.markdown("#### 📌 Bản đã tính sẵn (cập nhật hằng ngày qua pipeline chính)")
+            st.caption(f"Tính lúc: {tinh_luc} — bao gồm TOÀN BỘ ngành đang theo dõi.")
+            df_da_luu = pd.DataFrame(records)
+            emoji_giai_doan_luu = {"UPTREND": "🟢 UPTREND", "DOWNTREND": "🔴 DOWNTREND", "SIDEWAY": "🟡 SIDEWAY"}
+            emoji_tin_cay_luu = {"CAO": "🟢 Cao (3/3)", "TRUNG_BINH": "🟡 Trung bình (2/3)", "THAP": "🔴 Thấp (phá thế bế tắc)"}
+            df_da_luu_hien_thi = df_da_luu.copy()
+            for col in ("phuong_phap_A_breadth", "phuong_phap_B_peak_trough", "phuong_phap_C_markov", "KET_LUAN_TONG_HOP"):
+                df_da_luu_hien_thi[col] = df_da_luu_hien_thi[col].map(lambda x: emoji_giai_doan_luu.get(x, x))
+            df_da_luu_hien_thi["do_tin_cay"] = df_da_luu_hien_thi["do_tin_cay"].map(lambda x: emoji_tin_cay_luu.get(x, x))
+            df_da_luu_hien_thi = df_da_luu_hien_thi.rename(columns={
+                "nhom": "Nhóm", "phuong_phap_A_breadth": "PP A (Breadth)",
+                "phuong_phap_B_peak_trough": "PP B (Đỉnh-Đáy)", "phuong_phap_C_markov": "PP C (Markov)",
+                "KET_LUAN_TONG_HOP": "KẾT LUẬN TỔNG HỢP", "do_tin_cay": "Độ tin cậy",
+            })
+            st.dataframe(df_da_luu_hien_thi, width='stretch', hide_index=True)
+            st.divider()
+    else:
+        st.info(
+            "Chưa có bản tính sẵn (chưa chạy `run_full_market.py` bản mới có bước "
+            "ensemble) — dùng mục bên dưới để tính live cho 1 số ngành đã chọn."
+        )
+
+    st.markdown("#### 🔄 Tính lại LIVE cho ngành cụ thể (nếu cần)")
+
+    all_symbols = storage.query_all_keys("indicator_snapshot")
+    if not all_symbols:
+        st.info("Chưa có dữ liệu chỉ báo nào trong storage.")
+        return
+
+    snapshot_map = storage.get_latest_many("indicator_snapshot", all_symbols)
+    all_snapshots = [rec["data"] for rec in snapshot_map.values()]
+
+    sector_keys = storage.query_all_keys("symbol_sector")
+    sector_map_raw = storage.get_latest_many("symbol_sector", sector_keys)
+    nganh_theo_ma = {ma: rec["data"].get("sector") for ma, rec in sector_map_raw.items()}
+    snapshot_theo_ma = {ma: rec["data"] for ma, rec in snapshot_map.items()}
+
+    vnindex_record = storage.get_latest("ohlcv_history", "VNINDEX")
+    df_vnindex = None
+    if vnindex_record:
+        recs = vnindex_record["data"].get("records", [])
+        if recs:
+            df_vnindex = pd.DataFrame(recs)
+            df_vnindex["date"] = pd.to_datetime(df_vnindex["date"])
+            df_vnindex = df_vnindex.sort_values("date").reset_index(drop=True)
+
+    tat_ca_nganh = sorted({v for v in nganh_theo_ma.values() if v})
+    danh_sach_nganh_chon = render_search_box_if_needed(
+        tat_ca_nganh, key="ensemble_nganh_search", threshold=100, label="🔍 Tìm ngành"
+    ) if len(tat_ca_nganh) > 8 else tat_ca_nganh
+
+    nganh_muon_xem = st.multiselect(
+        "Chọn ngành muốn phân tích (mặc định TOÀN BỘ ngành hiện có)",
+        tat_ca_nganh, default=tat_ca_nganh[:6], key="ensemble_nganh_muon_xem",
+        format_func=_nhan_nganh,
+    )
+
+    if st.button("🧭 Chạy phân tích ensemble", key="ensemble_run_btn"):
+        with st.spinner("Đang tính toán 3 phương pháp cho từng nhóm (Markov có thể mất vài giây/nhóm)..."):
+            danh_sach_nganh: dict[str, tuple] = {}
+            for nganh in nganh_muon_xem:
+                ma_trong_nganh = [ma for ma, ng in nganh_theo_ma.items() if ng == nganh]
+                snaps_nganh = [snapshot_theo_ma[ma] for ma in ma_trong_nganh if ma in snapshot_theo_ma]
+                df_chi_so_nganh = _dung_chi_so_dai_dien_tu_cac_ma(storage, ma_trong_nganh)
+                danh_sach_nganh[_nhan_nganh(nganh)] = (snaps_nganh, df_chi_so_nganh)
+
+            df_ket_qua = phan_tich_ensemble_toan_bo(all_snapshots, df_vnindex, danh_sach_nganh)
+            st.session_state["ensemble_ket_qua"] = df_ket_qua
+
+    if st.session_state.get("ensemble_ket_qua") is not None:
+        df_ket_qua = st.session_state["ensemble_ket_qua"]
+
+        emoji_giai_doan = {"UPTREND": "🟢 UPTREND", "DOWNTREND": "🔴 DOWNTREND", "SIDEWAY": "🟡 SIDEWAY"}
+        emoji_tin_cay = {"CAO": "🟢 Cao (3/3)", "TRUNG_BINH": "🟡 Trung bình (2/3)", "THAP": "🔴 Thấp (phá thế bế tắc)"}
+
+        df_hien_thi = df_ket_qua.copy()
+        for col in ("phuong_phap_A_breadth", "phuong_phap_B_peak_trough", "phuong_phap_C_markov", "KET_LUAN_TONG_HOP"):
+            df_hien_thi[col] = df_hien_thi[col].map(lambda x: emoji_giai_doan.get(x, x))
+        df_hien_thi["do_tin_cay"] = df_hien_thi["do_tin_cay"].map(lambda x: emoji_tin_cay.get(x, x))
+        df_hien_thi = df_hien_thi.rename(columns={
+            "nhom": "Nhóm", "phuong_phap_A_breadth": "PP A (Breadth)",
+            "phuong_phap_B_peak_trough": "PP B (Đỉnh-Đáy)", "phuong_phap_C_markov": "PP C (Markov)",
+            "KET_LUAN_TONG_HOP": "KẾT LUẬN TỔNG HỢP", "do_tin_cay": "Độ tin cậy",
+        })
+        st.dataframe(df_hien_thi, width='stretch', hide_index=True)
+
+        st.caption(
+            "📌 Từ nay, mọi module khác (Phân bổ vốn, Tín hiệu Mua/Bán...) nên tham "
+            "chiếu vào cột \"KẾT LUẬN TỔNG HỢP\" này thay vì chỉ dùng riêng 1 phương "
+            "pháp — nếu \"Độ tin cậy\" là THẤP, tỷ trọng phân bổ vốn khuyến nghị sẽ "
+            "tự động giảm còn 70% mức bình thường (xem "
+            "`core.capital_allocation_engine.dieu_chinh_ty_trong_theo_do_tin_cay_ensemble`)."
+        )
+
+
 def render_market_regime_quant_section(storage: Storage) -> None:
     """Hiển thị kết quả mô hình 3 LỚP ĐỊNH LƯỢNG (macro score + % Breadth
     EMA200 + đối chiếu Lớp 3) — tự động phát hiện TẤT CẢ ngành đã có dữ
@@ -4724,6 +4877,7 @@ DASHBOARD_GROUPS = [
         "🌐 Giai đoạn thị trường (định tính)",
         "📋 Báo cáo tổng hợp thị trường chung",
         "📐 Giai đoạn thị trường (3 lớp định lượng)",
+        "🧭 Ensemble 3 phương pháp (Breadth/Đỉnh-Đáy/Markov)",
         "📐 HĐTL VN30 — Entry/Vốn/R:R",
     ]),
     ("NHÓM 3 — GIAO DỊCH CỔ PHIẾU", [
@@ -4850,6 +5004,7 @@ def main() -> None:
         ("📉 Rà soát mô hình co hẹp (XAUUSD/BTC)", render_vcp_scan_section, (storage,)),
         ("📋 Báo cáo tổng hợp thị trường chung", render_market_summary_report_section, (storage,)),
         ("📐 Giai đoạn thị trường (3 lớp định lượng)", render_market_regime_quant_section, (storage,)),
+        ("🧭 Ensemble 3 phương pháp (Breadth/Đỉnh-Đáy/Markov)", render_market_regime_ensemble_section, (storage,)),
         ("📐 HĐTL VN30 — Entry/Vốn/R:R", render_hdtl_vn30_section, (storage,)),
         ("📦 Khuyến nghị phân bổ vốn (đơn giản)", render_allocation_section, (storage, symbols)),
         ("📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)", render_capital_allocation_v2_section, (storage, symbols)),
