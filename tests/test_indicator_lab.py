@@ -415,6 +415,29 @@ class TestChayBacktest:
         if kq["open_position"]:
             assert kq["open_position"]["canh_bao_bien_do_vao_lenh"] == "gan_tran"
 
+    def test_loc_theo_giai_doan_giam_so_lenh(self):
+        from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+        df = _make_realistic_df()
+        chuoi = tinh_chuoi_giai_doan_theo_ngay({"MA_TEST": df})
+
+        kq_khong_loc = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        kq_uptrend = chay_backtest(
+            df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            chuoi_giai_doan=chuoi, giai_doan_loc="uptrend",
+        )
+        assert kq_uptrend["so_lenh_da_dong"] <= kq_khong_loc["so_lenh_da_dong"]
+
+    def test_khong_loc_khi_giai_doan_loc_la_none(self):
+        # KHÔNG truyền chuoi_giai_doan/giai_doan_loc -> hành vi giữ NGUYÊN
+        # như cũ (tương thích ngược).
+        df = _make_realistic_df()
+        kq1 = chay_backtest(df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH)
+        kq2 = chay_backtest(
+            df, THAM_SO_MAC_DINH, BO_LOC_MAC_DINH, TRAILING_TP_TIERS_MAC_DINH,
+            chuoi_giai_doan=None, giai_doan_loc=None,
+        )
+        assert kq1["so_lenh_da_dong"] == kq2["so_lenh_da_dong"]
+
 
 class TestTinhLoiNhuanRong:
     def test_khong_co_lenh_nao_loi_nhuan_bang_0(self):
