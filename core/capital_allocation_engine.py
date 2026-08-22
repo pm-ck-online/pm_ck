@@ -80,6 +80,38 @@ def calculate_stock_allocation_pct(trang_thai: str, do_tin_cay: str) -> float:
     return low + (high - low) * weight
 
 
+# Hệ số nhân khi độ tin cậy ENSEMBLE (core.market_regime_ensemble) là THẤP
+# (chỉ 1/3 phương pháp đồng thuận, phải phá thế bế tắc bằng trọng số) —
+# theo đúng mục 7 prompt nâng cấp ensemble: rủi ro nhận định sai cao hơn
+# khi 3 phương pháp học thuật không đồng thuận, nên giảm tỷ trọng khuyến
+# nghị so với mức bình thường của giai đoạn đó.
+HE_SO_GIAM_KHI_DO_TIN_CAY_ENSEMBLE_THAP = 0.7
+
+
+def dieu_chinh_ty_trong_theo_do_tin_cay_ensemble(ty_trong_goc_pct: float, do_tin_cay_ensemble: str) -> float:
+    """Áp dụng THÊM (bổ sung 06/08/2026) lên trên bất kỳ tỷ trọng đã tính
+    nào (VD kết quả `calculate_stock_allocation_pct()`, hoặc tỷ trọng
+    Kelly/ATR14...) — nếu `do_tin_cay_ensemble` (lấy từ cột "do_tin_cay"
+    của `core.market_regime_ensemble.phan_tich_ensemble_toan_bo()`, KHÁC
+    với `do_tin_cay` nội bộ của `calculate_stock_allocation_pct()`) là
+    "THAP", nhân tỷ trọng với `HE_SO_GIAM_KHI_DO_TIN_CAY_ENSEMBLE_THAP`
+    (mặc định 0.7) — giữ nguyên nếu "CAO"/"TRUNG_BINH".
+
+    Đây là bước áp dụng ĐỘC LẬP, KHÔNG thay thế logic điều chỉnh theo
+    giai đoạn đã có trong `calculate_stock_allocation_pct()` — 2 cơ chế
+    phục vụ 2 loại "độ tin cậy" khác nhau, cần gọi CẢ HAI khi có đủ
+    thông tin (giai đoạn ensemble + độ tin cậy nội bộ theo giai đoạn).
+    """
+    if do_tin_cay_ensemble not in ("CAO", "TRUNG_BINH", "THAP"):
+        raise InvalidCapitalAllocationError(
+            f"do_tin_cay_ensemble '{do_tin_cay_ensemble}' không hợp lệ. "
+            f"Cần một trong ('CAO', 'TRUNG_BINH', 'THAP')."
+        )
+    if do_tin_cay_ensemble == "THAP":
+        return ty_trong_goc_pct * HE_SO_GIAM_KHI_DO_TIN_CAY_ENSEMBLE_THAP
+    return ty_trong_goc_pct
+
+
 # ==============================================================================
 # BƯỚC 4.2-4.3 — KHOẢNG GIÁ VÀO LỆNH / CẮT LỖ / CHỐT LỜI (dựa trên ATR14)
 # ==============================================================================
