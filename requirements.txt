@@ -1,53 +1,53 @@
 # ==============================================================================
-# pm_ck — Phần mềm theo dõi & mô phỏng giao dịch CK Việt Nam
-# Requirements cơ bản cho giai đoạn khởi tạo khung dự án
+# pm_ck — Phan mem theo doi & mo phong giao dich CK Viet Nam
+# Requirements co ban cho giai doan khoi tao khung du an
 # ==============================================================================
 
-# --- Xử lý dữ liệu ---
+# --- Xu ly du lieu ---
 pandas>=2.2
 numpy>=1.26
-scipy>=1.11  # cần cho core/stock_character_classifier.py (percentileofscore)
+scipy>=1.11  # can cho core/stock_character_classifier.py (percentileofscore)
 
-# --- Chỉ báo kỹ thuật ---
+# --- Chi bao ky thuat ---
 pandas-ta>=0.3.14b0
 
-# --- Cấu hình & tiện ích ---
+# --- Cau hinh & tien ich ---
 PyYAML>=6.0
 python-dotenv>=1.0
 
-# --- Lưu trữ dữ liệu ---
+# --- Luu tru du lieu ---
 SQLAlchemy>=2.0
 
-# --- Gọi API / thu thập dữ liệu ---
+# --- Goi API / thu thap du lieu ---
 requests>=2.31
 
-# --- Dữ liệu chứng khoán Việt Nam thật (bắt buộc khi data_source.adapter
-#     trong config.yaml là "vnstock" — trước đây chỉ cài tay trên máy cá
-#     nhân, CHƯA từng khai báo ở đây, khiến máy mới/GitHub Actions không
-#     tự cài được, gây lỗi "Chưa cài đặt thư viện 'vnstock'") ---
+# --- Du lieu chung khoan Viet Nam that (bat buoc khi data_source.adapter
+#     trong config.yaml la "vnstock" — truoc day chi cai tay tren may ca
+#     nhan, CHUA tung khai bao o day, khien may moi/GitHub Actions khong
+#     tu cai duoc, gay loi "Chua cai dat thu vien 'vnstock'") ---
 vnstock
 
-# --- Thông báo Telegram ---
+# --- Thong bao Telegram ---
 python-telegram-bot>=21.0
 
-# --- Giao diện dashboard ---
+# --- Giao dien dashboard ---
 streamlit>=1.42
 
-# --- Xác thực đăng nhập (st.login) — bắt buộc để dashboard hỗ trợ
-#     đăng nhập bằng Google trước khi xem nội dung ---
+# --- Xac thuc dang nhap (st.login) — bat buoc de dashboard ho tro
+#     dang nhap bang Google truoc khi xem noi dung ---
 Authlib>=1.3.2
 
-# --- Biểu đồ (dùng trong backtest_engine) ---
+# --- Bieu do (dung trong backtest_engine) ---
 matplotlib>=3.8
 
-# --- Biểu đồ tương tác (nến Nhật, khối lượng) cho dashboard ---
+# --- Bieu do tuong tac (nen Nhat, khoi luong) cho dashboard ---
 plotly>=5.20
 
-# --- PostgreSQL/Supabase (tùy chọn — chỉ cần khi dùng chung dữ liệu
-#     nhiều máy qua Supabase; không cần nếu chỉ dùng SQLite cục bộ) ---
+# --- PostgreSQL/Supabase (tuy chon — chi can khi dung chung du lieu
+#     nhieu may qua Supabase; khong can neu chi dung SQLite cuc bo) ---
 psycopg2-binary>=2.9
 statsmodels>=0.14
 
-# --- Kiểm thử ---
+# --- Kiem thu ---
 pytest>=8.0
 pytest-mock>=3.14
