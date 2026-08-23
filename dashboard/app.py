@@ -3149,6 +3149,9 @@ def render_entry_screener_section(storage: Storage) -> None:
         m for m in danh_sach_da_tinh_lai
         if set(m["tieu_chi_dat"]) & set(tieu_chi_chon)
     ]
+    # Giữ lại danh sách gốc (chỉ áp dụng bộ lọc TIÊU CHÍ, chưa qua lọc
+    # khối lượng/tìm kiếm bên dưới) — dùng cho bảng tổng hợp "Số mã đạt".
+    danh_sach_theo_tieu_chi = list(danh_sach_loc)
 
     # --- Lọc thêm theo khối lượng trung bình 20 phiên (bổ sung 01/08/2026):
     #     loại bỏ các mã thanh khoản quá thấp — dữ liệu lấy từ
@@ -3183,13 +3186,41 @@ def render_entry_screener_section(storage: Storage) -> None:
     )
     danh_sach_loc = [m for m in danh_sach_loc if m["ma"] in ma_da_loc_theo_tim_kiem]
 
-    st.metric("Số mã đạt (theo tiêu chí đã lọc)", len(danh_sach_loc))
+    uu_tien_emoji = {"UU_TIEN_CAO": "🟢", "UU_TIEN_TRUNG_BINH": "🟡", "KHONG_DAT": "⚪"}
+
+    ma_con_lai_cuoi_cung = {m["ma"] for m in danh_sach_loc}
+    st.markdown(f"**Số mã đạt (theo tiêu chí đã lọc): {len(danh_sach_theo_tieu_chi)}**")
+    if danh_sach_theo_tieu_chi:
+        bang_tong_hop = pd.DataFrame([
+            {
+                "Mã": m["ma"],
+                "Ưu tiên": f"{uu_tien_emoji.get(m['xep_hang_uu_tien'], '')} {m['xep_hang_uu_tien']}",
+                "Tiêu chí đạt": ", ".join(nhan_tieu_chi.get(t, t) for t in m["tieu_chi_dat"]),
+                "Hiện tại thỏa mãn tiêu chí lọc": "✅" if m["ma"] in ma_con_lai_cuoi_cung else "—",
+            }
+            for m in danh_sach_theo_tieu_chi
+        ])
+        st.dataframe(
+            bang_tong_hop, width="stretch", hide_index=True,
+            column_config={
+                "Mã": st.column_config.TextColumn("Mã", width="small"),
+                "Ưu tiên": st.column_config.TextColumn("Ưu tiên", width="small"),
+                "Tiêu chí đạt": st.column_config.TextColumn("Tiêu chí đạt", width="large"),
+                "Hiện tại thỏa mãn tiêu chí lọc": st.column_config.TextColumn(
+                    "Hiện tại thỏa mãn tiêu chí lọc", width="small"
+                ),
+            },
+        )
+        st.caption(
+            "Cột \"Hiện tại thỏa mãn tiêu chí lọc\" = ✅ nếu mã còn qua được cả bộ lọc "
+            "khối lượng tối thiểu và ô tìm kiếm bên dưới; \"—\" nếu bị loại bởi 1 trong "
+            "2 bộ lọc đó dù vẫn đạt tiêu chí đã chọn ở trên."
+        )
 
     if not danh_sach_loc:
         st.info("Không có mã nào đạt tiêu chí đã chọn.")
         return
 
-    uu_tien_emoji = {"UU_TIEN_CAO": "🟢", "UU_TIEN_TRUNG_BINH": "🟡", "KHONG_DAT": "⚪"}
     ten_cot_bac = [
         "Giảm >15% (%)", "Giảm 10-15% (%)", "Giảm 5-10% (%)", "Giảm 0-5% (%)",
         "Tăng 0-5% (%)", "Tăng 5-10% (%)", "Tăng 10-15% (%)", "Tăng >15% (%)",
@@ -3244,9 +3275,28 @@ def render_entry_screener_section(storage: Storage) -> None:
         f"lại được 2 tiêu chí đó vì quá chậm). Xem cột \"Số lần quan sát\" để đánh giá "
         f"độ tin cậy — quá ít lần quan sát thì không nên dùng làm căn cứ."
     )
+    cot_bac_config = {
+        ten_cot: st.column_config.NumberColumn(ten_cot, width="small")
+        for ten_cot in ten_cot_bac
+    }
     st.dataframe(
         style_tang_giam(display_df, dinh_dang_so=dinh_dang_screen),
         width='stretch', hide_index=True,
+        column_config={
+            "Mã": st.column_config.TextColumn("Mã", width="small"),
+            "Ưu tiên": st.column_config.TextColumn("Ưu tiên", width="small"),
+            f"Độ lệch {duong_tham_chieu_nhan}": st.column_config.TextColumn(
+                f"Độ lệch {duong_tham_chieu_nhan}", width="small"
+            ),
+            "Volume TB 20 phiên": st.column_config.TextColumn("Volume TB 20 phiên", width="small"),
+            "Tiêu chí đạt": st.column_config.TextColumn("Tiêu chí đạt", width="large"),
+            "Sắp breakout": st.column_config.TextColumn("Sắp breakout", width="small"),
+            "Mẫu hình": st.column_config.TextColumn("Mẫu hình", width="small"),
+            "Số lần quan sát (lịch sử)": st.column_config.NumberColumn(
+                "Số lần q.sát", width="small"
+            ),
+            **cot_bac_config,
+        },
     )
     st.caption(report["ghi_chu"])
 
