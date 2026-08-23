@@ -4970,8 +4970,16 @@ def require_login() -> None:
     trong Supabase, ai có connection string thật vẫn truy cập được DB
     trực tiếp. Đủ dùng cho mục đích ngăn người lạ tình cờ vào xem/sửa
     qua link công khai, KHÔNG thay thế cho bảo mật hạ tầng đầy đủ.
+    LƯU Ý VỀ TEST: khi chạy `pytest`/`AppTest` (không có secrets OAuth
+    thật), việc gọi `require_login()` sẽ luôn hiện màn hình đăng nhập và
+    chặn xem nội dung — set biến môi trường `PM_CK_SKIP_LOGIN=1` để bỏ
+    qua bước này trong môi trường test (xem `tests/conftest.py`). KHÔNG
+    set biến này khi chạy thật (`streamlit run`).
     """
-    if not st.user.is_logged_in:
+    if os.environ.get("PM_CK_SKIP_LOGIN") == "1":
+        return
+
+    if not getattr(st.user, "is_logged_in", False):
         st.title("📊 pm_ck — Đăng nhập")
         st.write(
             "Đây là dashboard riêng tư. Vui lòng đăng nhập bằng tài khoản "
@@ -5092,4 +5100,5 @@ def main() -> None:
                     render_fn(*args)
 
 
-main()
+if __name__ == "__main__":
+    main()
