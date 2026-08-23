@@ -4647,7 +4647,7 @@ def render_watchlist_manager_section(storage: Storage) -> None:
         new_symbol = st.text_input(
             "Thêm mã mới", key="new_symbol_input", placeholder="Ví dụ: SSI"
         )
-        submitted = st.form_submit_button("➕ Thêm vào watchlist")
+        submitted = st.form_submit_button("➕ Thêm vào watchlist", key="add_symbol_btn")
 
     if submitted:
         symbol_clean = new_symbol.strip().upper()
