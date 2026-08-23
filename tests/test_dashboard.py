@@ -63,6 +63,11 @@ def seeded_storage(isolated_db_path):
         "price_above_ema200": True,
     })
 
+    # Cần thiết để mục "Giai đoạn thị trường" không thoát sớm ở bước lấy
+    # danh sách ngành (all_symbol_sector_keys) — mã HPG được gán ngành
+    # "banking", khớp với market_regime "banking" seed bên dưới.
+    storage.save("symbol_sector", "HPG", {"sector": "banking"})
+
     storage.save("realtime_price", "HPG", {
         "symbol": "HPG", "price": 33.0, "volume": 1_500_000,
         "timestamp": datetime(2026, 1, 10, 14, 30),
@@ -174,9 +179,9 @@ class TestDashboardSmoke:
         assert not at.exception
 
         # Chỉ đúng 1 tiêu đề mục được hiển thị (không lẫn các mục khác)
-        markdown_texts = [m.value for m in at.markdown]
-        assert any("Bảng giá theo dõi (Watchlist)" in m for m in markdown_texts)
-        assert not any("Biểu đồ nến" in m for m in markdown_texts)
+        subheader_texts = [s.value for s in at.subheader]
+        assert any("Bảng giá theo dõi (Watchlist)" in s for s in subheader_texts)
+        assert not any("Biểu đồ nến" in s for s in subheader_texts)
 
     def test_dashboard_title_present(self, seeded_storage):
         at = AppTest.from_file(DASHBOARD_PATH)
@@ -466,14 +471,20 @@ class TestBuildWatchlistDetailTableResilience:
 
         storage = Storage(db_path=isolated_db_path)
 
-        original_get_latest = storage.get_latest
+        original_get_latest_many = storage.get_latest_many
 
-        def flaky_get_latest(category, key):
-            if category == "indicator_snapshot" and key == "BAD":
-                raise RuntimeError("Lỗi giả lập để kiểm tra khả năng chịu lỗi")
-            return original_get_latest(category, key)
+        def flaky_get_latest_many(category, keys):
+            result = original_get_latest_many(category, keys)
+            if category == "indicator_snapshot" and "BAD" in keys:
+                # Giả lập dữ liệu HỎNG cho riêng mã BAD (data=None) — khi
+                # code bên trong build_watchlist_detail_table gọi
+                # snapshot.get(...) sẽ raise AttributeError, đúng kịch
+                # bản "1 mã lỗi" cần kiểm tra khả năng chịu lỗi.
+                result = dict(result)
+                result["BAD"] = {"data": None}
+            return result
 
-        monkeypatch.setattr(storage, "get_latest", flaky_get_latest)
+        monkeypatch.setattr(storage, "get_latest_many", flaky_get_latest_many)
 
         df = build_watchlist_detail_table(storage, ["GOOD", "BAD"])
         storage.close()
