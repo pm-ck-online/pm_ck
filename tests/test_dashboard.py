@@ -23,7 +23,9 @@ from streamlit.testing.v1 import AppTest
 
 from core.storage import Storage
 
-DASHBOARD_PATH = "dashboard/app.py"
+from pathlib import Path
+
+DASHBOARD_PATH = str(Path(__file__).resolve().parent.parent / "dashboard" / "app.py")
 
 
 @pytest.fixture
@@ -161,7 +163,13 @@ class TestDashboardSmoke:
         at.run(timeout=30)
         assert not at.exception
 
-        at.radio(key="dashboard_selected_section").set_value("📈 Bảng giá theo dõi (Watchlist)")
+        at.radio(key="dashboard_selected_group").set_value("NHÓM 3 — GIAO DỊCH CỔ PHIẾU")
+        at.run(timeout=30)
+        assert not at.exception
+
+        at.radio(key="dashboard_selected_section__NHÓM 3 — GIAO DỊCH CỔ PHIẾU").set_value(
+            "📈 Bảng giá theo dõi (Watchlist)"
+        )
         at.run(timeout=30)
         assert not at.exception
 
