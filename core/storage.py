@@ -70,6 +70,26 @@ def _is_postgres_connection_string(db_path: str) -> bool:
     return db_path.startswith("postgresql://") or db_path.startswith("postgres://")
 
 
+# Nhận diện lỗi MẤT KẾT NỐI Supabase — dùng CHUNG cho mọi nơi cần tự kết
+# nối lại khi lưu/đọc dữ liệu trong 1 tiến trình chạy dài (VD run_full_
+# market.py, main.run_market_regime_history_step). Ban đầu chỉ khai báo
+# riêng ở run_full_market.py (04/08/2026, cho bước lưu checkpoint) — đưa
+# về đây (25/08/2026) để dùng lại được ở nhiều nơi mà không phải import
+# chéo giữa main.py/run_full_market.py.
+CONNECTION_ERROR_KEYWORDS = (
+    "connection already closed", "connection is closed",
+    "server closed the connection", "could not connect", "connection not open",
+)
+
+
+def is_connection_error(exc: BaseException) -> bool:
+    """Nhận diện lỗi MẤT KẾT NỐI Supabase qua nội dung thông báo lỗi (thư
+    viện psycopg2 không cung cấp 1 class ngoại lệ riêng biệt để bắt theo
+    kiểu cho mọi trường hợp mất kết nối)."""
+    text = str(exc).lower()
+    return any(keyword in text for keyword in CONNECTION_ERROR_KEYWORDS)
+
+
 class Storage:
     """Lớp lưu trữ chung cho toàn hệ thống — tự động chọn SQLite (file cục
     bộ) hoặc PostgreSQL/Supabase (dùng chung nhiều máy) dựa trên `db_path`.

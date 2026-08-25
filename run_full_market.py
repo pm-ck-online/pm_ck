@@ -42,7 +42,7 @@ import pandas as pd
 from core.data_collector import DataCollector
 from core.indicators import get_indicator_snapshot
 from core.pattern_detector import detect_narrowing_pattern
-from core.storage import Storage
+from core.storage import Storage, is_connection_error
 from main import build_data_collector, compute_precomputed_macro_score, load_config, resolve_storage_path, run_market_regime_history_step
 
 logging.basicConfig(
@@ -92,17 +92,6 @@ def save_checkpoint(storage: Storage, completed: set[str], today: Optional[date]
 
 RATE_LIMIT_KEYWORDS = ("rate limit", "giới hạn", "request limit")
 
-# Nhận diện lỗi MẤT KẾT NỐI Supabase (bổ sung 04/08/2026) — hay gặp hơn
-# hẳn từ khi tăng lượng dữ liệu tải mỗi mã (từ 2021 tới nay), khiến các
-# phiên chạy dài hơn nhiều, dễ bị Supabase tự đóng kết nối nhàn rỗi giữa
-# chừng. Dò theo từ khóa trong thông điệp lỗi (giống cách nhận diện rate
-# limit ở trên) — không import trực tiếp psycopg2 để không bắt buộc cài
-# đặt thư viện đó nếu ai đó chạy ở chế độ SQLite thuần túy.
-CONNECTION_ERROR_KEYWORDS = (
-    "connection already closed", "connection is closed",
-    "server closed the connection", "could not connect", "connection not open",
-)
-
 
 def _is_rate_limit_error(exc: BaseException) -> bool:
     """Nhận diện lỗi giới hạn API của vnstock qua nội dung thông báo lỗi
@@ -113,10 +102,11 @@ def _is_rate_limit_error(exc: BaseException) -> bool:
     return any(keyword in text for keyword in RATE_LIMIT_KEYWORDS)
 
 
-def _is_connection_error(exc: BaseException) -> bool:
-    """Nhận diện lỗi MẤT KẾT NỐI Supabase (khác với rate limit của vnstock)."""
-    text = str(exc).lower()
-    return any(keyword in text for keyword in CONNECTION_ERROR_KEYWORDS)
+# Nhận diện lỗi MẤT KẾT NỐI Supabase — dùng chung `core.storage.is_connection_error()`
+# (chuyển về đó 25/08/2026 để main.py cũng dùng lại được, tránh định
+# nghĩa trùng lặp; giữ tên `_is_connection_error` ở đây để không phải sửa
+# các nơi gọi bên dưới).
+_is_connection_error = is_connection_error
 
 
 def _save_checkpoint_voi_ket_noi_lai(
@@ -327,7 +317,7 @@ def run_full_market(
     #     TỪNG NGÀY (toàn thị trường + từng ngành) — bổ sung 05/08/2026,
     #     để dashboard đọc nhanh thay vì phải tính lại mỗi lần (xem
     #     module "Tổng hợp" -> "Lọc theo giai đoạn thị trường/ngành"). ---
-    run_market_regime_history_step(storage)
+    storage = run_market_regime_history_step(storage)
 
     # --- Tính và LƯU LẠI bảng ensemble 3 phương pháp (Breadth/Peak-
     #     Trough/Markov) — bổ sung 06/08/2026, để dashboard đọc nhanh

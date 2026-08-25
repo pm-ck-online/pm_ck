@@ -50,7 +50,7 @@ from core.market_regime_detector import detect_market_regime
 from core.notifier import Notifier, RealTelegramClient
 from core.paper_portfolio import create_portfolio
 from core.pattern_detector import detect_narrowing_pattern
-from core.storage import Storage
+from core.storage import Storage, is_connection_error
 
 logging.basicConfig(
     level=logging.INFO,
@@ -971,17 +971,39 @@ def run_short_term_signal_step(storage: Storage, watchlist_symbols: list[str]) -
     return report
 
 
-def _luu_chuoi_giai_doan(storage: Storage, key: str, chuoi) -> None:
+def _luu_chuoi_giai_doan(storage: Storage, key: str, chuoi) -> Storage:
     """Lưu 1 chuỗi giai đoạn (pd.Series index=ngày) vào storage dưới dạng
-    JSON-hóa được (list các bản ghi {"date": ..., "giai_doan": ...})."""
+    JSON-hóa được (list các bản ghi {"date": ..., "giai_doan": ...}).
+
+    SỬA LỖI 25/08/2026: bước này lặp lại cho TỪNG NGÀNH (~40+ lần) ngay
+    sau khi vừa tải mới OHLCV toàn bộ watchlist — phiên kết nối Supabase
+    kéo dài dễ bị server tự đóng giữa chừng (sự cố thực tế: sập cả
+    pipeline ngay tại 1 lần lưu ngành). Nếu mất kết nối, TỰ ĐỘNG mở kết
+    nối mới rồi lưu lại đúng 1 lần (giống cơ chế đã có cho checkpoint ở
+    `run_full_market.py`). Trả về đối tượng `Storage` ĐANG DÙNG (có thể là
+    bản mới) — LUÔN gán ngược lại biến `storage` ở nơi gọi.
+    """
     records = [
         {"date": str(ngay.date()) if hasattr(ngay, "date") else str(ngay), "giai_doan": gia_tri}
         for ngay, gia_tri in chuoi.items()
     ]
-    storage.save("chuoi_giai_doan_lich_su", key, {"records": records})
+    try:
+        storage.save("chuoi_giai_doan_lich_su", key, {"records": records})
+        return storage
+    except Exception as exc:  # noqa: BLE001
+        if not is_connection_error(exc):
+            raise
+        logger.warning("Kết nối storage bị ngắt khi lưu chuỗi giai đoạn '%s' -> đang kết nối lại...", key)
+        try:
+            storage.close()
+        except Exception:  # noqa: BLE001
+            pass
+        storage_moi = Storage(db_path=storage.db_path)
+        storage_moi.save("chuoi_giai_doan_lich_su", key, {"records": records})
+        return storage_moi
 
 
-def run_market_regime_history_step(storage: Storage) -> None:
+def run_market_regime_history_step(storage: Storage) -> Storage:
     """Tính và LƯU LẠI (bổ sung 05/08/2026) chuỗi giai đoạn Uptrend/
     Sideway/Downtrend THEO TỪNG NGÀY trong lịch sử — cho TOÀN THỊ TRƯỜNG
     (key="thi_truong") và TỪNG NGÀNH (key=tên ngành) — chạy 1 LẦN/NGÀY
@@ -999,13 +1021,17 @@ def run_market_regime_history_step(storage: Storage) -> None:
     mã bị Supabase hủy do vượt quá statement timeout, làm sập cả pipeline
     ở đúng bước này. Toàn bộ tính toán còn lại (vector hóa, tính cho từng
     ngành) vẫn làm TRONG BỘ NHỚ, không tốn thêm request nào.
+
+    Trả về đối tượng `Storage` ĐANG DÙNG (có thể là bản MỚI nếu phải kết
+    nối lại giữa chừng do mất kết nối Supabase) — bên gọi PHẢI gán ngược
+    lại biến `storage` của mình từ giá trị trả về này.
     """
     from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
 
     all_symbol_keys = storage.query_all_keys("ohlcv_history")
     if not all_symbol_keys:
         logger.warning("Không có dữ liệu OHLCV nào để tính chuỗi giai đoạn lịch sử — bỏ qua bước này.")
-        return
+        return storage
 
     KICH_THUOC_LO_OHLCV = 30
     ohlcv_map_raw: dict[str, dict] = {}
@@ -1027,11 +1053,11 @@ def run_market_regime_history_step(storage: Storage) -> None:
 
     if not du_lieu_theo_ma:
         logger.warning("Không có mã nào đủ dữ liệu OHLCV hợp lệ — bỏ qua bước tính chuỗi giai đoạn lịch sử.")
-        return
+        return storage
 
     # --- Toàn thị trường ---
     chuoi_thi_truong = tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma)
-    _luu_chuoi_giai_doan(storage, "thi_truong", chuoi_thi_truong)
+    storage = _luu_chuoi_giai_doan(storage, "thi_truong", chuoi_thi_truong)
     logger.info("Đã lưu chuỗi giai đoạn lịch sử TOÀN THỊ TRƯỜNG (%d ngày).", len(chuoi_thi_truong))
 
     # --- Theo từng ngành ---
@@ -1051,12 +1077,13 @@ def run_market_regime_history_step(storage: Storage) -> None:
         du_lieu_nganh = {ma: du_lieu_theo_ma[ma] for ma in ma_trong_nganh}
         chuoi_nganh = tinh_chuoi_giai_doan_theo_ngay(du_lieu_nganh)
         if len(chuoi_nganh) > 0:
-            _luu_chuoi_giai_doan(storage, nganh, chuoi_nganh)
+            storage = _luu_chuoi_giai_doan(storage, nganh, chuoi_nganh)
             so_nganh_da_luu += 1
 
     logger.info(
         "Đã lưu chuỗi giai đoạn lịch sử cho %d/%d ngành.", so_nganh_da_luu, len(tat_ca_nganh),
     )
+    return storage
 
 
 def run_market_regime_ensemble_step(storage: Storage) -> None:

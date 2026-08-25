@@ -52,6 +52,46 @@ class TestLuuChuoiGiaiDoan:
         assert records[0] == {"date": "2024-01-01", "giai_doan": "uptrend"}
         s.close()
 
+    def test_tu_ket_noi_lai_khi_mat_ket_noi_giua_chung(self, tmp_path):
+        """SỬA LỖI 25/08/2026: sự cố thực tế — Supabase tự đóng kết nối
+        giữa chừng khi lưu chuỗi giai đoạn cho ~40+ ngành liên tiếp, làm
+        sập cả pipeline. `_luu_chuoi_giai_doan()` phải tự kết nối lại và
+        lưu thành công, trả về đối tượng Storage MỚI."""
+        db_path = str(tmp_path / "test.db")
+        s = Storage(db_path=db_path)
+
+        save_that = s.save
+        da_loi_lan_dau = {"xong": False}
+
+        def save_loi_1_lan(*args, **kwargs):
+            if not da_loi_lan_dau["xong"]:
+                da_loi_lan_dau["xong"] = True
+                raise Exception("server closed the connection unexpectedly")
+            return save_that(*args, **kwargs)
+
+        s.save = save_loi_1_lan
+
+        chuoi = pd.Series(["uptrend", "downtrend"], index=pd.to_datetime(["2024-01-01", "2024-01-02"]))
+        s_moi = _luu_chuoi_giai_doan(s, "nganh_x", chuoi)
+
+        assert s_moi is not s
+        record = s_moi.get_latest("chuoi_giai_doan_lich_su", "nganh_x")
+        assert record is not None
+        assert len(record["data"]["records"]) == 2
+        s_moi.close()
+
+    def test_khong_nuot_loi_khac_khong_phai_mat_ket_noi(self):
+        s = Storage(db_path=":memory:")
+
+        def save_loi_khac(*args, **kwargs):
+            raise ValueError("lỗi khác, không liên quan mất kết nối")
+
+        s.save = save_loi_khac
+        chuoi = pd.Series(["uptrend"], index=pd.to_datetime(["2024-01-01"]))
+        with pytest.raises(ValueError):
+            _luu_chuoi_giai_doan(s, "test_key", chuoi)
+        s.close()
+
 
 class TestRunMarketRegimeHistoryStep:
     def test_luu_duoc_ca_thi_truong_va_tung_nganh(self, storage_voi_du_lieu):
