@@ -34,6 +34,8 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from datetime import date
+from typing import Optional
 
 import pandas as pd
 
@@ -53,21 +55,38 @@ CHECKPOINT_CATEGORY = "batch_checkpoint"
 CHECKPOINT_KEY = "full_market"
 
 
-def load_checkpoint(storage: Storage) -> set[str]:
-    """Đọc danh sách mã ĐÃ xử lý xong từ lần chạy trước (nếu có)."""
+def load_checkpoint(storage: Storage, today: Optional[date] = None) -> set[str]:
+    """Đọc danh sách mã ĐÃ xử lý xong từ lần chạy trước — CHỈ áp dụng nếu
+    checkpoint đó được lưu ĐÚNG NGÀY HÔM NAY, ngược lại coi như KHÔNG CÓ
+    checkpoint (trả về rỗng, buộc tải lại giá mới cho toàn bộ mã).
+
+    SỬA LỖI (25/08/2026): trước đây checkpoint không gắn ngày, nên sau lần
+    chạy đầu tiên hoàn tất cả danh sách, MỌI lần chạy tự động tiếp theo
+    (`update_pm_ck_daily.bat`, không truyền `--reset`) đều thấy "đã xong
+    hết" và BỎ QUA HOÀN TOÀN bước tải giá mới — sự cố thực tế: giá OHLCV
+    bị "kẹt" nguyên 20 ngày (05/08 -> 25/08/2026) dù script chạy hàng ngày.
+    Checkpoint cũ (lưu trước bản sửa này) không có trường `ngay_chay` nên
+    tự động bị coi là hết hạn ngay lần chạy đầu tiên sau khi cập nhật —
+    không cần thao tác gì thêm để "chữa" dữ liệu đang kẹt.
+    """
     record = storage.get_latest(CHECKPOINT_CATEGORY, CHECKPOINT_KEY)
     if record is None:
+        return set()
+    ngay_hien_tai = (today or date.today()).isoformat()
+    if record["data"].get("ngay_chay") != ngay_hien_tai:
         return set()
     return set(record["data"].get("completed_symbols", []))
 
 
-def save_checkpoint(storage: Storage, completed: set[str]) -> None:
-    """Ghi lại danh sách mã đã xử lý xong — gọi sau MỖI mã để đảm bảo
-    không mất tiến độ nếu chương trình bị ngắt giữa chừng.
+def save_checkpoint(storage: Storage, completed: set[str], today: Optional[date] = None) -> None:
+    """Ghi lại danh sách mã đã xử lý xong TRONG NGÀY HÔM NAY — gọi sau MỖI
+    mã để đảm bảo không mất tiến độ nếu chương trình bị ngắt giữa chừng
+    (vẫn resume đúng trong cùng 1 ngày). Gắn kèm `ngay_chay` để
+    `load_checkpoint()` tự bỏ qua checkpoint từ ngày khác.
     """
     storage.save(
         CHECKPOINT_CATEGORY, CHECKPOINT_KEY,
-        {"completed_symbols": sorted(completed)},
+        {"completed_symbols": sorted(completed), "ngay_chay": (today or date.today()).isoformat()},
     )
 
 
@@ -100,7 +119,9 @@ def _is_connection_error(exc: BaseException) -> bool:
     return any(keyword in text for keyword in CONNECTION_ERROR_KEYWORDS)
 
 
-def _save_checkpoint_voi_ket_noi_lai(storage: Storage, completed: set[str], config: dict) -> Storage:
+def _save_checkpoint_voi_ket_noi_lai(
+    storage: Storage, completed: set[str], config: dict, today: Optional[date] = None,
+) -> Storage:
     """Gọi `save_checkpoint()`; nếu bị lỗi mất kết nối, TỰ ĐỘNG mở lại kết
     nối mới rồi thử lại đúng 1 lần — tránh làm sập toàn bộ chương trình
     chỉ vì 1 lần rớt kết nối tạm thời (bổ sung 04/08/2026).
@@ -109,7 +130,7 @@ def _save_checkpoint_voi_ket_noi_lai(storage: Storage, completed: set[str], conf
     kết nối lại) — LUÔN gán ngược lại biến `storage` ở nơi gọi.
     """
     try:
-        save_checkpoint(storage, completed)
+        save_checkpoint(storage, completed, today=today)
         return storage
     except Exception as exc:  # noqa: BLE001
         if not _is_connection_error(exc):
@@ -120,7 +141,7 @@ def _save_checkpoint_voi_ket_noi_lai(storage: Storage, completed: set[str], conf
         except Exception:  # noqa: BLE001
             pass
         storage_moi = Storage(db_path=resolve_storage_path(config))
-        save_checkpoint(storage_moi, completed)
+        save_checkpoint(storage_moi, completed, today=today)
         return storage_moi
 
 
@@ -131,7 +152,9 @@ def run_full_market(
     reset_checkpoint: bool = False,
     max_rate_limit_retries: int = 5,
     rate_limit_cooldown_seconds: float = 65.0,
+    today: Optional[date] = None,
 ) -> None:
+    today = today or date.today()
     storage = Storage(db_path=resolve_storage_path(config))
     # SỬA LỖI (05/08/2026): trước đây tự khởi tạo VnstockDataSource() TRỰC
     # TIẾP, KHÔNG tham số — bỏ qua hoàn toàn cấu hình `vnstock_start_date`
@@ -157,7 +180,7 @@ def run_full_market(
         symbol_sector_map = collector.source.fetch_symbol_sector_map()
         logger.info("Tổng số mã lấy được: %d", len(symbol_sector_map))
 
-    completed = set() if reset_checkpoint else load_checkpoint(storage)
+    completed = set() if reset_checkpoint else load_checkpoint(storage, today=today)
     if completed:
         logger.info(
             "Tìm thấy checkpoint từ lần chạy trước: %d mã đã xử lý xong -> "
@@ -267,7 +290,7 @@ def run_full_market(
             # bỏ qua vĩnh viễn trong batch này (xem giải thích ở docstring).
             completed.add(symbol)
 
-        storage = _save_checkpoint_voi_ket_noi_lai(storage, completed, config)
+        storage = _save_checkpoint_voi_ket_noi_lai(storage, completed, config, today=today)
         if idx < total_remaining:
             time.sleep(delay_seconds)
 

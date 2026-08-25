@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import sys
 import types
+from datetime import date
 
 import pandas as pd
 import pytest
@@ -116,6 +117,33 @@ class TestCheckpoint:
         assert result == {"AAA", "BBB"}
         storage.close()
 
+    def test_checkpoint_cung_ngay_van_duoc_dung(self):
+        storage = Storage(db_path=":memory:")
+        hom_nay = date(2026, 8, 25)
+        save_checkpoint(storage, {"AAA", "BBB"}, today=hom_nay)
+        result = load_checkpoint(storage, today=hom_nay)
+        assert result == {"AAA", "BBB"}
+        storage.close()
+
+    def test_checkpoint_tu_ngay_khac_bi_coi_la_het_han(self):
+        """SỬA LỖI 25/08/2026: checkpoint lưu hôm qua không được dùng cho
+        hôm nay — nếu không, ngày mới sẽ luôn thấy 'đã xong hết' và bỏ qua
+        tải giá mới (sự cố thực tế: dữ liệu kẹt lại 20 ngày)."""
+        storage = Storage(db_path=":memory:")
+        save_checkpoint(storage, {"AAA", "BBB"}, today=date(2026, 8, 5))
+        result = load_checkpoint(storage, today=date(2026, 8, 25))
+        assert result == set()
+        storage.close()
+
+    def test_checkpoint_cu_khong_co_truong_ngay_chay_bi_coi_la_het_han(self):
+        """Checkpoint lưu TRƯỚC bản sửa này (chưa có trường `ngay_chay`)
+        phải tự động bị coi là hết hạn — không cần thao tác thủ công nào
+        để 'chữa' dữ liệu đang bị kẹt trên hệ thống thật."""
+        storage = Storage(db_path=":memory:")
+        storage.save("batch_checkpoint", "full_market", {"completed_symbols": ["AAA", "BBB"]})
+        assert load_checkpoint(storage) == set()
+        storage.close()
+
 
 # ==============================================================================
 # Test: run_full_market — chạy toàn bộ, giới hạn, resume, lỗi 1 mã
@@ -162,6 +190,33 @@ class TestRunFullMarket:
         storage = Storage(db_path=db_path)
         completed = load_checkpoint(storage)
         # Sau khi resume: đủ cả 5 mã (3 cũ + 2 mới xử lý thêm)
+        assert completed == {"AAA", "BBB", "CCC", "DDD", "EEE"}
+        storage.close()
+
+    def test_checkpoint_tu_ngay_truoc_khong_chan_tai_lai_du_lieu_moi(
+        self, fake_vnstock_module, no_sleep, config_with_db
+    ):
+        """Sự cố thực tế 25/08/2026: checkpoint từ MỘT NGÀY TRƯỚC (không
+        khớp ngày hôm nay) từng khiến run_full_market() coi TOÀN BỘ mã là
+        'đã xong' và BỎ QUA HOÀN TOÀN việc tải giá mới ở mọi lần chạy tự
+        động tiếp theo (`update_pm_ck_daily.bat` không truyền `--reset`).
+        """
+        config, db_path = config_with_db
+
+        # Checkpoint "đã xong hết" từ 1 ngày trước — nhưng KHÔNG có
+        # indicator_snapshot thật đi kèm (giống hệt checkpoint cũ không
+        # gắn ngày trước bản sửa này).
+        setup_storage = Storage(db_path=db_path)
+        save_checkpoint(setup_storage, {"AAA", "BBB", "CCC", "DDD", "EEE"}, today=date(2026, 8, 5))
+        setup_storage.close()
+
+        run_full_market(config, delay_seconds=0, today=date(2026, 8, 25))
+
+        storage = Storage(db_path=db_path)
+        # Nếu checkpoint sai ngày vẫn bị dùng nhầm, AAA sẽ KHÔNG được xử
+        # lý lại -> không có indicator_snapshot.
+        assert storage.get_latest("indicator_snapshot", "AAA") is not None
+        completed = load_checkpoint(storage, today=date(2026, 8, 25))
         assert completed == {"AAA", "BBB", "CCC", "DDD", "EEE"}
         storage.close()
 
