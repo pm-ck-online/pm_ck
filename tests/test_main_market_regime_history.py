@@ -115,6 +115,30 @@ class TestRunMarketRegimeHistoryStep:
         assert s.get_latest("chuoi_giai_doan_lich_su", "thi_truong") is None
         s.close()
 
+    def test_gop_dung_du_lieu_tu_nhieu_lo_ohlcv(self):
+        """SỬA LỖI 25/08/2026: get_latest_many() được chia thành nhiều lô
+        30 mã/lô (thay vì 1 lượt duy nhất) để tránh timeout Supabase khi
+        dữ liệu lớn — test này xác nhận vòng lặp gộp ĐÚNG dữ liệu từ
+        NHIỀU lô, không chỉ đúng khi tình cờ vừa 1 lô như các fixture khác
+        trong file này (chỉ có 3 mã)."""
+        s = Storage(db_path=":memory:")
+        so_ma = 35  # > 30 -> chắc chắn rơi vào 2 lô
+        for i in range(so_ma):
+            ma = f"MA{i:03d}"
+            s.save("ohlcv_history", ma, {"records": _make_ohlcv_records(seed=i, xu_huong=0.15)})
+            s.save("symbol_sector", ma, {"sector": "nganh_gop_lo"})
+
+        run_market_regime_history_step(s)
+
+        thi_truong = s.get_latest("chuoi_giai_doan_lich_su", "thi_truong")
+        assert thi_truong is not None
+        assert len(thi_truong["data"]["records"]) > 0
+
+        nganh = s.get_latest("chuoi_giai_doan_lich_su", "nganh_gop_lo")
+        assert nganh is not None
+        assert len(nganh["data"]["records"]) > 0
+        s.close()
+
     def test_steel_toan_tang_phai_ra_uptrend(self, storage_voi_du_lieu):
         # Ngành "steel" chỉ có 1 mã (C), xu hướng tăng RÕ RỆT (0.15/phiên)
         # -> phần lớn phải là "uptrend".
