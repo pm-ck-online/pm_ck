@@ -198,6 +198,37 @@ class Storage:
     def _commit(self) -> None:
         self._conn.commit()
 
+    def _voi_ket_noi_lai(self, thao_tac):
+        """Chạy `thao_tac` (hàm KHÔNG tham số, gồm toàn bộ execute+fetch+
+        commit của 1 thao tác đọc/ghi); nếu Supabase tự đóng kết nối giữa
+        chừng, TỰ ĐỘNG mở lại kết nối rồi chạy lại TOÀN BỘ `thao_tac` từ
+        đầu đúng 1 lần (bổ sung 25/08/2026 — dùng CHUNG cho MỌI phương
+        thức đọc/ghi, thay vì phải vá riêng lẻ từng nơi GỌI Storage mỗi
+        khi phát hiện thêm 1 chỗ bị lỗi mất kết nối giữa chừng, như đã
+        từng làm với checkpoint và chuỗi giai đoạn theo ngành).
+
+        Phải retry LẠI TỪ ĐẦU cả execute lẫn commit (không chỉ riêng 1
+        trong 2) — vì cả 2 cùng thuộc 1 transaction: mất kết nối giữa
+        execute và commit coi như TOÀN BỘ thao tác chưa từng xảy ra, kết
+        nối mới không hề "nhớ" phần đã execute dở trên kết nối cũ.
+
+        Chỉ áp dụng cho backend Postgres — SQLite cục bộ không có khái
+        niệm server tự đóng kết nối giữa chừng.
+        """
+        if not self._is_postgres:
+            return thao_tac()
+        try:
+            return thao_tac()
+        except Exception as exc:  # noqa: BLE001
+            if not is_connection_error(exc):
+                raise
+            try:
+                self._conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._init_postgres(self.db_path)
+            return thao_tac()
+
     # --------------------------------------------------------------------
     # Ghi dữ liệu
     # --------------------------------------------------------------------
@@ -220,22 +251,25 @@ class Storage:
         timestamp = timestamp or datetime.now()
         serialized = json.dumps(data, default=_json_default, ensure_ascii=False)
 
-        if self._is_postgres:
+        def _lam():
+            if self._is_postgres:
+                cursor = self._execute(
+                    "INSERT INTO records (category, key, timestamp, data) "
+                    "VALUES (%s, %s, %s, %s) RETURNING id",
+                    (category, key, timestamp.isoformat(), serialized),
+                )
+                new_id = cursor.fetchone()["id"]
+                self._commit()
+                return new_id
+
             cursor = self._execute(
-                "INSERT INTO records (category, key, timestamp, data) "
-                "VALUES (%s, %s, %s, %s) RETURNING id",
+                "INSERT INTO records (category, key, timestamp, data) VALUES (?, ?, ?, ?)",
                 (category, key, timestamp.isoformat(), serialized),
             )
-            new_id = cursor.fetchone()["id"]
             self._commit()
-            return new_id
+            return cursor.lastrowid
 
-        cursor = self._execute(
-            "INSERT INTO records (category, key, timestamp, data) VALUES (?, ?, ?, ?)",
-            (category, key, timestamp.isoformat(), serialized),
-        )
-        self._commit()
-        return cursor.lastrowid
+        return self._voi_ket_noi_lai(_lam)
 
     # --------------------------------------------------------------------
     # Đọc dữ liệu
@@ -259,22 +293,25 @@ class Storage:
         """Lấy bản ghi MỚI NHẤT cho `(category, key)`. Trả về None nếu
         chưa có dữ liệu nào.
         """
-        p = self._placeholder
-        cursor = self._execute(
-            f"""
-            SELECT timestamp, data FROM records
-            WHERE category = {p} AND key = {p}
-            ORDER BY timestamp DESC, id DESC
-            LIMIT 1
-            """,
-            (category, key),
-        )
-        row = cursor.fetchone()
+        def _lam():
+            p = self._placeholder
+            cursor = self._execute(
+                f"""
+                SELECT timestamp, data FROM records
+                WHERE category = {p} AND key = {p}
+                ORDER BY timestamp DESC, id DESC
+                LIMIT 1
+                """,
+                (category, key),
+            )
+            row = cursor.fetchone()
 
-        if row is None:
-            return None
+            if row is None:
+                return None
 
-        return self._row_to_dict(row)
+            return self._row_to_dict(row)
+
+        return self._voi_ket_noi_lai(_lam)
 
     def get_latest_many(self, category: str, keys: list[str]) -> dict[str, dict]:
         """Lấy bản ghi MỚI NHẤT cho NHIỀU key cùng lúc, trong ĐÚNG 1 câu
@@ -295,27 +332,30 @@ class Storage:
         if not keys:
             return {}
 
-        p = self._placeholder
-        placeholders = ", ".join([p] * len(keys))
-        cursor = self._execute(
-            f"""
-            SELECT key, timestamp, data FROM records
-            WHERE category = {p} AND key IN ({placeholders})
-            ORDER BY key, timestamp DESC, id DESC
-            """,
-            (category, *keys),
-        )
-        rows = cursor.fetchall()
+        def _lam():
+            p = self._placeholder
+            placeholders = ", ".join([p] * len(keys))
+            cursor = self._execute(
+                f"""
+                SELECT key, timestamp, data FROM records
+                WHERE category = {p} AND key IN ({placeholders})
+                ORDER BY key, timestamp DESC, id DESC
+                """,
+                (category, *keys),
+            )
+            rows = cursor.fetchall()
 
-        result: dict[str, dict] = {}
-        for row in rows:
-            try:
-                key, timestamp, data = row["key"], row["timestamp"], row["data"]
-            except (KeyError, IndexError, TypeError):
-                key, timestamp, data = row[0], row[1], row[2]
-            if key not in result:  # chỉ giữ bản ĐẦU TIÊN gặp = mới nhất
-                result[key] = {"timestamp": timestamp, "data": json.loads(data)}
-        return result
+            result: dict[str, dict] = {}
+            for row in rows:
+                try:
+                    key, timestamp, data = row["key"], row["timestamp"], row["data"]
+                except (KeyError, IndexError, TypeError):
+                    key, timestamp, data = row[0], row[1], row[2]
+                if key not in result:  # chỉ giữ bản ĐẦU TIÊN gặp = mới nhất
+                    result[key] = {"timestamp": timestamp, "data": json.loads(data)}
+            return result
+
+        return self._voi_ket_noi_lai(_lam)
 
     def get_history(
         self, category: str, key: str, limit: int = 100
@@ -323,37 +363,45 @@ class Storage:
         """Lấy lịch sử các bản ghi cho `(category, key)`, mới nhất trước,
         giới hạn tối đa `limit` bản ghi.
         """
-        p = self._placeholder
-        cursor = self._execute(
-            f"""
-            SELECT timestamp, data FROM records
-            WHERE category = {p} AND key = {p}
-            ORDER BY timestamp DESC, id DESC
-            LIMIT {p}
-            """,
-            (category, key, limit),
-        )
-        rows = cursor.fetchall()
+        def _lam():
+            p = self._placeholder
+            cursor = self._execute(
+                f"""
+                SELECT timestamp, data FROM records
+                WHERE category = {p} AND key = {p}
+                ORDER BY timestamp DESC, id DESC
+                LIMIT {p}
+                """,
+                (category, key, limit),
+            )
+            rows = cursor.fetchall()
+            return [self._row_to_dict(row) for row in rows]
 
-        return [self._row_to_dict(row) for row in rows]
+        return self._voi_ket_noi_lai(_lam)
 
     def query_all_keys(self, category: str) -> list[str]:
         """Trả về danh sách các `key` khác nhau (distinct) đã từng được
         lưu trong một `category` — ví dụ: tất cả mã cổ phiếu đã lưu OHLCV.
         """
-        p = self._placeholder
-        cursor = self._execute(
-            f"SELECT DISTINCT key FROM records WHERE category = {p} ORDER BY key",
-            (category,),
-        )
-        return [row["key"] for row in cursor.fetchall()]
+        def _lam():
+            p = self._placeholder
+            cursor = self._execute(
+                f"SELECT DISTINCT key FROM records WHERE category = {p} ORDER BY key",
+                (category,),
+            )
+            return [row["key"] for row in cursor.fetchall()]
+
+        return self._voi_ket_noi_lai(_lam)
 
     def query_all_categories(self) -> list[str]:
         """Trả về danh sách tất cả các `category` hiện có trong storage."""
-        cursor = self._execute(
-            "SELECT DISTINCT category FROM records ORDER BY category"
-        )
-        return [row["category"] for row in cursor.fetchall()]
+        def _lam():
+            cursor = self._execute(
+                "SELECT DISTINCT category FROM records ORDER BY category"
+            )
+            return [row["category"] for row in cursor.fetchall()]
+
+        return self._voi_ket_noi_lai(_lam)
 
     # --------------------------------------------------------------------
     # Dọn dẹp dữ liệu cũ
@@ -362,26 +410,32 @@ class Storage:
         """Xóa các bản ghi của `category` có timestamp CŨ HƠN `cutoff`.
         Trả về số bản ghi đã xóa.
         """
-        p = self._placeholder
-        cursor = self._execute(
-            f"DELETE FROM records WHERE category = {p} AND timestamp < {p}",
-            (category, cutoff.isoformat()),
-        )
-        self._commit()
-        return cursor.rowcount
+        def _lam():
+            p = self._placeholder
+            cursor = self._execute(
+                f"DELETE FROM records WHERE category = {p} AND timestamp < {p}",
+                (category, cutoff.isoformat()),
+            )
+            self._commit()
+            return cursor.rowcount
+
+        return self._voi_ket_noi_lai(_lam)
 
     def delete_key(self, category: str, key: str) -> int:
         """Xóa TOÀN BỘ bản ghi (mọi lịch sử) của một `(category, key)` cụ
         thể — dùng khi cần xóa hẳn 1 mục (vd. xóa 1 chú thích biểu đồ, 1
         giao dịch...). Trả về số bản ghi đã xóa.
         """
-        p = self._placeholder
-        cursor = self._execute(
-            f"DELETE FROM records WHERE category = {p} AND key = {p}",
-            (category, key),
-        )
-        self._commit()
-        return cursor.rowcount
+        def _lam():
+            p = self._placeholder
+            cursor = self._execute(
+                f"DELETE FROM records WHERE category = {p} AND key = {p}",
+                (category, key),
+            )
+            self._commit()
+            return cursor.rowcount
+
+        return self._voi_ket_noi_lai(_lam)
 
     # --------------------------------------------------------------------
     # Quản lý kết nối

@@ -341,6 +341,82 @@ class TestPostgresBackend:
 # nhưng đây là lớp bảo vệ hợp lý bất kể nguyên nhân).
 # ==============================================================================
 
+class TestReconnectOnConnectionDrop:
+    """SỬA LỖI 25/08/2026: sự cố thực tế — Supabase nhiều lần tự đóng kết
+    nối giữa chừng trong 1 phiên chạy dài (`run_full_market.py`), ở NHIỀU
+    nơi gọi Storage khác nhau. Thay vì vá riêng lẻ từng nơi gọi mỗi khi
+    phát hiện thêm 1 chỗ lỗi, `_voi_ket_noi_lai()` xử lý TẬP TRUNG ngay
+    trong Storage — test ở đây xác nhận cơ chế tự kết nối lại + chạy lại
+    hoạt động đúng cho cả đọc (get_latest) và ghi (save)."""
+
+    def _fake_conn_voi_cursor(self, fetchone_result=None, execute_side_effect=None):
+        fake_conn = MagicMock()
+        fake_cursor = MagicMock()
+        if execute_side_effect is not None:
+            fake_cursor.execute.side_effect = execute_side_effect
+        fake_cursor.fetchone.return_value = fetchone_result
+        fake_conn.cursor.return_value = fake_cursor
+        return fake_conn, fake_cursor
+
+    def test_get_latest_tu_ket_noi_lai_khi_mat_ket_noi(self, monkeypatch):
+        fake_module, _ = _make_fake_psycopg2_module()
+
+        # Kết nối 1: 2 lệnh CREATE (bootstrap) thành công, lệnh SELECT thứ
+        # 3 (get_latest thật) mới ném lỗi mất kết nối.
+        conn1, cursor1 = self._fake_conn_voi_cursor(
+            execute_side_effect=[None, None, Exception("server closed the connection unexpectedly")]
+        )
+        # Kết nối 2 (sau khi tự kết nối lại): SELECT thành công.
+        conn2, cursor2 = self._fake_conn_voi_cursor(fetchone_result={"timestamp": "2024-01-01T00:00:00", "data": "{\"gia\": 100}"})
+
+        fake_module.connect = MagicMock(side_effect=[conn1, conn2])
+        monkeypatch.setitem(sys.modules, "psycopg2", fake_module)
+        monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_module.extras)
+
+        storage = Storage(db_path="postgresql://x:y@host:5432/db")
+        ket_qua = storage.get_latest("test_category", "test_key")
+
+        assert fake_module.connect.call_count == 2  # đã tự kết nối lại đúng 1 lần
+        assert ket_qua == {"timestamp": "2024-01-01T00:00:00", "data": {"gia": 100}}
+
+    def test_save_tu_ket_noi_lai_va_luu_lai_tu_dau(self, monkeypatch):
+        fake_module, _ = _make_fake_psycopg2_module()
+
+        conn1, cursor1 = self._fake_conn_voi_cursor(
+            execute_side_effect=[None, None, Exception("server closed the connection unexpectedly")]
+        )
+        conn2, cursor2 = self._fake_conn_voi_cursor(fetchone_result={"id": 99})
+
+        fake_module.connect = MagicMock(side_effect=[conn1, conn2])
+        monkeypatch.setitem(sys.modules, "psycopg2", fake_module)
+        monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_module.extras)
+
+        storage = Storage(db_path="postgresql://x:y@host:5432/db")
+        new_id = storage.save("test_category", "test_key", {"gia": 100})
+
+        assert fake_module.connect.call_count == 2
+        assert new_id == 99
+        # Lệnh INSERT phải được chạy lại TRÊN KẾT NỐI MỚI (cursor2), không
+        # chỉ retry suông trên cursor cũ đã chết.
+        insert_call = next(c for c in cursor2.execute.call_args_list if "INSERT INTO records" in c.args[0])
+        assert insert_call.args[1][1] == "test_key"
+        conn2.commit.assert_called_once()
+
+    def test_khong_ket_noi_lai_khi_loi_khac_khong_phai_mat_ket_noi(self, monkeypatch):
+        fake_module, _ = _make_fake_psycopg2_module()
+        conn1, cursor1 = self._fake_conn_voi_cursor(
+            execute_side_effect=[None, None, ValueError("lỗi khác, không liên quan mất kết nối")]
+        )
+        fake_module.connect = MagicMock(return_value=conn1)
+        monkeypatch.setitem(sys.modules, "psycopg2", fake_module)
+        monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_module.extras)
+
+        storage = Storage(db_path="postgresql://x:y@host:5432/db")
+        with pytest.raises(ValueError):
+            storage.get_latest("test_category", "test_key")
+        assert fake_module.connect.call_count == 1  # KHÔNG tự kết nối lại
+
+
 class TestRowToDictFallback:
     def test_falls_back_to_positional_access_when_name_access_fails(self):
         class FakeRowRaisingOnStringKey(tuple):
