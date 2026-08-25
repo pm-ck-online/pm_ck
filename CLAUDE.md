@@ -126,6 +126,36 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    qua giao diện web Settings -> Secrets, không phải file trong repo) —
    xem `.streamlit/secrets.toml.example` (file MẪU, an toàn, không có
    giá trị thật) để biết định dạng cần nhập.
+4k. **Mục "🧮 Cổ phiếu dài hạn" (bổ sung 25/08/2026) THAY THẾ HOÀN TOÀN**
+   mục "🚦 Báo cáo tín hiệu Mua/Bán từng mã" cũ trên dashboard (theo yêu
+   cầu người dùng) — dashboard KHÔNG còn hiển thị tín hiệu MUA/BÁN/GIỮ
+   ngắn hạn của `stock_signal_engine.py` ở đâu nữa (`main.py`/
+   `run_full_market.py` VẪN tính và lưu `signal_summary_report` như cũ,
+   chỉ là không còn nơi nào trên dashboard đọc lại category này). Mục mới
+   là 1 BỘ LỌC CỔ PHIẾU DÀI HẠN: backtest 8 bộ chỉ số kỹ thuật
+   (`core/long_term_indicator_backtest.py`, TÁI SỬ DỤNG
+   `backtest/backtest_engine.py::run_backtest()` có sẵn — KHÔNG tự viết
+   lại engine) cho TỪNG MÃ trong watchlist, tách theo giai đoạn Uptrend/
+   Sideway/Downtrend tại NGÀY VÀO LỆNH của từng giao dịch lịch sử, theo
+   CẢ 2 phương pháp phân loại giai đoạn song song: (1) EMA200-đơn giản
+   (`market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`, đã có), (2)
+   Ensemble 3 phương pháp walk-forward THEO TỪNG NGÀY cho 1 mã — hàm MỚI
+   `market_regime_ensemble.tinh_chuoi_ensemble_theo_ngay()` (khác với
+   `phan_tich_ensemble_theo_nhom()` đã có, vốn chỉ tính cho NGÀY GẦN NHẤT
+   của 1 NHÓM nhiều mã, không phải chuỗi lịch sử của 1 mã đơn lẻ). Kết quả
+   lưu vào category MỚI `long_term_screener_report` (key=mã) qua bước
+   pipeline MỚI `main.run_long_term_screener_step()` — gọi ở CẢ 2 entry
+   point (`main.py` cuối `run_pipeline()`, `run_full_market.py` sau
+   `run_market_regime_ensemble_step`), đúng bài học 4c/4c2 bên dưới. ĐÂY
+   LÀ BƯỚC RẤT NẶNG khi chạy cho watchlist lớn — Phương pháp Ensemble cần
+   fit mô hình Markov cho TỪNG mã (refit mỗi 5 phiên, ước tính ~26
+   giây/mã với lịch sử ~750 phiên) ⇒ **~90 phút CHỈ RIÊNG PHẦN NÀY cho
+   toàn bộ ~212 mã**, cộng thêm vào runtime hiện tại của
+   `run_full_market.py` (~35-40 phút). Vì vậy bước này TỰ CHECKPOINT theo
+   từng mã bằng chính storage (mã đã có bản ghi trong
+   `long_term_screener_report` sẽ được bỏ qua ở lần chạy sau, trừ khi gọi
+   với `force_recompute=True`) — KHÔNG cần thêm category checkpoint riêng
+   như bước fetch OHLCV.
 4f. **CẢNH GIÁC với việc thêm QUÁ NHIỀU test `AppTest` liên tiếp trong 1
    file test dashboard** — đã gặp hiện tượng "tràn trạng thái form" thực
    tế (27/07/2026): thêm 2 test AppTest MỚI vào cuối `test_dashboard.py`
@@ -173,6 +203,8 @@ bản định tính đơn giản ban đầu — không thay thế, để đối 
 | `pattern_detector.py` | Phát hiện mô hình thu hẹp biên độ (narrowing amplitude). |
 | `market_breadth.py` | % Breadth EMA200, ADX, ATR, Bollinger Band Width, Volume Ratio, A/D Line, **Bullish/Bearish Divergence**, MA cross, tổng hợp Lớp 3 theo nhóm (`aggregate_layer3_indicators_for_group`). |
 | `market_regime_detector.py` | `detect_market_regime()` (cũ) + `detect_market_regime_quant()` (mô hình 3 lớp đầy đủ, nhận `precomputed_macro_score` tùy chọn). |
+| `market_regime_ensemble.py` | Ensemble 3 phương pháp (Breadth/Peak-Trough/Markov) — `phan_tich_ensemble_theo_nhom()` (1 nhóm, ngày gần nhất) + `tinh_chuoi_ensemble_theo_ngay()` (walk-forward THEO TỪNG NGÀY cho 1 mã, dùng cho backtest lịch sử — bổ sung 25/08/2026, xem mục 4k). |
+| `long_term_indicator_backtest.py` | Backtest 8 bộ chỉ số kỹ thuật (MA20/EMA Cross/RSI14/Bollinger x2/Volume Breakout/Trend Filter/Buy&Hold) cho 1 mã, bucket theo giai đoạn tại ngày vào lệnh — dùng cho mục "🧮 Cổ phiếu dài hạn" (bổ sung 25/08/2026). Tái sử dụng `backtest/backtest_engine.py::run_backtest()`, không tự viết lại engine. |
 | `macro_score_engine.py` | Điểm vĩ mô 6 nhóm (Fed/CPI Mỹ/CPI VN/tỷ giá/liên NH/sự kiện) theo đúng công thức tài liệu, có cơ chế **override** khi sự kiện nghiêm trọng. |
 | `manual_macro_data.py` | Quản lý chuỗi thời gian dữ liệu vĩ mô NHẬP TAY + tính các đại lượng dẫn xuất (delta, %YTD, số kỳ tăng liên tiếp, khoảng cách đỉnh) làm input cho `macro_score_engine`. |
 | `capital_allocator.py` | Bản phân bổ vốn ĐƠN GIẢN (cũ, theo mã đơn lẻ). |

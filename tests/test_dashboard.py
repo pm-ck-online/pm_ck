@@ -141,6 +141,34 @@ def seeded_storage(isolated_db_path):
         "ghi_chu": "test",
     })
 
+    _ket_qua_chien_luoc_mau = {
+        "uptrend": {"n_trades": 3, "win_rate_pct": 66.7, "total_return_pct": 12.5, "avg_return_pct": 4.1, "ending_capital": 1_125_000_000.0},
+        "sideway": {"n_trades": 0, "win_rate_pct": None, "total_return_pct": None, "avg_return_pct": None, "ending_capital": 1_000_000_000.0},
+        "downtrend": {"n_trades": 1, "win_rate_pct": 0.0, "total_return_pct": -2.3, "avg_return_pct": -2.3, "ending_capital": 977_000_000.0},
+    }
+    storage.save("long_term_screener_report", "HPG", {
+        "sector": "banking",
+        "updated_at": "2026-08-24T00:00:00",
+        "regime_fast": {
+            "current": "uptrend", "best_strategy": "MA20 (Giá cắt MA20)",
+            "results": {ten: _ket_qua_chien_luoc_mau for ten in [
+                "MA20 (Giá cắt MA20)", "EMA50/EMA200 (Golden/Death Cross)",
+                "RSI14 (Quá mua/Quá bán 30-70)", "Bollinger Breakout + Volume",
+                "Bollinger Bounce (mua đáy dải dưới)", "Volume Breakout + MA20",
+                "Kết hợp: Trend Filter EMA + RSI", "Mua và giữ (Buy & Hold)",
+            ]},
+        },
+        "regime_ensemble": {
+            "current": "uptrend", "best_strategy": "MA20 (Giá cắt MA20)",
+            "results": {ten: _ket_qua_chien_luoc_mau for ten in [
+                "MA20 (Giá cắt MA20)", "EMA50/EMA200 (Golden/Death Cross)",
+                "RSI14 (Quá mua/Quá bán 30-70)", "Bollinger Breakout + Volume",
+                "Bollinger Bounce (mua đáy dải dưới)", "Volume Breakout + MA20",
+                "Kết hợp: Trend Filter EMA + RSI", "Mua và giữ (Buy & Hold)",
+            ]},
+        },
+    })
+
     storage.close()
 
     return isolated_db_path

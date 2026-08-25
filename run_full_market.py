@@ -313,6 +313,13 @@ def run_full_market(
     from main import run_market_regime_ensemble_step
     run_market_regime_ensemble_step(storage)
 
+    # --- Bộ lọc "📈 Cổ phiếu dài hạn" (backtest 8 bộ chỉ số theo giai đoạn)
+    #     — bước RẤT NẶNG (Ensemble cần fit Markov cho từng mã, ước tính
+    #     ~26 giây/mã) nhưng TỰ CHECKPOINT theo mã qua chính storage (mã đã
+    #     có kết quả sẽ được bỏ qua), nên an toàn để chạy lại/resume. ---
+    from main import run_long_term_screener_step
+    run_long_term_screener_step(storage, symbol_sector_map)
+
     storage.close()
     logger.info("Hoàn tất toàn bộ pipeline (dữ liệu + giai đoạn thị trường theo ngành).")
 

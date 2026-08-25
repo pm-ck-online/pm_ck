@@ -3563,170 +3563,152 @@ def render_short_term_signal_section(storage: Storage) -> None:
         st.warning(w)
 
 
-@st.cache_data(ttl=600, show_spinner="Đang tính thống kê tăng/giảm theo tín hiệu...")
-def _tinh_thong_ke_theo_tin_hieu_cached(df: pd.DataFrame, ma: str, khuyen_nghi: str) -> dict:
-    """Bọc `tinh_thong_ke_tang_giam_theo_tin_hieu()` bằng cache 10 phút."""
-    from core.stock_signal_engine import tinh_thong_ke_tang_giam_theo_tin_hieu
+PHUONG_PHAP_GIAI_DOAN_DAI_HAN = {
+    "regime_fast": "PP1 — EMA200 đơn giản (nhanh)",
+    "regime_ensemble": "PP2 — Ensemble 3 phương pháp",
+}
 
-    return tinh_thong_ke_tang_giam_theo_tin_hieu(df, khuyen_nghi, cac_phien_du_bao=(10, 20, 40, 60))
+GIAI_DOAN_DAI_HAN_OPTIONS = {
+    "uptrend": "📈 Uptrend", "sideway": "➡️ Sideway", "downtrend": "📉 Downtrend",
+}
 
-
-def _cot_thong_ke_tin_hieu(storage: Storage, ma: str, khuyen_nghi: str) -> dict:
-    """Trả về dict các cột %tăng theo 4 mốc phiên (10/20/40/60) cho 1 mã,
-    dùng chung cho cả tab MUA và tab BÁN chốt lời."""
-    df_ma = _load_ohlcv_history_df(storage, ma)
-    cols = {
-        "Số lần quan sát (lịch sử)": 0,
-        "% tăng sau 10 phiên": None, "% tăng sau 20 phiên": None,
-        "% tăng sau 40 phiên": None, "% tăng sau 60 phiên": None,
-    }
-    if df_ma is None or df_ma.empty:
-        return cols
-    try:
-        ket_qua = _tinh_thong_ke_theo_tin_hieu_cached(df_ma, ma, khuyen_nghi)
-    except Exception:  # noqa: BLE001
-        return cols
-    cols["Số lần quan sát (lịch sử)"] = ket_qua.get("so_lan_quan_sat", 0)
-    for sp in (10, 20, 40, 60):
-        entry = ket_qua.get("theo_phien", {}).get(sp)
-        if entry and entry.get("so_lan", 0) > 0:
-            cols[f"% tăng sau {sp} phiên"] = entry["ty_le_tang_pct"]
-    return cols
+TEN_NGAN_BO_CHI_SO_DAI_HAN = {
+    "MA20 (Giá cắt MA20)": "MA20",
+    "EMA50/EMA200 (Golden/Death Cross)": "EMA Cross",
+    "RSI14 (Quá mua/Quá bán 30-70)": "RSI14",
+    "Bollinger Breakout + Volume": "BB Breakout",
+    "Bollinger Bounce (mua đáy dải dưới)": "BB Bounce",
+    "Volume Breakout + MA20": "Vol Breakout",
+    "Kết hợp: Trend Filter EMA + RSI": "Trend+RSI",
+    "Mua và giữ (Buy & Hold)": "Buy&Hold",
+}
 
 
-def render_stock_signal_report_section(storage: Storage) -> None:
-    """Báo cáo tổng hợp danh sách mã đủ điều kiện khuyến nghị MUA/BÁN
-    (`core.stock_signal_engine`) — bước cuối cùng của chuỗi module Điểm
-    Vĩ Mô -> Trạng thái Thị trường -> Phân bổ Vốn -> Tín hiệu Mua/Bán.
+def render_long_term_stock_screener_section(storage: Storage) -> None:
+    """Bộ lọc "Cổ phiếu dài hạn" (bổ sung — thay thế mục tín hiệu Mua/Bán
+    ngắn hạn cũ) — so sánh 8 bộ chỉ số kỹ thuật (`core.long_term_indicator_
+    backtest`) cho TỪNG MÃ trong watchlist, tách theo giai đoạn Uptrend/
+    Sideway/Downtrend, theo CẢ 2 phương pháp phân loại giai đoạn. Dữ liệu
+    đọc từ category `long_term_screener_report` — do
+    `main.run_long_term_screener_step()` tính SẴN qua `main.py`/
+    `run_full_market.py` (bước rất nặng, KHÔNG tính live ở đây).
     """
-    st.subheader("🚦 Báo cáo tín hiệu Mua/Bán từng mã")
+    st.subheader("🧮 Cổ phiếu dài hạn")
     st.caption(
-        "⚠️ Chỉ tiêu lượng hóa dựa trên quy tắc kỹ thuật cố định — KHÔNG PHẢI "
-        "khuyến nghị đầu tư cá nhân hóa hay tín hiệu giao dịch tự động. Lớp cơ "
-        "bản (EPS/ROE/D-E/CFO) hiện CHƯA có dữ liệu, chỉ đánh giá dựa trên kỹ thuật."
+        "⚠️ Đây là BACKTEST LỊCH SỬ trên dữ liệu đã thu thập — KHÔNG PHẢI khuyến "
+        "nghị đầu tư cho tương lai. So sánh 8 bộ chỉ số kỹ thuật, tách theo giai "
+        "đoạn Uptrend/Sideway/Downtrend, vốn mô phỏng ban đầu 1.000.000.000 đ/mã, "
+        "phí 0,15%/lượt. Nhiều giai đoạn (đặc biệt Sideway/Downtrend) có thể chỉ có "
+        "rất ít lệnh trong lịch sử — KHÔNG nên xem là quy luật đã kiểm chứng."
     )
 
-    record = storage.get_latest("signal_summary_report", "latest")
-    if record is None:
+    symbols = storage.query_all_keys("long_term_screener_report")
+    if not symbols:
         st.info(
-            "Chưa có báo cáo tín hiệu. Chạy `main.py` hoặc `run_full_market.py` "
-            "để tính tín hiệu mua/bán cho các mã."
+            "Chưa có dữ liệu bộ lọc dài hạn. Chạy `main.py` hoặc `run_full_market.py` "
+            "để tính (bước này khá nặng — có thể mất nhiều thời gian với watchlist lớn "
+            "do phải fit mô hình Markov cho từng mã)."
         )
         return
 
-    report = record["data"]
+    report_map = storage.get_latest_many("long_term_screener_report", symbols)
 
-    tong_so_ma = (
-        len(report["mua"]) + len(report["ban_cat_lo"])
-        + len(report["ban_chot_loi"]) + len(report["giu_theo_doi"])
-    )
-    if tong_so_ma > 5:
-        search_text = st.text_input(
-            "🔍 Tìm mã (áp dụng cho cả 3 tab bên dưới)",
-            key="stock_signal_search", placeholder="Gõ để lọc, vd: HPG",
+    col_pp, col_gd = st.columns(2)
+    with col_pp:
+        phuong_phap = st.selectbox(
+            "Phương pháp phân loại giai đoạn", list(PHUONG_PHAP_GIAI_DOAN_DAI_HAN.keys()),
+            format_func=lambda k: PHUONG_PHAP_GIAI_DOAN_DAI_HAN[k],
+            index=1, key="long_term_screener_phuong_phap",
         )
-        if search_text and search_text.strip():
-            keyword = search_text.strip().upper()
-            report = {
-                **report,
-                "mua": [e for e in report["mua"] if keyword in e["ma"].upper()],
-                "ban_cat_lo": [e for e in report["ban_cat_lo"] if keyword in e["ma"].upper()],
-                "ban_chot_loi": [e for e in report["ban_chot_loi"] if keyword in e["ma"].upper()],
-                "giu_theo_doi": [e for e in report["giu_theo_doi"] if keyword in e["ma"].upper()],
-            }
+    with col_gd:
+        giai_doan_chon = st.selectbox(
+            "Giai đoạn cần xem", list(GIAI_DOAN_DAI_HAN_OPTIONS.keys()),
+            format_func=lambda k: GIAI_DOAN_DAI_HAN_OPTIONS[k],
+            key="long_term_screener_giai_doan",
+        )
 
-    col1, col2, col3, col4 = st.columns(4)
-    col1.metric("🟢 MUA", len(report["mua"]))
-    col2.metric("🔴 BÁN CẮT LỖ", len(report["ban_cat_lo"]))
-    col3.metric("🟠 BÁN CHỐT LỜI", len(report["ban_chot_loi"]))
-    col4.metric("🟡 GIỮ/THEO DÕI", len(report["giu_theo_doi"]))
+    displayed_symbols = render_search_box_if_needed(sorted(symbols), key="long_term_screener_search")
 
-    tab_mua, tab_ban, tab_giu = st.tabs(["🟢 Danh sách MUA", "🔴 Danh sách BÁN", "🟡 Giữ/theo dõi"])
-
-    hien_thong_ke_tin_hieu = st.checkbox(
-        "📊 Tính thêm tỷ lệ % tăng sau 10/20/40/60 phiên (dựa trên các lần trong quá khứ "
-        "mã đó từng thỏa CÙNG điều kiện KỸ THUẬT MUA/BÁN như hiện tại — có thể CHẬM nếu "
-        "danh sách có nhiều mã)",
-        key="stock_signal_hien_thong_ke",
+    chi_hien_loi = st.checkbox(
+        "Chỉ hiện mã có ít nhất 1 bộ chỉ số sinh lời dương ở giai đoạn đã chọn",
+        value=True, key="long_term_screener_chi_loi",
     )
 
-    with tab_mua:
-        if not report["mua"]:
-            st.info("Hiện không có mã nào đủ điều kiện khuyến nghị MUA.")
-        else:
-            rows = []
-            for e in report["mua"]:
-                entry_range = e.get("khoang_gia_vao_lenh_de_xuat")
-                row = {
-                    "Mã": e["ma"],
-                    "Stock Score": f"{e['stock_score']:.2f}" if e.get("stock_score") is not None else "—",
-                    "Mẫu hình kỹ thuật": e["chi_tiet"].get("mau_hinh_ky_thuat", "—"),
-                    "Vùng giá vào lệnh": f"{entry_range[0]:,.2f} - {entry_range[1]:,.2f}" if entry_range else "—",
-                }
-                if hien_thong_ke_tin_hieu:
-                    row.update(_cot_thong_ke_tin_hieu(storage, e["ma"], "MUA"))
-                rows.append(row)
-            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-            if hien_thong_ke_tin_hieu:
-                st.caption(
-                    "📊 4 cột cuối: tỷ lệ % số lần giá TĂNG sau đúng N phiên, dựa trên các "
-                    "lần trong quá khứ mã đó từng kích hoạt ĐÚNG điều kiện kỹ thuật MUA như "
-                    "hiện tại (KHÔNG xét điều kiện vĩ mô/thị trường — xem giải thích trong "
-                    "docstring `tinh_thong_ke_tang_giam_theo_tin_hieu`). Xem cột \"Số lần "
-                    "quan sát\" để đánh giá độ tin cậy."
-                )
-            for e in report["mua"]:
-                with st.expander(f"Chi tiết — {e['ma']}"):
-                    for r in e["chi_tiet"].get("ky_thuat_dat", []):
-                        st.write(f"✅ {r}")
-                    for r in e["chi_tiet"].get("co_ban_dat", []):
-                        st.write(f"✅ {r}")
+    rows = []
+    for ma in displayed_symbols:
+        record = report_map.get(ma)
+        if record is None:
+            continue
+        data = record["data"]
+        pp_data = data.get(phuong_phap) or {}
+        ket_qua = pp_data.get("results") or {}
+        giai_doan_hien_tai = pp_data.get("current")
 
-    with tab_ban:
-        all_sell = report["ban_cat_lo"] + report["ban_chot_loi"]
-        if not all_sell:
-            st.info("Hiện không có mã nào đủ điều kiện khuyến nghị BÁN.")
-        else:
-            rows = []
-            for e in all_sell:
-                loai = "CẮT LỖ" if e.get("loai_ban") == "CAT_LO" else "CHỐT LỜI"
-                row = {"Mã": e["ma"], "Loại": loai, "Ưu tiên": e.get("uu_tien") or "—"}
-                if hien_thong_ke_tin_hieu:
-                    if loai == "CHỐT LỜI":
-                        row.update(_cot_thong_ke_tin_hieu(storage, e["ma"], "BAN"))
-                    else:
-                        # CẮT LỖ phụ thuộc vị thế THẬT (giá vào lệnh/cắt lỗ cụ
-                        # thể) — không có mẫu hình kỹ thuật thuần túy để phát
-                        # lại lịch sử, nên KHÔNG tính, để trống rõ ràng.
-                        row.update({
-                            "Số lần quan sát (lịch sử)": "—", "% tăng sau 10 phiên": "—",
-                            "% tăng sau 20 phiên": "—", "% tăng sau 40 phiên": "—", "% tăng sau 60 phiên": "—",
-                        })
-                rows.append(row)
-            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
-            if hien_thong_ke_tin_hieu:
-                st.caption(
-                    "📊 4 cột cuối: tỷ lệ % số lần giá TĂNG sau đúng N phiên, dựa trên các lần "
-                    "trong quá khứ mã đó từng kích hoạt ĐÚNG điều kiện kỹ thuật BÁN CHỐT LỜI như "
-                    "hiện tại. Mã loại CẮT LỖ để trống (—) vì phụ thuộc vị thế thật, không có "
-                    "mẫu hình kỹ thuật thuần túy để phát lại lịch sử."
-                )
-            for e in all_sell:
-                with st.expander(f"Chi tiết — {e['ma']}"):
-                    chi_tiet = e.get("chi_tiet", {})
-                    for r in chi_tiet.get("ly_do", []):
-                        st.write(f"⚠️ {r}")
-                    for r in chi_tiet.get("co_ban", []):
-                        st.write(f"⚠️ {r}")
-                    for r in chi_tiet.get("ky_thuat", []):
-                        st.write(f"⚠️ {r}")
+        best_return = None
+        row = {
+            "Mã": ma,
+            "Ngành": _nhan_nganh(data.get("sector") or ""),
+            "Giai đoạn hiện tại": GIAI_DOAN_DAI_HAN_OPTIONS.get(giai_doan_hien_tai, "Chưa đủ dữ liệu"),
+        }
+        for ten_day_du, ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.items():
+            stats = (ket_qua.get(ten_day_du) or {}).get(giai_doan_chon) or {}
+            tong_ln = stats.get("total_return_pct")
+            row[f"{ten_ngan} — Lệnh"] = stats.get("n_trades", 0)
+            row[f"{ten_ngan} — LN %"] = tong_ln
+            if tong_ln is not None and (best_return is None or tong_ln > best_return):
+                best_return = tong_ln
 
-    with tab_giu:
-        if not report["giu_theo_doi"]:
-            st.info("Không có mã nào ở trạng thái giữ/theo dõi.")
-        else:
-            rows = [{"Mã": e["ma"], "Cảnh báo": "; ".join(e.get("canh_bao", [])) or "—"} for e in report["giu_theo_doi"]]
-            st.dataframe(pd.DataFrame(rows), width='stretch', hide_index=True)
+        if chi_hien_loi and not (best_return is not None and best_return > 0):
+            continue
+
+        row["_best_return"] = best_return if best_return is not None else float("-inf")
+        rows.append(row)
+
+    if not rows:
+        st.info("Không có mã nào khớp bộ lọc hiện tại.")
+        return
+
+    df_hien_thi = (
+        pd.DataFrame(rows).sort_values("_best_return", ascending=False)
+        .drop(columns=["_best_return"]).reset_index(drop=True)
+    )
+
+    column_config = {}
+    for ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.values():
+        column_config[f"{ten_ngan} — Lệnh"] = st.column_config.NumberColumn(format="%d")
+        column_config[f"{ten_ngan} — LN %"] = st.column_config.NumberColumn(format="%.2f%%")
+
+    st.dataframe(
+        df_hien_thi, hide_index=True, width='stretch',
+        column_config=column_config, key="long_term_screener_table",
+    )
+    st.caption(
+        f"Hiển thị {len(df_hien_thi)}/{len(symbols)} mã đã có dữ liệu, sắp xếp theo "
+        f"tổng lợi nhuận của bộ chỉ số tốt nhất (giai đoạn đã chọn) giảm dần."
+    )
+
+    for ma in df_hien_thi["Mã"]:
+        record = report_map.get(ma)
+        if record is None:
+            continue
+        with st.expander(f"Chi tiết đầy đủ — {ma}"):
+            for pp_key, pp_label in PHUONG_PHAP_GIAI_DOAN_DAI_HAN.items():
+                pp_data = record["data"].get(pp_key) or {}
+                st.markdown(
+                    f"**{pp_label}** — giai đoạn hiện tại: "
+                    f"{GIAI_DOAN_DAI_HAN_OPTIONS.get(pp_data.get('current'), 'Chưa đủ dữ liệu')}"
+                )
+                ket_qua = pp_data.get("results") or {}
+                chi_tiet_rows = []
+                for ten_day_du, ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.items():
+                    hang = {"Bộ chỉ số": ten_ngan}
+                    for regime_key, regime_label in GIAI_DOAN_DAI_HAN_OPTIONS.items():
+                        stats = (ket_qua.get(ten_day_du) or {}).get(regime_key) or {}
+                        n = stats.get("n_trades", 0)
+                        tl = stats.get("total_return_pct")
+                        hang[regime_label] = f"{n} lệnh, {tl:+.2f}%" if (n and tl is not None) else "—"
+                    chi_tiet_rows.append(hang)
+                st.dataframe(pd.DataFrame(chi_tiet_rows), hide_index=True, width='stretch')
 
 
 def _doc_chuoi_giai_doan_da_luu(storage: Storage, key_luu: str) -> Optional[pd.Series]:
@@ -4940,7 +4922,7 @@ DASHBOARD_GROUPS = [
         "📦 Khuyến nghị phân bổ vốn (đơn giản)",
         "📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)",
         "🔎 Mã có mô hình thu hẹp biên độ",
-        "🚦 Báo cáo tín hiệu Mua/Bán",
+        "🧮 Cổ phiếu dài hạn",
         "🎭 Tính cách giao dịch từng mã",
         "📊 Xác suất của BullTrap",
         "🔍 Rà soát danh sách vào lệnh ngắn hạn",
@@ -5067,7 +5049,7 @@ def main() -> None:
         ("📦 Khuyến nghị phân bổ vốn (đơn giản)", render_allocation_section, (storage, symbols)),
         ("📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)", render_capital_allocation_v2_section, (storage, symbols)),
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
-        ("🚦 Báo cáo tín hiệu Mua/Bán", render_stock_signal_report_section, (storage,)),
+        ("🧮 Cổ phiếu dài hạn", render_long_term_stock_screener_section, (storage,)),
         ("🎭 Tính cách giao dịch từng mã", render_stock_character_section, (storage,)),
         ("📊 Xác suất của BullTrap", render_historical_recovery_probability_section, (storage,)),
         ("🔍 Rà soát danh sách vào lệnh ngắn hạn", render_entry_screener_section, (storage,)),

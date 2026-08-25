@@ -200,3 +200,84 @@ class TestDungChiSoDaiDienTuGiaDongCua:
         df_ket_qua = dung_chi_so_dai_dien_tu_gia_dong_cua([series_a])
         for col in ("date", "open", "high", "low", "close", "volume"):
             assert col in df_ket_qua.columns
+
+
+# ==============================================================================
+# tinh_chuoi_ensemble_theo_ngay — walk-forward theo từng ngày cho 1 mã
+# ==============================================================================
+#
+# Dùng ngưỡng Markov THẤP HƠN mặc định (60 thay vì 250 phiên) qua tham số
+# `config` — để test chạy nhanh (fit Markov trên chuỗi ngắn hơn nhiều lần)
+# mà vẫn kiểm chứng đúng cơ chế walk-forward + refit theo chu kỳ, không
+# phải cơ chế "250 phiên" (đã có hằng số SO_PHIEN_TOI_THIEU_MARKOV riêng).
+
+CONFIG_TEST_NHANH = {"markov_so_phien_toi_thieu": 60, "markov_refit_every": 10}
+
+
+class TestTinhChuoiEnsembleTheoNgay:
+    def test_qua_ngan_tra_ve_series_rong(self):
+        from core.market_regime_ensemble import tinh_chuoi_ensemble_theo_ngay
+        df = _make_ohlcv_xu_huong(n=30)
+        ket_qua = tinh_chuoi_ensemble_theo_ngay(df, config=CONFIG_TEST_NHANH)
+        assert isinstance(ket_qua, pd.Series)
+        assert ket_qua.empty
+
+    def test_cau_truc_va_do_dai_ket_qua(self):
+        from core.market_regime_ensemble import tinh_chuoi_ensemble_theo_ngay
+        n = 90
+        df = _make_ohlcv_xu_huong(n=n, log_return_mean=0.003, seed=2)
+        ket_qua = tinh_chuoi_ensemble_theo_ngay(df, config=CONFIG_TEST_NHANH)
+
+        so_phien_toi_thieu = CONFIG_TEST_NHANH["markov_so_phien_toi_thieu"]
+        assert isinstance(ket_qua, pd.Series)
+        assert len(ket_qua) == n - so_phien_toi_thieu + 1
+        assert set(ket_qua.unique()) <= {"uptrend", "sideway", "downtrend"}
+        assert isinstance(ket_qua.index, pd.DatetimeIndex)
+        # Ngày đầu tiên trong chuỗi phải đúng là phiên thứ `so_phien_toi_thieu`
+        assert ket_qua.index[0] == df["date"].iloc[so_phien_toi_thieu - 1]
+
+    def test_chi_fit_lai_markov_theo_dung_chu_ky(self, monkeypatch):
+        """Kiểm chứng cơ chế MỚI (refit theo chu kỳ, không phải mỗi ngày)
+        bằng cách thay `phuong_phap_C_markov_switching` bằng 1 hàm giả đếm
+        số lần gọi + độ dài cửa sổ mỗi lần gọi — độc lập với việc mô hình
+        Markov thật có hội tụ hay không (tránh test bị "flaky").
+        """
+        from core import market_regime_ensemble as mre
+
+        do_dai_cua_so_da_goi: list[int] = []
+
+        def markov_gia(df_con, so_phien_toi_thieu):
+            do_dai_cua_so_da_goi.append(len(df_con))
+            return {"nhan": "UPTREND", "chi_tiet": "gia", "gia_tri_so": 0.9}
+
+        monkeypatch.setattr(mre, "phuong_phap_C_markov_switching", markov_gia)
+
+        df = _make_ohlcv_xu_huong(n=90, seed=5)
+        mre.tinh_chuoi_ensemble_theo_ngay(df, config=CONFIG_TEST_NHANH)
+
+        # so_phien_toi_thieu=60, markov_refit_every=10, tổng 90 phiên ->
+        # CHỈ fit lại ở độ dài cửa sổ 60, 70, 80, 90 (4 lần, KHÔNG PHẢI 31
+        # lần nếu fit mỗi ngày).
+        assert do_dai_cua_so_da_goi == [60, 70, 80, 90]
+
+    def test_doi_chieu_ngay_cuoi_voi_tinh_truc_tiep(self):
+        """Nhãn ở NGÀY CUỐI của chuỗi walk-forward phải khớp với việc gọi
+        trực tiếp 3 phương pháp + tổng hợp trên TOÀN BỘ dữ liệu (đúng bản
+        chất walk-forward: ngày cuối cùng thấy đủ dữ liệu như 1 lần tính
+        trực tiếp trên toàn bộ chuỗi).
+        """
+        from core.indicators import calculate_ema
+        from core.market_regime_ensemble import tinh_chuoi_ensemble_theo_ngay
+
+        df = _make_ohlcv_xu_huong(n=90, log_return_mean=0.001, seed=4)
+        ket_qua = tinh_chuoi_ensemble_theo_ngay(df, config=CONFIG_TEST_NHANH)
+
+        so_phien_toi_thieu = CONFIG_TEST_NHANH["markov_so_phien_toi_thieu"]
+        ema200 = calculate_ema(df, 200)
+        snap = [{"close": float(df["close"].iloc[-1]), "ema200": (float(ema200.iloc[-1]) if pd.notna(ema200.iloc[-1]) else None)}]
+        ket_qua_A = phuong_phap_A_breadth(snap)
+        ket_qua_B = phuong_phap_B_peak_trough(df, so_chu_ky_xet=2)
+        ket_qua_C = phuong_phap_C_markov_switching(df[["close"]], so_phien_toi_thieu=so_phien_toi_thieu)
+        tong_hop = tong_hop_3_phuong_phap(ket_qua_A, ket_qua_B, ket_qua_C)
+
+        assert ket_qua.iloc[-1] == tong_hop["nhan_tong_hop"].lower()

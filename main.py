@@ -849,6 +849,9 @@ def run_pipeline(config: dict) -> None:
     run_short_term_signal_step(storage, list(symbol_sector_map.keys()))
     run_entry_screener_step(storage, list(symbol_sector_map.keys()))
 
+    # --- Bộ lọc "📈 Cổ phiếu dài hạn" (backtest 8 bộ chỉ số theo giai đoạn) ---
+    run_long_term_screener_step(storage, symbol_sector_map)
+
     storage.close()
     logger.info("Hoàn tất pipeline. Chạy 'streamlit run dashboard/app.py' để xem kết quả.")
 
@@ -1125,6 +1128,89 @@ def run_market_regime_ensemble_step(storage: Storage) -> None:
     logger.info(
         "Đã lưu bảng ensemble giai đoạn thị trường cho %d nhóm (toàn thị trường + %d ngành).",
         len(df_ket_qua), len(tat_ca_nganh),
+    )
+
+
+def run_long_term_screener_step(
+    storage: Storage, symbol_sector_map: dict, force_recompute: bool = False,
+) -> None:
+    """Tính bộ lọc "📈 Cổ phiếu dài hạn" — cho TỪNG MÃ trong
+    `symbol_sector_map`, backtest 8 bộ chỉ số kỹ thuật
+    (`core.long_term_indicator_backtest.backtest_toan_bo_8_bo_chi_so`),
+    tách kết quả theo giai đoạn Uptrend/Sideway/Downtrend, theo CẢ 2
+    phương pháp phân loại giai đoạn:
+      - "regime_fast": `market_regime_detector.tinh_chuoi_giai_doan_theo_ngay`
+        (khoảng cách so với EMA200, nhanh).
+      - "regime_ensemble": `market_regime_ensemble.tinh_chuoi_ensemble_theo_ngay`
+        (Ensemble 3 phương pháp — CHẬM HƠN NHIỀU do phải fit Markov, ước
+        tính ~26 giây/mã với lịch sử ~750 phiên).
+
+    Đây là bước RẤT NẶNG khi chạy cho watchlist lớn (`run_full_market.py`,
+    ~212 mã ⇒ có thể mất thêm hàng chục phút đến vài giờ) — TỰ CHECKPOINT
+    theo từng mã bằng chính storage: mã nào ĐÃ có bản ghi trong category
+    `long_term_screener_report` sẽ được BỎ QUA (trừ khi
+    `force_recompute=True`), giúp resume an toàn nếu chương trình bị ngắt
+    giữa chừng — không cần thêm category checkpoint riêng.
+    """
+    from datetime import datetime
+
+    from core.long_term_indicator_backtest import (
+        backtest_toan_bo_8_bo_chi_so, tim_bo_chi_so_tot_nhat,
+    )
+    from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
+    from core.market_regime_ensemble import tinh_chuoi_ensemble_theo_ngay
+
+    so_da_tinh, so_bo_qua, so_loi = 0, 0, 0
+
+    for ma, nganh in symbol_sector_map.items():
+        if not force_recompute and storage.get_latest("long_term_screener_report", ma) is not None:
+            so_bo_qua += 1
+            continue
+
+        record = storage.get_latest("ohlcv_history", ma)
+        if record is None:
+            continue
+        recs = record["data"].get("records", [])
+        if len(recs) < 60:  # quá ít dữ liệu để backtest có ý nghĩa -> bỏ qua
+            continue
+
+        try:
+            df = pd.DataFrame(recs)
+            df["date"] = pd.to_datetime(df["date"])
+            df = df.sort_values("date").reset_index(drop=True)
+
+            regime_fast = tinh_chuoi_giai_doan_theo_ngay({ma: df})
+            regime_ensemble = tinh_chuoi_ensemble_theo_ngay(df)
+
+            ket_qua_fast = backtest_toan_bo_8_bo_chi_so(df, regime_fast) if len(regime_fast) > 0 else {}
+            ket_qua_ensemble = backtest_toan_bo_8_bo_chi_so(df, regime_ensemble) if len(regime_ensemble) > 0 else {}
+
+            hien_tai_fast = regime_fast.iloc[-1] if len(regime_fast) > 0 else None
+            hien_tai_ensemble = regime_ensemble.iloc[-1] if len(regime_ensemble) > 0 else None
+
+            storage.save("long_term_screener_report", ma, {
+                "sector": nganh,
+                "updated_at": datetime.now().isoformat(),
+                "regime_fast": {
+                    "current": hien_tai_fast,
+                    "best_strategy": tim_bo_chi_so_tot_nhat(ket_qua_fast, hien_tai_fast) if hien_tai_fast else None,
+                    "results": ket_qua_fast,
+                },
+                "regime_ensemble": {
+                    "current": hien_tai_ensemble,
+                    "best_strategy": tim_bo_chi_so_tot_nhat(ket_qua_ensemble, hien_tai_ensemble) if hien_tai_ensemble else None,
+                    "results": ket_qua_ensemble,
+                },
+            })
+            so_da_tinh += 1
+        except Exception:
+            logger.exception("Lỗi khi tính bộ lọc dài hạn cho %s — bỏ qua, tiếp tục mã tiếp theo.", ma)
+            so_loi += 1
+            continue
+
+    logger.info(
+        "Bộ lọc 'Cổ phiếu dài hạn': %d mã vừa tính, %d mã bỏ qua (đã có sẵn), %d mã lỗi.",
+        so_da_tinh, so_bo_qua, so_loi,
     )
 
 

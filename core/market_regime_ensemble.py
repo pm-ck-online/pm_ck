@@ -311,3 +311,91 @@ def dung_chi_so_dai_dien_tu_gia_dong_cua(danh_sach_gia_dong_cua: list[pd.Series]
         "open": chi_so_trung_binh.values, "high": chi_so_trung_binh.values * 1.001,
         "low": chi_so_trung_binh.values * 0.999, "volume": [0.0] * len(chi_so_trung_binh),
     }).reset_index(drop=True)
+
+
+# ==============================================================================
+# WALK-FORWARD: chuỗi KẾT LUẬN ENSEMBLE theo TỪNG NGÀY cho 1 MÃ — dùng để
+# backtest lịch sử (bucket các lệnh theo giai đoạn tại ngày vào lệnh), khác
+# với `phan_tich_ensemble_theo_nhom()` (chỉ tính cho NGÀY GẦN NHẤT).
+# ==============================================================================
+
+DEFAULT_CONFIG_WALK_FORWARD = {
+    "so_chu_ky_xet": 2,             # số cặp đỉnh-đáy xét, giống phuong_phap_B_peak_trough
+    "markov_refit_every": 5,        # số phiên giữa 2 lần fit lại Markov (Phương pháp C) — fit lại
+                                     # MỖI NGÀY quá tốn (~0,5s/lần) nên chỉ fit lại theo chu kỳ này,
+                                     # giữ nguyên nhãn cho các phiên ở giữa (vẫn walk-forward hợp lệ,
+                                     # chỉ giảm độ phân giải).
+    "markov_so_phien_toi_thieu": SO_PHIEN_TOI_THIEU_MARKOV,
+}
+
+
+def tinh_chuoi_ensemble_theo_ngay(df: pd.DataFrame, config: Optional[dict] = None) -> pd.Series:
+    """Tính CHUỖI kết luận Ensemble 3 phương pháp (A. Breadth EMA200 + B.
+    Peak-Trough + C. Markov Regime-Switching) THEO TỪNG NGÀY trong lịch sử
+    của 1 MÃ — mỗi ngày CHỈ dùng dữ liệu đã biết ĐẾN NGÀY ĐÓ (walk-forward,
+    không nhìn thấy tương lai), tái sử dụng NGUYÊN VẸN
+    `phuong_phap_A_breadth()`, `phuong_phap_B_peak_trough()`,
+    `phuong_phap_C_markov_switching()`, `tong_hop_3_phuong_phap()` đã có ở
+    trên — chỉ khác là gọi lại cho MỖI ngày thay vì 1 lần cho ngày gần nhất
+    (như `phan_tich_ensemble_theo_nhom()`).
+
+    `df`: DataFrame OHLCV của 1 mã (cột date/open/high/low/close/volume).
+
+    Vì Phương pháp C cần tối thiểu `markov_so_phien_toi_thieu` phiên (mặc
+    định 250, ~1 năm) để fit ổn định, các phiên TRƯỚC mốc này sẽ không có
+    kết luận (không đưa vào chuỗi trả về) — CHỈ fit lại Markov mỗi
+    `markov_refit_every` phiên (mặc định 5) để khả thi về thời gian tính
+    toán (fit 1 lần ước tính ~0,5s; fit lại mỗi ngày cho hàng trăm phiên sẽ
+    rất chậm).
+
+    Trả về `pd.Series` — index=ngày (Timestamp), giá trị "uptrend"/
+    "sideway"/"downtrend" (lowercase, giống định dạng
+    `market_regime_detector.tinh_chuoi_giai_doan_theo_ngay()`).
+    """
+    from core.indicators import calculate_ema
+
+    cfg = {**DEFAULT_CONFIG_WALK_FORWARD, **(config or {})}
+    so_phien_toi_thieu = cfg["markov_so_phien_toi_thieu"]
+
+    if df is None or df.empty or len(df) < so_phien_toi_thieu:
+        return pd.Series(dtype=object)
+
+    df = df.sort_values("date").reset_index(drop=True).copy()
+    df["date"] = pd.to_datetime(df["date"])
+    n = len(df)
+
+    ngay: list = []
+    nhan_tong_hop: list[str] = []
+    nhan_markov_hien_tai: Optional[str] = None
+
+    for i in range(so_phien_toi_thieu - 1, n):
+        du_lieu_den_ngay_i = df.iloc[: i + 1]
+
+        # --- Phương pháp A: breadth nhị phân trên chính mã (EMA200 của nó) ---
+        ema200_series = calculate_ema(du_lieu_den_ngay_i, 200)
+        ema200_hom_nay = ema200_series.iloc[-1]
+        snap = [{"close": float(df["close"].iloc[i]), "ema200": (float(ema200_hom_nay) if pd.notna(ema200_hom_nay) else None)}]
+        ket_qua_A = phuong_phap_A_breadth(snap)
+
+        # --- Phương pháp B: đỉnh/đáy cục bộ tính lại trên dữ liệu ĐẾN NGÀY i ---
+        ket_qua_B = phuong_phap_B_peak_trough(du_lieu_den_ngay_i, so_chu_ky_xet=cfg["so_chu_ky_xet"])
+
+        # --- Phương pháp C: fit lại Markov theo chu kỳ `markov_refit_every` ---
+        can_fit_lai = (
+            nhan_markov_hien_tai is None
+            or (i - (so_phien_toi_thieu - 1)) % cfg["markov_refit_every"] == 0
+        )
+        if can_fit_lai:
+            ket_qua_C = phuong_phap_C_markov_switching(
+                du_lieu_den_ngay_i[["close"]], so_phien_toi_thieu=so_phien_toi_thieu,
+            )
+            nhan_markov_hien_tai = ket_qua_C["nhan"]
+        else:
+            ket_qua_C = {"nhan": nhan_markov_hien_tai}
+
+        tong_hop = tong_hop_3_phuong_phap(ket_qua_A, ket_qua_B, ket_qua_C)
+
+        ngay.append(df["date"].iloc[i])
+        nhan_tong_hop.append(tong_hop["nhan_tong_hop"].lower())
+
+    return pd.Series(nhan_tong_hop, index=pd.DatetimeIndex(ngay))
