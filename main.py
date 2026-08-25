@@ -991,9 +991,14 @@ def run_market_regime_history_step(storage: Storage) -> None:
     nhiều lượt gọi Supabase, và mất khi Streamlit khởi động lại vì trước
     đây chỉ cache tạm trong bộ nhớ).
 
-    CHỈ 1 LƯỢT TRUY VẤN LỚN duy nhất để lấy OHLCV của TẤT CẢ mã (dùng
-    `get_latest_many`) — toàn bộ tính toán còn lại (vector hóa, tính cho
-    từng ngành) đều làm TRONG BỘ NHỚ, không tốn thêm request nào.
+    Lấy OHLCV của TẤT CẢ mã theo TỪNG LÔ NHỎ (30 mã/lô, giống cách
+    `run_market_regime_ensemble_step()` đã sửa 06/08/2026) thay vì 1 lượt
+    truy vấn khổng lồ duy nhất — SỬA LỖI TIMEOUT SUPABASE (bổ sung
+    25/08/2026): khi OHLCV của toàn bộ 212 mã vừa được tải mới (dữ liệu
+    lớn hơn bình thường), 1 câu `get_latest_many()` duy nhất cho tất cả
+    mã bị Supabase hủy do vượt quá statement timeout, làm sập cả pipeline
+    ở đúng bước này. Toàn bộ tính toán còn lại (vector hóa, tính cho từng
+    ngành) vẫn làm TRONG BỘ NHỚ, không tốn thêm request nào.
     """
     from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
 
@@ -1002,7 +1007,15 @@ def run_market_regime_history_step(storage: Storage) -> None:
         logger.warning("Không có dữ liệu OHLCV nào để tính chuỗi giai đoạn lịch sử — bỏ qua bước này.")
         return
 
-    ohlcv_map_raw = storage.get_latest_many("ohlcv_history", all_symbol_keys)
+    KICH_THUOC_LO_OHLCV = 30
+    ohlcv_map_raw: dict[str, dict] = {}
+    for i in range(0, len(all_symbol_keys), KICH_THUOC_LO_OHLCV):
+        lo_ma = all_symbol_keys[i:i + KICH_THUOC_LO_OHLCV]
+        try:
+            ohlcv_map_raw.update(storage.get_latest_many("ohlcv_history", lo_ma))
+        except Exception as exc:  # noqa: BLE001 — 1 lô lỗi không được làm hỏng cả bước này
+            logger.warning("Lỗi khi lấy OHLCV cho lô mã %s: %s — bỏ qua lô này.", lo_ma, exc)
+
     du_lieu_theo_ma: dict[str, pd.DataFrame] = {}
     for ma, record in ohlcv_map_raw.items():
         records = record["data"].get("records", [])
