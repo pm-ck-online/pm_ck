@@ -3331,6 +3331,30 @@ def _dich_canh_bao(canh_bao_list: list[str]) -> str:
     return "; ".join(ket_qua) if ket_qua else "—"
 
 
+def _bo_chi_so_tot_theo_nguong(pp_data: dict, giai_doan: Optional[str], nguong_pct: float = 5.0) -> str:
+    """Liệt kê GỌN các bộ chỉ số (từ báo cáo 'Cổ phiếu dài hạn',
+    `long_term_screener_report`) có Tổng lợi nhuận > `nguong_pct`% ĐÚNG ở
+    giai đoạn hiện tại của mã — kèm số lệnh để đối chiếu độ tin cậy ngay
+    tại đây, không cần mở lại mục 🧮 Cổ phiếu dài hạn. Sắp xếp giảm dần
+    theo lợi nhuận. Trả về "—" nếu chưa xác định giai đoạn hoặc không có
+    bộ nào vượt ngưỡng.
+    """
+    if not giai_doan:
+        return "—"
+    ket_qua = (pp_data or {}).get("results") or {}
+    ung_vien = []
+    for ten_day_du, ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.items():
+        stats = (ket_qua.get(ten_day_du) or {}).get(giai_doan) or {}
+        n_lenh = stats.get("n_trades", 0)
+        tong_ln = stats.get("total_return_pct")
+        if n_lenh and tong_ln is not None and tong_ln > nguong_pct:
+            ung_vien.append((tong_ln, f"{ten_ngan} ({n_lenh} lệnh, {tong_ln:+.1f}%)"))
+    if not ung_vien:
+        return "—"
+    ung_vien.sort(key=lambda x: x[0], reverse=True)
+    return "; ".join(text for _, text in ung_vien)
+
+
 @st.cache_data(ttl=600, show_spinner="Đang đếm số lần lịch sử có đặc tính tương tự...")
 def _dem_lich_su_nhan_cached(df: pd.DataFrame, ma: str, nhan: str) -> dict:
     """Bọc `dem_lich_su_nhan_tuong_tu()` bằng cache 10 phút — mỗi lần gọi
@@ -3373,7 +3397,9 @@ def render_stock_character_section(storage: Storage) -> None:
         "⚠️ Đây là mô tả CÁCH GIÁ ĐÃ VẬN ĐỘNG trong quá khứ của mã (dựa trên "
         "percentile so với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị "
         "mua/bán hay dự báo xu hướng tương lai, chỉ dùng để điều chỉnh độ tin "
-        "cậy tín hiệu Mua/Bán và phân bổ vốn."
+        "cậy tín hiệu Mua/Bán và phân bổ vốn. Cột \"Giai đoạn\" và \"Bộ chỉ số "
+        "LN>5%\" lấy từ mục 🧮 Cổ phiếu dài hạn (phương pháp Ensemble 3 phương "
+        "pháp) — xem mục đó để có bảng đầy đủ cả 3 giai đoạn × 2 phương pháp."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -3424,6 +3450,14 @@ def render_stock_character_section(storage: Storage) -> None:
         )
 
     character_map = storage.get_latest_many("stock_character", symbol_ids)
+    # Giá gần nhất: lấy từ indicator_snapshot (đã tính sẵn cho MỌI mã, kể
+    # cả mã quét qua run_full_market.py — khác với realtime_price chỉ có
+    # ở mã chạy qua main.py, xem ghi chú ở render_watchlist_section).
+    indicator_map = storage.get_latest_many("indicator_snapshot", symbol_ids)
+    # Giai đoạn hiện tại + bộ chỉ số tốt: lấy từ báo cáo "Cổ phiếu dài hạn"
+    # (long_term_screener_report), dùng phương pháp Ensemble 3 phương pháp
+    # (đáng tin hơn PP1 EMA200 đơn giản — xem 🧮 Cổ phiếu dài hạn).
+    long_term_map = storage.get_latest_many("long_term_screener_report", symbol_ids)
 
     rows = []
     for sym in symbol_ids:
@@ -3435,9 +3469,19 @@ def render_stock_character_section(storage: Storage) -> None:
         nhan_hien_thi = CHARACTER_LABEL_DISPLAY.get(nhan, nhan)
         emoji = CHARACTER_LABEL_EMOJI.get(nhan, "")
 
+        gia_snap = indicator_map.get(sym)
+        gia_gan_nhat = gia_snap["data"].get("close") if gia_snap else None
+
+        lt_record = long_term_map.get(sym)
+        pp_data = (lt_record["data"].get("regime_ensemble") or {}) if lt_record else {}
+        giai_doan_hien_tai = pp_data.get("current")
+
         row = {
             "Mã": sym,
+            "Giá": gia_gan_nhat,
+            "Giai đoạn": GIAI_DOAN_DAI_HAN_OPTIONS.get(giai_doan_hien_tai, "—"),
             "Tính cách (Character)": f"{emoji} {nhan_hien_thi}",
+            "Bộ chỉ số LN>5% (giai đoạn hiện tại)": _bo_chi_so_tot_theo_nguong(pp_data, giai_doan_hien_tai),
             "Điểm dứt khoát (Character Score)": data.get("character_score"),
             "Điểm lình xình (Choppiness Score)": data.get("choppiness_score"),
             "Cảnh báo (Warning)": _dich_canh_bao(data.get("canh_bao", [])),
@@ -3466,14 +3510,14 @@ def render_stock_character_section(storage: Storage) -> None:
     st.dataframe(
         pd.DataFrame(rows), width='stretch', hide_index=True,
         column_config={
-            # Cột "Mã" và các cột TỪ "Điểm dứt khoát" trở đi đều đặt
-            # width="small" — buộc tiêu đề dài (VD: "Điểm dứt khoát
-            # (Character Score)") tự XUỐNG DÒNG bên trong ô tiêu đề thay
-            # vì kéo giãn cả cột ra rất rộng theo chiều ngang. Cột "Tính
-            # cách (Character)" CHỦ Ý không thu hẹp vì bản thân NỘI DUNG
-            # (không chỉ tiêu đề) đã là câu mô tả dài, thu hẹp sẽ làm mất
-            # chữ, khó đọc.
+            # width="small" cho MỌI cột có nội dung ngắn/số — tránh
+            # st.dataframe(width='stretch') kéo giãn các cột này ra thành
+            # khoảng trắng thừa. CHỈ 2 cột có nội dung thật sự dài (câu mô
+            # tả/liệt kê nhiều bộ chỉ số) được để tự do chiếm phần rộng
+            # còn lại: "Tính cách" và "Bộ chỉ số LN>5%".
             "Mã": st.column_config.TextColumn(width="small"),
+            "Giá": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "Giai đoạn": st.column_config.TextColumn(width="small"),
             "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Cảnh báo (Warning)": st.column_config.TextColumn(width="small"),

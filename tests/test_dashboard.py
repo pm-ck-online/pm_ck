@@ -425,6 +425,67 @@ class TestFilterSymbolsBySearch:
 
 
 # ==============================================================================
+# Test: _bo_chi_so_tot_theo_nguong (hàm thuần túy dùng ở mục Tính cách
+# giao dịch — liệt kê bộ chỉ số LN>5% theo giai đoạn hiện tại)
+# ==============================================================================
+
+class TestBoChiSoTotTheoNguong:
+    def _pp_data(self, **ket_qua_theo_bo_chi_so):
+        """`ket_qua_theo_bo_chi_so`: {ten_day_du: {giai_doan: {n_trades, total_return_pct}}}"""
+        return {"current": "downtrend", "results": ket_qua_theo_bo_chi_so}
+
+    def test_tra_ve_gach_ngang_khi_chua_co_giai_doan(self):
+        from dashboard.app import _bo_chi_so_tot_theo_nguong
+        pp_data = self._pp_data()
+        assert _bo_chi_so_tot_theo_nguong(pp_data, None) == "—"
+
+    def test_chi_lay_bo_vuot_nguong_va_co_lenh(self):
+        from dashboard.app import _bo_chi_so_tot_theo_nguong
+        pp_data = self._pp_data(**{
+            "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+            "RSI14 (Quá mua/Quá bán 30-70)": {"downtrend": {"n_trades": 2, "total_return_pct": 3.0}},  # dưới ngưỡng
+            "Bollinger Bounce (mua đáy dải dưới)": {"downtrend": {"n_trades": 0, "total_return_pct": 20.0}},  # 0 lệnh
+            "Volume Breakout + MA20": {"downtrend": {"n_trades": 5, "total_return_pct": None}},  # thiếu %
+        })
+        ket_qua = _bo_chi_so_tot_theo_nguong(pp_data, "downtrend")
+        assert ket_qua == "MA20 (3 lệnh, +12.0%)"
+
+    def test_sap_xep_giam_dan_theo_loi_nhuan(self):
+        from dashboard.app import _bo_chi_so_tot_theo_nguong
+        pp_data = self._pp_data(**{
+            "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+            "RSI14 (Quá mua/Quá bán 30-70)": {"downtrend": {"n_trades": 2, "total_return_pct": 41.4}},
+        })
+        ket_qua = _bo_chi_so_tot_theo_nguong(pp_data, "downtrend")
+        assert ket_qua == "RSI14 (2 lệnh, +41.4%); MA20 (3 lệnh, +12.0%)"
+
+    def test_chi_xet_dung_giai_doan_dang_hoi(self):
+        from dashboard.app import _bo_chi_so_tot_theo_nguong
+        pp_data = self._pp_data(**{
+            "MA20 (Giá cắt MA20)": {
+                "uptrend": {"n_trades": 3, "total_return_pct": 50.0},  # giai đoạn khác -> bỏ qua
+                "downtrend": {"n_trades": 1, "total_return_pct": 6.0},
+            },
+        })
+        assert _bo_chi_so_tot_theo_nguong(pp_data, "downtrend") == "MA20 (1 lệnh, +6.0%)"
+
+    def test_tra_ve_gach_ngang_khi_khong_bo_nao_vuot_nguong(self):
+        from dashboard.app import _bo_chi_so_tot_theo_nguong
+        pp_data = self._pp_data(**{
+            "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 2.0}},
+        })
+        assert _bo_chi_so_tot_theo_nguong(pp_data, "downtrend") == "—"
+
+    def test_tuy_chinh_nguong(self):
+        from dashboard.app import _bo_chi_so_tot_theo_nguong
+        pp_data = self._pp_data(**{
+            "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 8.0}},
+        })
+        assert _bo_chi_so_tot_theo_nguong(pp_data, "downtrend", nguong_pct=10.0) == "—"
+        assert _bo_chi_so_tot_theo_nguong(pp_data, "downtrend", nguong_pct=5.0) == "MA20 (3 lệnh, +8.0%)"
+
+
+# ==============================================================================
 # Test: build_watchlist_detail_table (hàm thuần túy, không cần AppTest)
 # ==============================================================================
 
