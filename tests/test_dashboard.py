@@ -486,6 +486,27 @@ class TestBoChiSoTotTheoNguong:
 
 
 # ==============================================================================
+# Test: _dinh_dang_qua_mua_ngan_han (hàm thuần túy — gộp Độ lệch MA20 +
+# Mức cảnh báo từ mục Tiêu chí ngắn hạn (đã ẩn) vào Tính cách giao dịch)
+# ==============================================================================
+
+class TestDinhDangQuaMuaNganHan:
+    def test_khong_co_du_lieu_tra_ve_binh_thuong(self):
+        from dashboard.app import _dinh_dang_qua_mua_ngan_han
+        assert _dinh_dang_qua_mua_ngan_han(None) == ("—", "🟢 Bình thường")
+
+    def test_nguy_co_dieu_chinh(self):
+        from dashboard.app import _dinh_dang_qua_mua_ngan_han
+        ket_qua = _dinh_dang_qua_mua_ngan_han({"do_lech_ma20_pct": 11.3, "muc_canh_bao": "NGUY_CO_DIEU_CHINH"})
+        assert ket_qua == ("+11.3%", "🟡 Nguy cơ điều chỉnh")
+
+    def test_nguy_co_cao(self):
+        from dashboard.app import _dinh_dang_qua_mua_ngan_han
+        ket_qua = _dinh_dang_qua_mua_ngan_han({"do_lech_ma20_pct": 18.7, "muc_canh_bao": "NGUY_CO_CAO"})
+        assert ket_qua == ("+18.7%", "🔴 Nguy cơ cao")
+
+
+# ==============================================================================
 # Test: build_watchlist_detail_table (hàm thuần túy, không cần AppTest)
 # ==============================================================================
 
