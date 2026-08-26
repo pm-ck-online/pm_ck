@@ -153,6 +153,56 @@ def _fmt_number(value) -> Optional[str]:
     return f"{value:,.0f}"
 
 
+def _tim_moc_rsi_quan_trong(
+    dates: list, rsi_values: list, nguong_qua_mua: float = 70.0, nguong_qua_ban: float = 30.0,
+) -> list[dict]:
+    """Tìm các MỐC RSI QUAN TRỌNG để đánh số ngay trên biểu đồ — thay vì
+    phải rê chuột dò từng điểm. Với MỖI đợt RSI vượt liên tục ra khỏi
+    vùng bình thường (>70 quá mua, hoặc <30 quá bán), chỉ lấy ĐÚNG 1 điểm
+    cực trị (đỉnh của đợt quá mua, đáy của đợt quá bán) — tránh dán số dày
+    đặc lên từng điểm.
+
+    `dates`/`rsi_values`: 2 danh sách CÙNG ĐỘ DÀI, cùng thứ tự (thường lấy
+    từ `df["date"].tolist()` và `rsi_series.tolist()`).
+
+    Trả về danh sách `{"date", "value", "loai": "qua_mua"|"qua_ban"}`,
+    theo đúng thứ tự thời gian.
+    """
+    moc: list[dict] = []
+    trang_thai_hien_tai: Optional[str] = None
+    idx_cuc_tri: Optional[int] = None
+
+    for i, v in enumerate(rsi_values):
+        if v is None or pd.isna(v):
+            trang_thai = None
+        elif v > nguong_qua_mua:
+            trang_thai = "qua_mua"
+        elif v < nguong_qua_ban:
+            trang_thai = "qua_ban"
+        else:
+            trang_thai = None
+
+        if trang_thai != trang_thai_hien_tai:
+            if trang_thai_hien_tai is not None and idx_cuc_tri is not None:
+                moc.append({
+                    "date": dates[idx_cuc_tri], "value": rsi_values[idx_cuc_tri],
+                    "loai": trang_thai_hien_tai,
+                })
+            trang_thai_hien_tai = trang_thai
+            idx_cuc_tri = i if trang_thai is not None else None
+        elif trang_thai == "qua_mua" and v > rsi_values[idx_cuc_tri]:
+            idx_cuc_tri = i
+        elif trang_thai == "qua_ban" and v < rsi_values[idx_cuc_tri]:
+            idx_cuc_tri = i
+
+    if trang_thai_hien_tai is not None and idx_cuc_tri is not None:
+        moc.append({
+            "date": dates[idx_cuc_tri], "value": rsi_values[idx_cuc_tri],
+            "loai": trang_thai_hien_tai,
+        })
+    return moc
+
+
 # ==============================================================================
 # PHẦN 2 — BIỂU ĐỒ NẾN NHẬT + MA/EMA + KHỐI LƯỢNG
 # ==============================================================================
@@ -266,7 +316,9 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
         st.info(f"Không có dữ liệu OHLCV cho mã '{selected_symbol}'.")
         return
 
-    from core.indicators import calculate_ema, calculate_ma, calculate_rsi, resample_ohlcv
+    from core.indicators import (
+        calculate_bollinger_bands, calculate_ema, calculate_ma, calculate_rsi, resample_ohlcv,
+    )
 
     df = resample_ohlcv(df_daily, timeframe=timeframe)
     if df.empty:
@@ -277,6 +329,7 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
     ema50 = calculate_ema(df, 50)
     ema100 = calculate_ema(df, 100)
     ema200 = calculate_ema(df, 200)
+    bb_upper, bb_middle, bb_lower = calculate_bollinger_bands(df, period=20, num_std=2.0)
     if timeframe != "day" and ema200.isna().all():
         st.caption(
             f"ℹ️ Chưa đủ dữ liệu lịch sử để tính EMA200 ở khung '{timeframe_label}' "
@@ -284,6 +337,14 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
             f"~750 phiên ngày). Các đường MA20/EMA50/EMA100 vẫn hiển thị bình thường."
         )
     rsi14 = calculate_rsi(df, period=14) if len(df) > 14 else None
+
+    # --- Ẩn/hiện từng chỉ báo overlay trên biểu đồ giá (mặc định hiện hết) ---
+    cac_chi_bao_hien = st.multiselect(
+        "📊 Chỉ báo hiển thị trên biểu đồ giá",
+        ["MA20", "EMA50", "EMA100", "EMA200", "Bollinger Bands (20,2)"],
+        default=["MA20", "EMA50", "EMA100", "EMA200", "Bollinger Bands (20,2)"],
+        key="chart_indicators_shown",
+    )
 
     # --- Bảng màu theo giao diện đã chọn (Tối kiểu TradingView/fireant, hoặc Sáng nền trắng) ---
     if theme_label == "Tối":
@@ -332,6 +393,29 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
         unsafe_allow_html=True,
     )
 
+    # --- Nút phóng to/thu nhỏ kiểu fireant.vn — thu hẹp/mở rộng số phiên
+    #     đang hiển thị trên trục thời gian (khác với nút 1T/3T/6T/1N/Tất
+    #     cả ở rangeselector, vốn nhảy thẳng tới 1 mốc cố định; đây là
+    #     phóng to/thu nhỏ TƯƠNG ĐỐI theo cửa sổ đang xem, bấm liên tiếp
+    #     được). Nhớ riêng theo từng mã + khung thời gian.
+    zoom_key = f"chart_zoom_window__{selected_symbol}__{timeframe}"
+    if zoom_key not in st.session_state:
+        st.session_state[zoom_key] = None  # None = xem toàn bộ lịch sử
+
+    col_zoom_in, col_zoom_out, col_zoom_reset, _ = st.columns([1, 1, 1, 6])
+    with col_zoom_in:
+        if st.button("🔍+ Phóng to", key="chart_zoom_in_btn", help="Thu hẹp cửa sổ thời gian đang xem"):
+            cua_so_hien = st.session_state[zoom_key] or len(df)
+            st.session_state[zoom_key] = max(15, cua_so_hien // 2)
+    with col_zoom_out:
+        if st.button("🔍− Thu nhỏ", key="chart_zoom_out_btn", help="Mở rộng cửa sổ thời gian đang xem"):
+            cua_so_hien = st.session_state[zoom_key] or len(df)
+            st.session_state[zoom_key] = min(len(df), cua_so_hien * 2)
+    with col_zoom_reset:
+        if st.button("↺ Xem tất cả", key="chart_zoom_reset_btn"):
+            st.session_state[zoom_key] = None
+    zoom_window = st.session_state[zoom_key]
+
     has_rsi = rsi14 is not None
     n_rows = 3 if has_rsi else 2
     row_heights = [0.6, 0.2, 0.2] if has_rsi else [0.75, 0.25]
@@ -350,26 +434,45 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
         ),
         row=1, col=1,
     )
-    fig.add_trace(
-        go.Scatter(x=df["date"], y=ma20, name="MA20",
-                   line=dict(width=1.2, color="#e0e0e0" if theme_label == "Tối" else "#616161")),
-        row=1, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=df["date"], y=ema50, name="EMA50",
-                   line=dict(width=1.2, color="#ffd54f")),
-        row=1, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=df["date"], y=ema100, name="EMA100",
-                   line=dict(width=1.2, color="#42a5f5")),
-        row=1, col=1,
-    )
-    fig.add_trace(
-        go.Scatter(x=df["date"], y=ema200, name="EMA200",
-                   line=dict(width=1.5, color="#ef5350")),
-        row=1, col=1,
-    )
+    if "MA20" in cac_chi_bao_hien:
+        fig.add_trace(
+            go.Scatter(x=df["date"], y=ma20, name="MA20",
+                       line=dict(width=1.2, color="#e0e0e0" if theme_label == "Tối" else "#616161")),
+            row=1, col=1,
+        )
+    if "EMA50" in cac_chi_bao_hien:
+        fig.add_trace(
+            go.Scatter(x=df["date"], y=ema50, name="EMA50",
+                       line=dict(width=1.2, color="#ffd54f")),
+            row=1, col=1,
+        )
+    if "EMA100" in cac_chi_bao_hien:
+        fig.add_trace(
+            go.Scatter(x=df["date"], y=ema100, name="EMA100",
+                       line=dict(width=1.2, color="#42a5f5")),
+            row=1, col=1,
+        )
+    if "EMA200" in cac_chi_bao_hien:
+        fig.add_trace(
+            go.Scatter(x=df["date"], y=ema200, name="EMA200",
+                       line=dict(width=1.5, color="#ef5350")),
+            row=1, col=1,
+        )
+    if "Bollinger Bands (20,2)" in cac_chi_bao_hien:
+        BB_LINE_COLOR = "#7e57c2" if theme_label == "Tối" else "#5e35b1"
+        BB_FILL_COLOR = "rgba(126,87,194,0.10)" if theme_label == "Tối" else "rgba(94,53,177,0.08)"
+        fig.add_trace(
+            go.Scatter(x=df["date"], y=bb_upper, name="BB Upper",
+                       line=dict(width=1, color=BB_LINE_COLOR, dash="dot"),
+                       legendgroup="bb", showlegend=False),
+            row=1, col=1,
+        )
+        fig.add_trace(
+            go.Scatter(x=df["date"], y=bb_lower, name="Bollinger Bands (20,2)",
+                       line=dict(width=1, color=BB_LINE_COLOR, dash="dot"),
+                       fill="tonexty", fillcolor=BB_FILL_COLOR, legendgroup="bb"),
+            row=1, col=1,
+        )
 
     # --- Hàng 2: khối lượng giao dịch theo cột, màu theo tăng/giảm phiên đó ---
     volume_up_color = UP_COLOR if theme_label == "Tối" else "#00695c"
@@ -411,6 +514,23 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
         fig.add_hline(y=30, line_dash="dash", line_color="#787b86",
                       line_width=1, row=3, col=1)
 
+        # --- Đánh số RSI ngay tại các mốc quan trọng (đỉnh quá mua/đáy
+        #     quá bán của từng đợt) — chỉ giữ tối đa 25 mốc GẦN NHẤT để
+        #     tránh dán số dày đặc khi xem toàn bộ lịch sử nhiều năm. ---
+        MAU_QUA_MUA, MAU_QUA_BAN = "#ef5350", "#26a69a"
+        moc_rsi = _tim_moc_rsi_quan_trong(df["date"].tolist(), rsi14.tolist())[-25:]
+        for moc in moc_rsi:
+            la_qua_mua = moc["loai"] == "qua_mua"
+            fig.add_annotation(
+                x=moc["date"], y=moc["value"], row=3, col=1,
+                text=f"{moc['value']:.0f}",
+                showarrow=True, arrowhead=0, arrowsize=0.8, arrowwidth=1,
+                ax=0, ay=-14 if la_qua_mua else 14,
+                arrowcolor=MAU_QUA_MUA if la_qua_mua else MAU_QUA_BAN,
+                font=dict(size=10, color=MAU_QUA_MUA if la_qua_mua else MAU_QUA_BAN),
+                bgcolor=BG_COLOR, borderpad=1,
+            )
+
     fig.update_layout(
         height=870 if has_rsi else 720,
         template="plotly_dark" if theme_label == "Tối" else "plotly_white",
@@ -432,6 +552,8 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
         gridcolor=GRID_COLOR, showgrid=True, rangeslider_visible=False,
         color=TEXT_COLOR,
     )
+    if zoom_window is not None and zoom_window < len(df):
+        fig.update_xaxes(range=[df["date"].iloc[-zoom_window], df["date"].iloc[-1]])
     fig.update_yaxes(
         gridcolor=GRID_COLOR, showgrid=True, title_text="Giá", color=TEXT_COLOR,
         row=1, col=1,
@@ -512,9 +634,13 @@ def render_chart_section(storage: Storage, symbols: list[str]) -> None:
         },
     )
     st.caption(
-        "💡 **Phóng to/thu nhỏ:** cuộn chuột giữa biểu đồ, hoặc dùng nút 🔍+/🔍− ở "
-        "thanh công cụ góc trên bên phải. **Di chuyển:** giữ chuột trái và kéo ngang. "
-        "**Reset về ban đầu:** double-click vào biểu đồ, hoặc nút 🏠 ở thanh công cụ."
+        "💡 **Phóng to/thu nhỏ:** nút 🔍+ Phóng to/🔍− Thu nhỏ phía trên biểu đồ (thu hẹp/mở "
+        "rộng số phiên đang xem, bấm liên tiếp được, giống fireant.vn), hoặc cuộn chuột/nút "
+        "🔍+/🔍− ở thanh công cụ góc trên bên phải. **Di chuyển:** giữ chuột trái và kéo ngang. "
+        "**Reset về ban đầu:** nút ↺ Xem tất cả, double-click vào biểu đồ, hoặc nút 🏠 ở thanh "
+        "công cụ. **Ẩn/hiện từng đường:** bấm vào tên đường trong chú giải (legend), hoặc dùng "
+        "ô chọn \"Chỉ báo hiển thị\" phía trên. Số hiển thị trên đường RSI là mốc quá mua "
+        "(đỏ)/quá bán (xanh) gần đây nhất của từng đợt."
     )
 
 

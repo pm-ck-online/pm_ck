@@ -405,6 +405,68 @@ class TestDashboardEmptyState:
 
 
 # ==============================================================================
+# Test: _tim_moc_rsi_quan_trong (hàm thuần túy — mốc RSI đánh số trên
+# biểu đồ nến, xem render_chart_section)
+# ==============================================================================
+
+class TestTimMocRsiQuanTrong:
+    def _ngay(self, n):
+        return [f"2024-01-{i + 1:02d}" for i in range(n)]
+
+    def test_khong_co_dot_qua_mua_qua_ban_tra_ve_rong(self):
+        from dashboard.app import _tim_moc_rsi_quan_trong
+        rsi = [40, 50, 60, 55, 45]
+        assert _tim_moc_rsi_quan_trong(self._ngay(5), rsi) == []
+
+    def test_1_dot_qua_mua_lay_dung_dinh(self):
+        from dashboard.app import _tim_moc_rsi_quan_trong
+        # qua muc 70 tu ngay 2 (idx1) den ngay 4 (idx3), dinh o idx2 (85)
+        rsi = [60, 75, 85, 80, 55]
+        ngay = self._ngay(5)
+        ket_qua = _tim_moc_rsi_quan_trong(ngay, rsi)
+        assert ket_qua == [{"date": ngay[2], "value": 85, "loai": "qua_mua"}]
+
+    def test_1_dot_qua_ban_lay_dung_day(self):
+        from dashboard.app import _tim_moc_rsi_quan_trong
+        rsi = [40, 25, 15, 22, 45]
+        ngay = self._ngay(5)
+        ket_qua = _tim_moc_rsi_quan_trong(ngay, rsi)
+        assert ket_qua == [{"date": ngay[2], "value": 15, "loai": "qua_ban"}]
+
+    def test_dot_keo_dai_toi_cuoi_du_lieu_van_duoc_ghi_nhan(self):
+        from dashboard.app import _tim_moc_rsi_quan_trong
+        # qua mua tu idx1, tang dan toi cuoi, KHONG quay ve binh thuong
+        rsi = [50, 72, 78, 90]
+        ngay = self._ngay(4)
+        ket_qua = _tim_moc_rsi_quan_trong(ngay, rsi)
+        assert ket_qua == [{"date": ngay[3], "value": 90, "loai": "qua_mua"}]
+
+    def test_nhieu_dot_tach_dung_theo_thu_tu_thoi_gian(self):
+        from dashboard.app import _tim_moc_rsi_quan_trong
+        # dot 1: qua ban (idx0-1, day=20 tai idx1); binh thuong idx2;
+        # dot 2: qua mua (idx3-4, dinh=88 tai idx4)
+        rsi = [25, 20, 50, 75, 88]
+        ngay = self._ngay(5)
+        ket_qua = _tim_moc_rsi_quan_trong(ngay, rsi)
+        assert ket_qua == [
+            {"date": ngay[1], "value": 20, "loai": "qua_ban"},
+            {"date": ngay[4], "value": 88, "loai": "qua_mua"},
+        ]
+
+    def test_bo_qua_gia_tri_nan(self):
+        from dashboard.app import _tim_moc_rsi_quan_trong
+        import math
+        rsi = [50, 75, math.nan, 80, 50]
+        ngay = self._ngay(5)
+        ket_qua = _tim_moc_rsi_quan_trong(ngay, rsi)
+        # NaN cat doi doan qua mua -> 2 dot rieng, moi dot lay dung dinh cua no
+        assert ket_qua == [
+            {"date": ngay[1], "value": 75, "loai": "qua_mua"},
+            {"date": ngay[3], "value": 80, "loai": "qua_mua"},
+        ]
+
+
+# ==============================================================================
 # Test: hàm tiện ích tìm kiếm mã (pure function, không cần AppTest)
 # ==============================================================================
 
