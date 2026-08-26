@@ -201,14 +201,14 @@ class TestDashboardSmoke:
         assert not at.exception
 
         at.radio(key="dashboard_selected_section__NHÓM 3 — GIAO DỊCH CỔ PHIẾU").set_value(
-            "📈 Bảng giá theo dõi (Watchlist)"
+            "🎭 Tính cách giao dịch từng mã"
         )
         at.run(timeout=30)
         assert not at.exception
 
         # Chỉ đúng 1 tiêu đề mục được hiển thị (không lẫn các mục khác)
         subheader_texts = [s.value for s in at.subheader]
-        assert any("Bảng giá theo dõi (Watchlist)" in s for s in subheader_texts)
+        assert any("Tính cách giao dịch từng mã" in s for s in subheader_texts)
         assert not any("Biểu đồ nến" in s for s in subheader_texts)
 
     def test_dashboard_title_present(self, seeded_storage):
@@ -522,6 +522,32 @@ class TestTinhDoLechVaCanhBaoMa20:
         # la "qua mua")
         ket_qua = _tinh_do_lech_va_canh_bao_ma20(90.0, 100.0)
         assert ket_qua == ("-10.0%", "🟢 Bình thường")
+
+
+# ==============================================================================
+# Test: _tinh_ty_le_volume (hàm thuần túy — % Volume/MA20 Volume)
+# ==============================================================================
+
+class TestTinhTyLeVolume:
+    def test_thieu_du_lieu_tra_ve_gach_ngang(self):
+        from dashboard.app import _tinh_ty_le_volume
+        assert _tinh_ty_le_volume(None, 1000.0) == "—"
+        assert _tinh_ty_le_volume(1000.0, None) == "—"
+        assert _tinh_ty_le_volume(1000.0, 0.0) == "—"
+
+    def test_volume_bang_trung_binh(self):
+        from dashboard.app import _tinh_ty_le_volume
+        assert _tinh_ty_le_volume(1_000_000.0, 1_000_000.0) == "100%"
+
+    def test_volume_dot_bien_cao_hon_trung_binh(self):
+        from dashboard.app import _tinh_ty_le_volume
+        # volume = 2,500,000, MA20 = 1,000,000 -> 250%
+        assert _tinh_ty_le_volume(2_500_000.0, 1_000_000.0) == "250%"
+
+    def test_volume_thap_hon_trung_binh(self):
+        from dashboard.app import _tinh_ty_le_volume
+        # volume = 400,000, MA20 = 1,000,000 -> 40%
+        assert _tinh_ty_le_volume(400_000.0, 1_000_000.0) == "40%"
 
 
 # ==============================================================================

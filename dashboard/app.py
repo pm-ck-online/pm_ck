@@ -153,62 +153,6 @@ def _fmt_number(value) -> Optional[str]:
     return f"{value:,.0f}"
 
 
-def render_watchlist_section(storage: Storage, symbols: list[str]) -> None:
-    st.subheader("📈 Bảng giá theo dõi (Watchlist)")
-
-    if not symbols:
-        st.info("Chưa có mã nào trong danh sách theo dõi.")
-        return
-
-    # Gộp truy vấn (1 lượt gọi cho TẤT CẢ mã) thay vì hỏi từng mã một —
-    # xem giải thích chi tiết trong docstring `get_latest_many()`.
-    snapshot_map = storage.get_latest_many("indicator_snapshot", symbols)
-    realtime_map = storage.get_latest_many("realtime_price", symbols)
-
-    rows = []
-    for symbol in symbols:
-        record = snapshot_map.get(symbol)
-        realtime_record = realtime_map.get(symbol)
-
-        if record is None:
-            rows.append({
-                "Mã": symbol, "Giá hiện tại": None, "Giá đóng cửa (OHLCV)": None,
-                "MA20": None, "EMA50": None, "EMA100": None, "EMA200": None,
-                "Volume MA15": None, "Volume MA20": None, "Trên EMA200?": None,
-            })
-            continue
-
-        data = record["data"]
-        realtime_price = (
-            realtime_record["data"].get("price") if realtime_record else None
-        )
-        rows.append({
-            "Mã": symbol,
-            "Giá hiện tại": _fmt_price(realtime_price),
-            "Giá đóng cửa (OHLCV)": _fmt_price(data.get("close")),
-            "MA20": _fmt_number(data.get("ma20")),
-            "EMA50": _fmt_number(data.get("ema50")),
-            "EMA100": _fmt_number(data.get("ema100")),
-            "EMA200": _fmt_number(data.get("ema200")),
-            "Volume MA15": _fmt_number(data.get("volume_ma_15")),
-            "Volume MA20": _fmt_number(data.get("volume_ma_20")),
-            "Trên EMA200?": "✅" if data.get("price_above_ema200") else (
-                "❌" if data.get("price_above_ema200") is False else "—"
-            ),
-        })
-
-    df = pd.DataFrame(rows)
-    st.dataframe(df, width='stretch', hide_index=True)
-    st.caption(
-        "💡 'Giá hiện tại' lấy từ giá khớp lệnh gần nhất (realtime_price). "
-        "'Giá đóng cửa (OHLCV)' là giá của phiên gần nhất trong dữ liệu lịch "
-        "sử dùng để tính chỉ báo — 2 giá trị có thể khác nhau tùy thời điểm "
-        "và độ trễ của nguồn dữ liệu. Mã xử lý qua `run_full_market.py` sẽ "
-        "chưa có 'Giá hiện tại' (chỉ `main.py` mới lấy giá thời gian thực, "
-        "để tránh tốn thêm request khi quét toàn thị trường)."
-    )
-
-
 # ==============================================================================
 # PHẦN 2 — BIỂU ĐỒ NẾN NHẬT + MA/EMA + KHỐI LƯỢNG
 # ==============================================================================
@@ -2753,6 +2697,19 @@ def _tinh_do_lech_va_canh_bao_ma20(close: Optional[float], ma20: Optional[float]
     return do_lech, muc_canh_bao
 
 
+def _tinh_ty_le_volume(volume: Optional[float], volume_ma20: Optional[float]) -> str:
+    """Tính % Volume phiên gần nhất so với Volume MA20 — công thức:
+    volume / volume_ma20 × 100. >100% nghĩa là volume hôm nay CAO HƠN
+    trung bình 20 phiên (dấu hiệu quan tâm/dòng tiền tăng); tham khảo
+    thêm ngưỡng đột biến chính thức của hệ thống là ≥150% (xem
+    `core.indicators.is_volume_breakout`, mặc định 1,5 lần). Trả về "—"
+    nếu thiếu dữ liệu hoặc volume_ma20 = 0.
+    """
+    if volume is None or volume_ma20 is None or volume_ma20 <= 0:
+        return "—"
+    return f"{volume / volume_ma20 * 100:.0f}%"
+
+
 @st.cache_data(ttl=600, show_spinner="Đang đếm số lần lịch sử có đặc tính tương tự...")
 def _dem_lich_su_nhan_cached(df: pd.DataFrame, ma: str, nhan: str) -> dict:
     """Bọc `dem_lich_su_nhan_tuong_tu()` bằng cache 10 phút — mỗi lần gọi
@@ -2800,7 +2757,10 @@ def render_stock_character_section(storage: Storage) -> None:
         "pháp) — xem mục đó để có bảng đầy đủ cả 3 giai đoạn × 2 phương pháp. "
         "Cột \"Độ lệch MA20\"/\"Mức cảnh báo\" tính trực tiếp từ giá đóng cửa "
         "gần nhất so với MA20 (<10% Bình thường, 10-15% Nguy cơ điều chỉnh, "
-        ">15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn hạn cũ)."
+        ">15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn hạn cũ). "
+        "Cột \"% Volume/MA20 Volume\" = Volume phiên gần nhất ÷ Volume MA20 × "
+        "100 — trên 100% nghĩa là khối lượng hôm nay cao hơn trung bình 20 "
+        "phiên; từ 150% trở lên được hệ thống coi là đột biến volume."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -2853,7 +2813,7 @@ def render_stock_character_section(storage: Storage) -> None:
     character_map = storage.get_latest_many("stock_character", symbol_ids)
     # Giá gần nhất: lấy từ indicator_snapshot (đã tính sẵn cho MỌI mã, kể
     # cả mã quét qua run_full_market.py — khác với realtime_price chỉ có
-    # ở mã chạy qua main.py, xem ghi chú ở render_watchlist_section).
+    # ở mã chạy qua main.py, không dùng chung khi quét toàn thị trường).
     indicator_map = storage.get_latest_many("indicator_snapshot", symbol_ids)
     # Giai đoạn hiện tại + bộ chỉ số tốt: lấy từ báo cáo "Cổ phiếu dài hạn"
     # (long_term_screener_report), dùng phương pháp Ensemble 3 phương pháp
@@ -2873,6 +2833,8 @@ def render_stock_character_section(storage: Storage) -> None:
         gia_snap = indicator_map.get(sym)
         gia_gan_nhat = gia_snap["data"].get("close") if gia_snap else None
         ma20_gan_nhat = gia_snap["data"].get("ma20") if gia_snap else None
+        volume_gan_nhat = gia_snap["data"].get("volume") if gia_snap else None
+        volume_ma20_gan_nhat = gia_snap["data"].get("volume_ma_20") if gia_snap else None
 
         lt_record = long_term_map.get(sym)
         pp_data = (lt_record["data"].get("regime_ensemble") or {}) if lt_record else {}
@@ -2888,6 +2850,7 @@ def render_stock_character_section(storage: Storage) -> None:
             "Bộ chỉ số LN>5% (giai đoạn hiện tại)": _bo_chi_so_tot_theo_nguong(pp_data, giai_doan_hien_tai),
             "Độ lệch MA20": do_lech_ma20,
             "Mức cảnh báo (ngắn hạn)": muc_canh_bao_ngan_han,
+            "% Volume/MA20 Volume": _tinh_ty_le_volume(volume_gan_nhat, volume_ma20_gan_nhat),
             "Điểm dứt khoát (Character Score)": data.get("character_score"),
             "Điểm lình xình (Choppiness Score)": data.get("choppiness_score"),
             "Cảnh báo (Warning)": _dich_canh_bao(data.get("canh_bao", [])),
@@ -2926,6 +2889,7 @@ def render_stock_character_section(storage: Storage) -> None:
             "Giai đoạn": st.column_config.TextColumn(width="small"),
             "Độ lệch MA20": st.column_config.TextColumn(width="small"),
             "Mức cảnh báo (ngắn hạn)": st.column_config.TextColumn(width="small"),
+            "% Volume/MA20 Volume": st.column_config.TextColumn(width="small"),
             "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Cảnh báo (Warning)": st.column_config.TextColumn(width="small"),
@@ -4368,7 +4332,6 @@ DASHBOARD_GROUPS = [
         "📌 Tổng hợp",
         "🔖 Danh sách theo dõi + Lý do",
         "📋 Watchlist (thêm/xóa mã)",
-        "📈 Bảng giá theo dõi (Watchlist)",
         "🕯️ Biểu đồ nến",
         "📒 Nhật ký giao dịch mua/bán",
         "📦 Khuyến nghị phân bổ vốn (đơn giản)",
@@ -4485,7 +4448,6 @@ def main() -> None:
         ("📌 Tổng hợp", render_tong_hop_section, (storage,)),
         ("🔖 Danh sách theo dõi + Lý do", render_danh_sach_theo_doi_section, (storage,)),
         ("📋 Watchlist (thêm/xóa mã)", render_watchlist_manager_section, (storage,)),
-        ("📈 Bảng giá theo dõi (Watchlist)", render_watchlist_section, (storage, symbols)),
         ("🕯️ Biểu đồ nến", render_chart_section, (storage, symbols)),
         ("📒 Nhật ký giao dịch mua/bán", render_trade_journal_section, (storage, symbols)),
         ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage,)),
