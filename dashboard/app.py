@@ -2728,21 +2728,28 @@ def _bo_chi_so_tot_theo_nguong(pp_data: dict, giai_doan: Optional[str], nguong_p
 
 
 _NHAN_MUC_CANH_BAO_NGAN_HAN = {
-    "NGUY_CO_CAO": "🔴 Nguy cơ cao", "NGUY_CO_DIEU_CHINH": "🟡 Nguy cơ điều chỉnh",
+    "BINH_THUONG": "🟢 Bình thường",
+    "NGUY_CO_DIEU_CHINH": "🟡 Nguy cơ điều chỉnh",
+    "NGUY_CO_CAO": "🔴 Nguy cơ cao",
 }
 
 
-def _dinh_dang_qua_mua_ngan_han(qua_mua: Optional[dict]) -> tuple[str, str]:
-    """Định dạng (Độ lệch MA20, Mức cảnh báo) từ 1 bản ghi trong
-    `short_term_signal_report["co_phieu_qua_mua"]` (mục "⏱️ Tiêu chí ngắn
-    hạn", đã ẩn khỏi menu điều hướng) — dùng để gộp vào bảng "Tính cách
-    giao dịch từng mã". `qua_mua=None` (mã không có mặt trong danh sách
-    quá mua) nghĩa là mã đang BÌNH THƯỜNG, KHÔNG PHẢI thiếu dữ liệu.
+def _tinh_do_lech_va_canh_bao_ma20(close: Optional[float], ma20: Optional[float]) -> tuple[str, str]:
+    """Tính TRỰC TIẾP % lệch giá đóng cửa so với MA20 + mức cảnh báo quá
+    mua, dùng lại đúng ngưỡng đã có ở `core.short_term_signal.
+    canh_bao_qua_mua_co_phieu()` (<10% Bình thường, 10-15% Nguy cơ điều
+    chỉnh, >15% Nguy cơ cao) — tính thẳng từ `indicator_snapshot` (LUÔN có
+    sẵn cho MỌI mã) thay vì đọc lại `short_term_signal_report` (báo cáo đó
+    CHỈ liệt kê mã đang quá mua, nên phần lớn mã sẽ hiện trống dù thực tế
+    vẫn tính được độ lệch). Trả về "—", "—" nếu thiếu `close`/`ma20`.
     """
-    if qua_mua is None:
-        return "—", "🟢 Bình thường"
-    do_lech = f"{qua_mua['do_lech_ma20_pct']:+.1f}%"
-    muc_canh_bao = _NHAN_MUC_CANH_BAO_NGAN_HAN.get(qua_mua["muc_canh_bao"], qua_mua["muc_canh_bao"])
+    if close is None or ma20 is None or ma20 <= 0:
+        return "—", "—"
+    from core.short_term_signal import canh_bao_qua_mua_co_phieu
+
+    ket_qua = canh_bao_qua_mua_co_phieu("", close, ma20)
+    do_lech = f"{ket_qua['do_lech_ma20_pct']:+.1f}%"
+    muc_canh_bao = _NHAN_MUC_CANH_BAO_NGAN_HAN.get(ket_qua["muc_canh_bao"], ket_qua["muc_canh_bao"])
     return do_lech, muc_canh_bao
 
 
@@ -2791,9 +2798,9 @@ def render_stock_character_section(storage: Storage) -> None:
         "cậy tín hiệu Mua/Bán và phân bổ vốn. Cột \"Giai đoạn\" và \"Bộ chỉ số "
         "LN>5%\" lấy từ mục 🧮 Cổ phiếu dài hạn (phương pháp Ensemble 3 phương "
         "pháp) — xem mục đó để có bảng đầy đủ cả 3 giai đoạn × 2 phương pháp. "
-        "Cột \"Độ lệch MA20\"/\"Mức cảnh báo\" (ngắn hạn) lấy từ mục Tiêu chí "
-        "ngắn hạn (đã ẩn khỏi menu) — mã hiện \"🟢 Bình thường\" nghĩa là "
-        "KHÔNG đang quá mua ngắn hạn, không phải thiếu dữ liệu."
+        "Cột \"Độ lệch MA20\"/\"Mức cảnh báo\" tính trực tiếp từ giá đóng cửa "
+        "gần nhất so với MA20 (<10% Bình thường, 10-15% Nguy cơ điều chỉnh, "
+        ">15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn hạn cũ)."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -2852,17 +2859,6 @@ def render_stock_character_section(storage: Storage) -> None:
     # (long_term_screener_report), dùng phương pháp Ensemble 3 phương pháp
     # (đáng tin hơn PP1 EMA200 đơn giản — xem 🧮 Cổ phiếu dài hạn).
     long_term_map = storage.get_latest_many("long_term_screener_report", symbol_ids)
-    # Độ lệch MA20 (ngắn hạn) + Mức cảnh báo: gộp về từ mục "⏱️ Tiêu chí
-    # ngắn hạn" (đã ẩn khỏi menu điều hướng) — chỉ 1 lượt đọc chung cho
-    # TOÀN BỘ mã (report["co_phieu_qua_mua"] là danh sách PHẲNG, không
-    # theo từng mã). CHỈ chứa mã đang thật sự quá mua (mức cảnh báo khác
-    # "BINH_THUONG") — mã không có mặt ở đây nghĩa là đang bình thường,
-    # KHÔNG PHẢI thiếu dữ liệu.
-    short_term_record = storage.get_latest("short_term_signal_report", "latest")
-    qua_mua_map: dict[str, dict] = {}
-    if short_term_record:
-        for entry in short_term_record["data"].get("co_phieu_qua_mua", []):
-            qua_mua_map[entry["ma"]] = entry
 
     rows = []
     for sym in symbol_ids:
@@ -2876,12 +2872,13 @@ def render_stock_character_section(storage: Storage) -> None:
 
         gia_snap = indicator_map.get(sym)
         gia_gan_nhat = gia_snap["data"].get("close") if gia_snap else None
+        ma20_gan_nhat = gia_snap["data"].get("ma20") if gia_snap else None
 
         lt_record = long_term_map.get(sym)
         pp_data = (lt_record["data"].get("regime_ensemble") or {}) if lt_record else {}
         giai_doan_hien_tai = pp_data.get("current")
 
-        do_lech_ngan_han, muc_canh_bao_ngan_han = _dinh_dang_qua_mua_ngan_han(qua_mua_map.get(sym))
+        do_lech_ma20, muc_canh_bao_ngan_han = _tinh_do_lech_va_canh_bao_ma20(gia_gan_nhat, ma20_gan_nhat)
 
         row = {
             "Mã": sym,
@@ -2889,7 +2886,7 @@ def render_stock_character_section(storage: Storage) -> None:
             "Giai đoạn": GIAI_DOAN_DAI_HAN_OPTIONS.get(giai_doan_hien_tai, "—"),
             "Tính cách (Character)": f"{emoji} {nhan_hien_thi}",
             "Bộ chỉ số LN>5% (giai đoạn hiện tại)": _bo_chi_so_tot_theo_nguong(pp_data, giai_doan_hien_tai),
-            "Độ lệch MA20 (ngắn hạn)": do_lech_ngan_han,
+            "Độ lệch MA20": do_lech_ma20,
             "Mức cảnh báo (ngắn hạn)": muc_canh_bao_ngan_han,
             "Điểm dứt khoát (Character Score)": data.get("character_score"),
             "Điểm lình xình (Choppiness Score)": data.get("choppiness_score"),
@@ -2927,7 +2924,7 @@ def render_stock_character_section(storage: Storage) -> None:
             "Mã": st.column_config.TextColumn(width="small"),
             "Giá": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Giai đoạn": st.column_config.TextColumn(width="small"),
-            "Độ lệch MA20 (ngắn hạn)": st.column_config.TextColumn(width="small"),
+            "Độ lệch MA20": st.column_config.TextColumn(width="small"),
             "Mức cảnh báo (ngắn hạn)": st.column_config.TextColumn(width="small"),
             "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f", width="small"),

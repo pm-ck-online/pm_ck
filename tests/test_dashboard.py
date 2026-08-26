@@ -490,20 +490,38 @@ class TestBoChiSoTotTheoNguong:
 # Mức cảnh báo từ mục Tiêu chí ngắn hạn (đã ẩn) vào Tính cách giao dịch)
 # ==============================================================================
 
-class TestDinhDangQuaMuaNganHan:
-    def test_khong_co_du_lieu_tra_ve_binh_thuong(self):
-        from dashboard.app import _dinh_dang_qua_mua_ngan_han
-        assert _dinh_dang_qua_mua_ngan_han(None) == ("—", "🟢 Bình thường")
+class TestTinhDoLechVaCanhBaoMa20:
+    def test_thieu_du_lieu_tra_ve_gach_ngang(self):
+        from dashboard.app import _tinh_do_lech_va_canh_bao_ma20
+        assert _tinh_do_lech_va_canh_bao_ma20(None, 100.0) == ("—", "—")
+        assert _tinh_do_lech_va_canh_bao_ma20(100.0, None) == ("—", "—")
+        assert _tinh_do_lech_va_canh_bao_ma20(100.0, 0.0) == ("—", "—")
 
-    def test_nguy_co_dieu_chinh(self):
-        from dashboard.app import _dinh_dang_qua_mua_ngan_han
-        ket_qua = _dinh_dang_qua_mua_ngan_han({"do_lech_ma20_pct": 11.3, "muc_canh_bao": "NGUY_CO_DIEU_CHINH"})
-        assert ket_qua == ("+11.3%", "🟡 Nguy cơ điều chỉnh")
+    def test_binh_thuong_duoi_10_phan_tram(self):
+        from dashboard.app import _tinh_do_lech_va_canh_bao_ma20
+        # close=105, ma20=100 -> lech = 5/100*100 = +5.0%
+        ket_qua = _tinh_do_lech_va_canh_bao_ma20(105.0, 100.0)
+        assert ket_qua == ("+5.0%", "🟢 Bình thường")
 
-    def test_nguy_co_cao(self):
-        from dashboard.app import _dinh_dang_qua_mua_ngan_han
-        ket_qua = _dinh_dang_qua_mua_ngan_han({"do_lech_ma20_pct": 18.7, "muc_canh_bao": "NGUY_CO_CAO"})
-        assert ket_qua == ("+18.7%", "🔴 Nguy cơ cao")
+    def test_nguy_co_dieu_chinh_tu_10_den_15_phan_tram(self):
+        from dashboard.app import _tinh_do_lech_va_canh_bao_ma20
+        # close=112, ma20=100 -> lech = +12.0%
+        ket_qua = _tinh_do_lech_va_canh_bao_ma20(112.0, 100.0)
+        assert ket_qua == ("+12.0%", "🟡 Nguy cơ điều chỉnh")
+
+    def test_nguy_co_cao_tren_15_phan_tram(self):
+        from dashboard.app import _tinh_do_lech_va_canh_bao_ma20
+        # close=120, ma20=100 -> lech = +20.0%
+        ket_qua = _tinh_do_lech_va_canh_bao_ma20(120.0, 100.0)
+        assert ket_qua == ("+20.0%", "🔴 Nguy cơ cao")
+
+    def test_gia_am_duoi_ma20(self):
+        from dashboard.app import _tinh_do_lech_va_canh_bao_ma20
+        # close=90, ma20=100 -> lech = -10.0% (van la "Binh thuong" vi cong
+        # thuc goc chi xet lech DUONG vuot nguong, gia duoi MA20 khong tinh
+        # la "qua mua")
+        ket_qua = _tinh_do_lech_va_canh_bao_ma20(90.0, 100.0)
+        assert ket_qua == ("-10.0%", "🟢 Bình thường")
 
 
 # ==============================================================================
