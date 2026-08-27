@@ -126,6 +126,26 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    qua giao diện web Settings -> Secrets, không phải file trong repo) —
    xem `.streamlit/secrets.toml.example` (file MẪU, an toàn, không có
    giá trị thật) để biết định dạng cần nhập.
+4m. **`streamlit.testing.v1.AppTest` KHÔNG dùng lại `sys.modules["dashboard.app"]`
+   của tiến trình pytest** — chạy script dashboard trong 1 namespace RIÊNG
+   (xác nhận thực tế 27/08/2026: `monkeypatch.setattr(dashboard.app,
+   "ten_ham", fake)` rồi chạy qua `AppTest` — hàm giả KHÔNG HỀ được gọi,
+   nhưng dashboard vẫn ÂM THẦM chạy code THẬT bên trong, gồm cả gọi API
+   mạng thật, mà test vẫn "pass" vì code thật tình cờ trả về kết quả
+   tương tự kỳ vọng). Hậu quả nghiêm trọng: bất kỳ test nào cần chặn 1
+   hàm cụ thể của `dashboard/app.py` khi test QUA `AppTest` (không phải
+   gọi hàm trực tiếp) PHẢI dùng **biến môi trường** (đọc bằng
+   `os.environ.get(...)` bên trong hàm cần chặn) thay vì monkeypatch hàm
+   — `os.environ` luôn có tác dụng vì đọc lại tại runtime, không phụ
+   thuộc namespace exec của AppTest. Ví dụ đã áp dụng: `PM_CK_SKIP_LOGIN`
+   (chặn `require_login()`, có từ trước) và `PM_CK_SKIP_REALTIME` (chặn
+   `_tao_data_collector_cho_tra_cuu_realtime()` gọi vnstock thật — thêm
+   27/08/2026), cả 2 đều set qua autouse fixture trong
+   `tests/conftest.py`, áp dụng cho MỌI test tự động. **Monkeypatch hàm
+   trực tiếp (`monkeypatch.setattr(dashboard.app, ...)`) CHỈ có tác dụng
+   khi test GỌI HÀM TRỰC TIẾP trong CÙNG tiến trình** (VD `from
+   dashboard.app import ham_can_test; ham_can_test(...)`), KHÔNG có tác
+   dụng khi hàm đó được gọi GIÁN TIẾP bên trong 1 lần chạy `AppTest`.
 4l. **Giá hiển thị trên TOÀN BỘ dashboard (trừ mục realtime riêng bên
    dưới) là giá ĐÓNG CỬA của phiên OHLCV gần nhất** (`indicator_snapshot
    .close`), chỉ cập nhật 1 LẦN/NGÀY qua batch `run_full_market.py`
