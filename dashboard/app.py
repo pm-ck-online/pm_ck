@@ -2836,6 +2836,224 @@ def _tinh_ty_le_volume(volume: Optional[float], volume_ma20: Optional[float]) ->
     return f"{volume / volume_ma20 * 100:.0f}%"
 
 
+# ==============================================================================
+# "GẦN ĐẠT tiêu chí vào lệnh" — kiểm tra giá/chỉ báo HIỆN TẠI đã/gần đạt
+# điều kiện MUA của từng bộ chỉ số (trong số các bộ đang LN>5% ở giai đoạn
+# hiện tại của mã, xem 🧮 Cổ phiếu dài hạn) hay chưa — cảnh báo SỚM để
+# chuẩn bị theo dõi, không phải khuyến nghị mua ngay.
+#
+# Ngưỡng "gần" (mức VỪA PHẢI, người dùng đã chọn 25/08/2026): giá/MA/EMA/
+# Bollinger Bands trong 3%; RSI trong 5 điểm; Volume đã đạt ≥70% bội số
+# cần thiết so với Volume MA20.
+# ==============================================================================
+
+_NGUONG_GAN_DAT_GIA_PCT = 3.0
+_NGUONG_GAN_DAT_RSI_DIEM = 5.0
+_NGUONG_GAN_DAT_VOLUME_TY_LE = 0.70
+
+
+def _kiem_tra_dieu_kien_gia(
+    gia_tri: Optional[float], muc_kich_hoat: Optional[float], huong: str,
+) -> Optional[tuple[str, float]]:
+    """Kiểm tra 1 điều kiện dạng SO SÁNH GIÁ — `huong="len"`: `gia_tri`
+    phải TĂNG lên vượt `muc_kich_hoat` (VD giá cắt lên MA20/EMA/dải trên
+    BB); `huong="xuong"`: `gia_tri` phải GIẢM xuống chạm/dưới
+    `muc_kich_hoat` (VD giá chạm dải dưới BB). Trả về
+    `("da_dat"|"gan_dat", khoảng_cách_%)`, hoặc `None` nếu còn quá xa
+    (>3%) hoặc thiếu dữ liệu.
+    """
+    if gia_tri is None or muc_kich_hoat is None or muc_kich_hoat == 0:
+        return None
+    if huong == "len":
+        if gia_tri >= muc_kich_hoat:
+            return "da_dat", 0.0
+        khoang_cach = (muc_kich_hoat - gia_tri) / muc_kich_hoat * 100
+    else:
+        if gia_tri <= muc_kich_hoat:
+            return "da_dat", 0.0
+        khoang_cach = (gia_tri - muc_kich_hoat) / muc_kich_hoat * 100
+    if khoang_cach <= _NGUONG_GAN_DAT_GIA_PCT:
+        return "gan_dat", khoang_cach
+    return None
+
+
+def _kiem_tra_dieu_kien_rsi(rsi: Optional[float], nguong: float) -> Optional[tuple[str, float]]:
+    """RSI phải GIẢM xuống dưới `nguong` (30 cho RSI14, 35 cho Trend
+    Filter EMA+RSI). Trả về `("da_dat"|"gan_dat", số_điểm_còn_thiếu)`."""
+    if rsi is None:
+        return None
+    if rsi <= nguong:
+        return "da_dat", 0.0
+    khoang_cach = rsi - nguong
+    if khoang_cach <= _NGUONG_GAN_DAT_RSI_DIEM:
+        return "gan_dat", khoang_cach
+    return None
+
+
+def _kiem_tra_dieu_kien_volume(
+    volume: Optional[float], volume_ma20: Optional[float], boi_so: float,
+) -> Optional[tuple[str, float]]:
+    """Volume phải VƯỢT `boi_so` lần Volume MA20 (1,2 lần cho Bollinger
+    Breakout, 1,5 lần cho Volume Breakout). Trả về `("da_dat"|"gan_dat",
+    % đã đạt được so với mức cần)`."""
+    if volume is None or volume_ma20 is None or volume_ma20 <= 0:
+        return None
+    can_dat = volume_ma20 * boi_so
+    if can_dat <= 0:
+        return None
+    ty_le = volume / can_dat
+    if ty_le >= 1.0:
+        return "da_dat", 100.0
+    if ty_le >= _NGUONG_GAN_DAT_VOLUME_TY_LE:
+        return "gan_dat", ty_le * 100
+    return None
+
+
+def _kiem_tra_gan_dat_theo_bo_chi_so(ten_day_du: str, chi_bao: dict) -> Optional[tuple[str, str]]:
+    """Kiểm tra 1 bộ chỉ số (theo đúng tên đầy đủ trong
+    `TEN_NGAN_BO_CHI_SO_DAI_HAN`) đã/gần đạt điều kiện MUA dựa trên
+    `chi_bao` = {"close","ma20","ema50","ema200","rsi14","bb_upper",
+    "bb_lower","volume","volume_ma20"} (thiếu khóa nào -> None cho khóa
+    đó, hàm tự bỏ qua an toàn).
+
+    Với bộ chỉ số có ĐIỀU KIỆN KÉP (VD Bollinger Breakout cần CẢ giá vượt
+    dải trên LẪN volume đột biến), CHỈ báo "gần đạt" khi CẢ 2 điều kiện
+    đều đã đạt hoặc đủ gần — 1 điều kiện xa thì coi như cả bộ còn xa.
+
+    Trả về `(trạng_thái, mô_tả_khoảng_cách)` hoặc `None` nếu không áp
+    dụng (thiếu dữ liệu, hoặc "Mua và giữ" — không có khái niệm "gần đạt"
+    cho chiến lược mua 1 lần duy nhất).
+    """
+    close, ma20 = chi_bao.get("close"), chi_bao.get("ma20")
+    ema50, ema200 = chi_bao.get("ema50"), chi_bao.get("ema200")
+    rsi14 = chi_bao.get("rsi14")
+    bb_upper, bb_lower = chi_bao.get("bb_upper"), chi_bao.get("bb_lower")
+    volume, volume_ma20 = chi_bao.get("volume"), chi_bao.get("volume_ma20")
+
+    def _mo_ta(nhan: str, kq: tuple[str, float], don_vi: str) -> str:
+        if kq[0] == "da_dat":
+            return f"{nhan} đã đạt"
+        if don_vi == "%_can":
+            return f"{nhan} đạt {kq[1]:.0f}%"
+        return f"{nhan} cách {kq[1]:.1f}{don_vi}"
+
+    if ten_day_du == "MA20 (Giá cắt MA20)":
+        kq = _kiem_tra_dieu_kien_gia(close, ma20, "len")
+        return (kq[0], _mo_ta("giá/MA20", kq, "%")) if kq else None
+
+    if ten_day_du == "EMA50/EMA200 (Golden/Death Cross)":
+        kq = _kiem_tra_dieu_kien_gia(ema50, ema200, "len")
+        return (kq[0], _mo_ta("EMA50/EMA200", kq, "%")) if kq else None
+
+    if ten_day_du == "RSI14 (Quá mua/Quá bán 30-70)":
+        kq = _kiem_tra_dieu_kien_rsi(rsi14, 30.0)
+        return (kq[0], _mo_ta("RSI14/30", kq, " điểm")) if kq else None
+
+    if ten_day_du == "Bollinger Bounce (mua đáy dải dưới)":
+        kq = _kiem_tra_dieu_kien_gia(close, bb_lower, "xuong")
+        return (kq[0], _mo_ta("giá/dải dưới BB", kq, "%")) if kq else None
+
+    if ten_day_du == "Bollinger Breakout + Volume":
+        kq_gia = _kiem_tra_dieu_kien_gia(close, bb_upper, "len")
+        kq_vol = _kiem_tra_dieu_kien_volume(volume, volume_ma20, 1.2)
+        if kq_gia is None or kq_vol is None:
+            return None
+        trang_thai = "da_dat" if kq_gia[0] == "da_dat" and kq_vol[0] == "da_dat" else "gan_dat"
+        return trang_thai, f"{_mo_ta('giá/dải trên BB', kq_gia, '%')}, {_mo_ta('volume', kq_vol, '%_can')}"
+
+    if ten_day_du == "Volume Breakout + MA20":
+        kq_gia = _kiem_tra_dieu_kien_gia(close, ma20, "len")
+        kq_vol = _kiem_tra_dieu_kien_volume(volume, volume_ma20, 1.5)
+        if kq_gia is None or kq_vol is None:
+            return None
+        trang_thai = "da_dat" if kq_gia[0] == "da_dat" and kq_vol[0] == "da_dat" else "gan_dat"
+        return trang_thai, f"{_mo_ta('giá/MA20', kq_gia, '%')}, {_mo_ta('volume', kq_vol, '%_can')}"
+
+    if ten_day_du == "Kết hợp: Trend Filter EMA + RSI":
+        kq_rsi = _kiem_tra_dieu_kien_rsi(rsi14, 35.0)
+        kq_ema = _kiem_tra_dieu_kien_gia(ema50, ema200, "len")
+        if kq_rsi is None or kq_ema is None:
+            return None
+        trang_thai = "da_dat" if kq_rsi[0] == "da_dat" and kq_ema[0] == "da_dat" else "gan_dat"
+        return trang_thai, f"{_mo_ta('RSI14/35', kq_rsi, ' điểm')}, {_mo_ta('EMA nền', kq_ema, '%')}"
+
+    return None  # "Mua và giữ (Buy & Hold)": không áp dụng
+
+
+def _tim_bo_chi_so_gan_dat(
+    pp_data: dict, giai_doan: Optional[str], chi_bao_hien_tai: dict, nguong_pct: float = 5.0,
+) -> str:
+    """Trong số các bộ chỉ số LN>`nguong_pct`% ở giai đoạn hiện tại (cùng
+    tiêu chí lọc với `_bo_chi_so_tot_theo_nguong()`), liệt kê bộ nào giá/
+    chỉ báo HIỆN TẠI đã đạt hoặc GẦN đạt điều kiện mua — để chuẩn bị theo
+    dõi vào lệnh. Bộ "đã đạt" xếp trước, "gần đạt" xếp sau. Trả về "—"
+    nếu chưa xác định giai đoạn hoặc không có bộ nào đã/gần đạt.
+    """
+    if not giai_doan:
+        return "—"
+    ket_qua = (pp_data or {}).get("results") or {}
+    ung_vien = []
+    for ten_day_du, ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.items():
+        stats = (ket_qua.get(ten_day_du) or {}).get(giai_doan) or {}
+        n_lenh = stats.get("n_trades", 0)
+        tong_ln = stats.get("total_return_pct")
+        if not (n_lenh and tong_ln is not None and tong_ln > nguong_pct):
+            continue
+        kq_gan_dat = _kiem_tra_gan_dat_theo_bo_chi_so(ten_day_du, chi_bao_hien_tai)
+        if kq_gan_dat is None:
+            continue
+        trang_thai, mo_ta = kq_gan_dat
+        icon = "✅" if trang_thai == "da_dat" else "🔔"
+        thu_tu = 0 if trang_thai == "da_dat" else 1
+        ung_vien.append((thu_tu, f"{icon} {ten_ngan} ({mo_ta})"))
+    if not ung_vien:
+        return "—"
+    ung_vien.sort(key=lambda x: x[0])
+    return "; ".join(text for _, text in ung_vien)
+
+
+@st.cache_data(ttl=1800, show_spinner="Đang tính RSI/Bollinger Bands hiện tại cho các mã...")
+def _tinh_rsi_bb_hien_tai_cached(_storage: Storage, danh_sach_ma: tuple[str, ...]) -> dict[str, dict]:
+    """Tính RSI14 + Bollinger Bands(20,2) TẠI PHIÊN GẦN NHẤT cho từng mã
+    — 2 chỉ báo này KHÔNG có sẵn trong `indicator_snapshot` (vốn chỉ có
+    MA20/EMA/volume, xem `core.indicators.get_indicator_snapshot`), nên
+    phải tính lại từ `ohlcv_history`. Lấy OHLCV theo TỪNG LÔ NHỎ (30 mã/
+    lô, tránh timeout Supabase khi danh sách mã lớn — cùng bài học đã áp
+    dụng ở `main.run_market_regime_history_step`). Cache 30 phút vì đây
+    là bước khá nặng nếu danh sách mã lớn.
+    """
+    from core.indicators import calculate_bollinger_bands, calculate_rsi
+
+    KICH_THUOC_LO = 30
+    ohlcv_map: dict[str, dict] = {}
+    for i in range(0, len(danh_sach_ma), KICH_THUOC_LO):
+        lo_ma = list(danh_sach_ma[i:i + KICH_THUOC_LO])
+        try:
+            ohlcv_map.update(_storage.get_latest_many("ohlcv_history", lo_ma))
+        except Exception:  # noqa: BLE001 — 1 lô lỗi không được làm hỏng cả bước này
+            continue
+
+    ket_qua: dict[str, dict] = {}
+    for ma, record in ohlcv_map.items():
+        records = record["data"].get("records", [])
+        if len(records) < 20:
+            continue
+        try:
+            df_ma = pd.DataFrame(records)
+            df_ma["date"] = pd.to_datetime(df_ma["date"])
+            df_ma = df_ma.sort_values("date").reset_index(drop=True)
+            rsi = calculate_rsi(df_ma, 14)
+            bb_upper, _bb_mid, bb_lower = calculate_bollinger_bands(df_ma, 20, 2.0)
+            ket_qua[ma] = {
+                "rsi14": float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else None,
+                "bb_upper": float(bb_upper.iloc[-1]) if pd.notna(bb_upper.iloc[-1]) else None,
+                "bb_lower": float(bb_lower.iloc[-1]) if pd.notna(bb_lower.iloc[-1]) else None,
+            }
+        except Exception:  # noqa: BLE001 — 1 mã lỗi không được làm hỏng cả bước này
+            continue
+    return ket_qua
+
+
 @st.cache_data(ttl=600, show_spinner="Đang đếm số lần lịch sử có đặc tính tương tự...")
 def _dem_lich_su_nhan_cached(df: pd.DataFrame, ma: str, nhan: str) -> dict:
     """Bọc `dem_lich_su_nhan_tuong_tu()` bằng cache 10 phút — mỗi lần gọi
@@ -2886,7 +3104,12 @@ def render_stock_character_section(storage: Storage) -> None:
         ">15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn hạn cũ). "
         "Cột \"% Volume/MA20 Volume\" = Volume phiên gần nhất ÷ Volume MA20 × "
         "100 — trên 100% nghĩa là khối lượng hôm nay cao hơn trung bình 20 "
-        "phiên; từ 150% trở lên được hệ thống coi là đột biến volume."
+        "phiên; từ 150% trở lên được hệ thống coi là đột biến volume. Cột (tùy "
+        "chọn) \"Gần đạt tiêu chí vào lệnh\" kiểm tra giá/RSI/volume HIỆN TẠI so "
+        "với điều kiện MUA của từng bộ chỉ số đang LN>5% ở giai đoạn hiện tại — "
+        "✅ = đã đạt (tính đến phiên gần nhất), 🔔 = gần đạt (giá/MA/EMA/BB cách "
+        "≤3%, RSI cách ≤5 điểm, hoặc volume đã ≥70% mức cần) — CHỈ để chuẩn bị "
+        "theo dõi, KHÔNG PHẢI tín hiệu mua ngay."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -2936,6 +3159,18 @@ def render_stock_character_section(storage: Storage) -> None:
             "cùng lúc sẽ RẤT CHẬM. Nên thu hẹp lại bằng ô chọn mã ở trên trước."
         )
 
+    hien_cot_gan_dat = st.checkbox(
+        "🔔 Tính thêm cột \"Gần đạt tiêu chí vào lệnh\" (cần tính RSI/Bollinger "
+        "Bands hiện tại cho từng mã — có thể CHẬM ở lần tính đầu nếu bật cho nhiều mã, "
+        "các lần sau nhanh hơn nhờ cache 30 phút)",
+        key="stock_character_show_gan_dat",
+    )
+    if hien_cot_gan_dat and len(symbol_ids) > 30:
+        st.warning(
+            f"Đang hiện {len(symbol_ids)} mã — tính cột \"Gần đạt\" cho quá nhiều mã "
+            "cùng lúc có thể CHẬM ở lần đầu. Nên thu hẹp lại bằng ô chọn mã ở trên trước."
+        )
+
     character_map = storage.get_latest_many("stock_character", symbol_ids)
     # Giá gần nhất: lấy từ indicator_snapshot (đã tính sẵn cho MỌI mã, kể
     # cả mã quét qua run_full_market.py — khác với realtime_price chỉ có
@@ -2945,6 +3180,9 @@ def render_stock_character_section(storage: Storage) -> None:
     # (long_term_screener_report), dùng phương pháp Ensemble 3 phương pháp
     # (đáng tin hơn PP1 EMA200 đơn giản — xem 🧮 Cổ phiếu dài hạn).
     long_term_map = storage.get_latest_many("long_term_screener_report", symbol_ids)
+    rsi_bb_map: dict[str, dict] = {}
+    if hien_cot_gan_dat:
+        rsi_bb_map = _tinh_rsi_bb_hien_tai_cached(storage, tuple(symbol_ids))
 
     rows = []
     for sym in symbol_ids:
@@ -2983,6 +3221,18 @@ def render_stock_character_section(storage: Storage) -> None:
             "Độ tin cậy thấp (Low Confidence)": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
         }
 
+        if hien_cot_gan_dat:
+            chi_bao_hien_tai = {
+                "close": gia_gan_nhat, "ma20": ma20_gan_nhat,
+                "ema50": gia_snap["data"].get("ema50") if gia_snap else None,
+                "ema200": gia_snap["data"].get("ema200") if gia_snap else None,
+                "volume": volume_gan_nhat, "volume_ma20": volume_ma20_gan_nhat,
+                **rsi_bb_map.get(sym, {}),
+            }
+            row["Gần đạt tiêu chí vào lệnh"] = _tim_bo_chi_so_gan_dat(
+                pp_data, giai_doan_hien_tai, chi_bao_hien_tai,
+            )
+
         if hien_cot_lich_su and nhan:
             df_ma = _load_ohlcv_history_df(storage, sym)
             if df_ma is not None and not df_ma.empty:
@@ -3007,9 +3257,10 @@ def render_stock_character_section(storage: Storage) -> None:
         column_config={
             # width="small" cho MỌI cột có nội dung ngắn/số — tránh
             # st.dataframe(width='stretch') kéo giãn các cột này ra thành
-            # khoảng trắng thừa. CHỈ 2 cột có nội dung thật sự dài (câu mô
+            # khoảng trắng thừa. CHỈ 3 cột có nội dung thật sự dài (câu mô
             # tả/liệt kê nhiều bộ chỉ số) được để tự do chiếm phần rộng
-            # còn lại: "Tính cách" và "Bộ chỉ số LN>5%".
+            # còn lại: "Tính cách", "Bộ chỉ số LN>5%", "Gần đạt tiêu chí
+            # vào lệnh".
             "Mã": st.column_config.TextColumn(width="small"),
             "Giá": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Giai đoạn": st.column_config.TextColumn(width="small"),

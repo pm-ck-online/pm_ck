@@ -613,6 +613,202 @@ class TestTinhTyLeVolume:
 
 
 # ==============================================================================
+# Test: "Gần đạt tiêu chí vào lệnh" (hàm thuần túy — kiểm tra giá/RSI/
+# volume hiện tại so với điều kiện MUA của từng bộ chỉ số)
+# ==============================================================================
+
+class TestKiemTraDieuKienGia:
+    def test_huong_len_gan_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_gia
+        # can tang 2% de len 100
+        assert _kiem_tra_dieu_kien_gia(98.0, 100.0, "len") == ("gan_dat", 2.0)
+
+    def test_huong_len_qua_xa(self):
+        from dashboard.app import _kiem_tra_dieu_kien_gia
+        assert _kiem_tra_dieu_kien_gia(95.0, 100.0, "len") is None
+
+    def test_huong_len_da_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_gia
+        assert _kiem_tra_dieu_kien_gia(100.0, 100.0, "len") == ("da_dat", 0.0)
+        assert _kiem_tra_dieu_kien_gia(105.0, 100.0, "len") == ("da_dat", 0.0)
+
+    def test_huong_xuong_gan_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_gia
+        assert _kiem_tra_dieu_kien_gia(102.0, 100.0, "xuong") == ("gan_dat", 2.0)
+
+    def test_huong_xuong_da_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_gia
+        assert _kiem_tra_dieu_kien_gia(99.0, 100.0, "xuong") == ("da_dat", 0.0)
+
+    def test_thieu_du_lieu(self):
+        from dashboard.app import _kiem_tra_dieu_kien_gia
+        assert _kiem_tra_dieu_kien_gia(None, 100.0, "len") is None
+        assert _kiem_tra_dieu_kien_gia(98.0, None, "len") is None
+
+
+class TestKiemTraDieuKienRsi:
+    def test_gan_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_rsi
+        assert _kiem_tra_dieu_kien_rsi(33.0, 30.0) == ("gan_dat", 3.0)
+
+    def test_qua_xa(self):
+        from dashboard.app import _kiem_tra_dieu_kien_rsi
+        assert _kiem_tra_dieu_kien_rsi(40.0, 30.0) is None
+
+    def test_da_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_rsi
+        assert _kiem_tra_dieu_kien_rsi(28.0, 30.0) == ("da_dat", 0.0)
+
+    def test_thieu_du_lieu(self):
+        from dashboard.app import _kiem_tra_dieu_kien_rsi
+        assert _kiem_tra_dieu_kien_rsi(None, 30.0) is None
+
+
+class TestKiemTraDieuKienVolume:
+    def test_chua_du_70_phan_tram_muc_can(self):
+        from dashboard.app import _kiem_tra_dieu_kien_volume
+        # can dat 1000*1.5=1500, hien co 1000 -> 66.7% < 70%
+        assert _kiem_tra_dieu_kien_volume(1000.0, 1000.0, 1.5) is None
+
+    def test_gan_dat_tren_70_phan_tram(self):
+        from dashboard.app import _kiem_tra_dieu_kien_volume
+        # can dat 1000*1.5=1500, hien co 1100 -> 73.33%
+        trang_thai, gia_tri = _kiem_tra_dieu_kien_volume(1100.0, 1000.0, 1.5)
+        assert trang_thai == "gan_dat"
+        assert gia_tri == pytest.approx(73.33, abs=0.01)
+
+    def test_da_dat(self):
+        from dashboard.app import _kiem_tra_dieu_kien_volume
+        assert _kiem_tra_dieu_kien_volume(1600.0, 1000.0, 1.5) == ("da_dat", 100.0)
+
+    def test_thieu_du_lieu(self):
+        from dashboard.app import _kiem_tra_dieu_kien_volume
+        assert _kiem_tra_dieu_kien_volume(None, 1000.0, 1.5) is None
+        assert _kiem_tra_dieu_kien_volume(1000.0, 0.0, 1.5) is None
+
+
+class TestKiemTraGanDatTheoBoChiSo:
+    def test_ma20(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "MA20 (Giá cắt MA20)", {"close": 99.0, "ma20": 100.0},
+        )
+        assert ket_qua == ("gan_dat", "giá/MA20 cách 1.0%")
+
+    def test_ema_cross(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "EMA50/EMA200 (Golden/Death Cross)", {"ema50": 99.0, "ema200": 100.0},
+        )
+        assert ket_qua == ("gan_dat", "EMA50/EMA200 cách 1.0%")
+
+    def test_rsi14(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "RSI14 (Quá mua/Quá bán 30-70)", {"rsi14": 33.0},
+        )
+        assert ket_qua == ("gan_dat", "RSI14/30 cách 3.0 điểm")
+
+    def test_bollinger_bounce(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Bollinger Bounce (mua đáy dải dưới)", {"close": 101.0, "bb_lower": 100.0},
+        )
+        assert ket_qua == ("gan_dat", "giá/dải dưới BB cách 1.0%")
+
+    def test_bollinger_breakout_ca_2_dieu_kien_gan_dat(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Bollinger Breakout + Volume",
+            {"close": 99.0, "bb_upper": 100.0, "volume": 1080.0, "volume_ma20": 1000.0},
+        )
+        assert ket_qua == ("gan_dat", "giá/dải trên BB cách 1.0%, volume đạt 90%")
+
+    def test_bollinger_breakout_1_dieu_kien_qua_xa_tra_ve_none(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        # volume qua xa (chi 50% muc can) -> ca bo tra ve None
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Bollinger Breakout + Volume",
+            {"close": 99.0, "bb_upper": 100.0, "volume": 600.0, "volume_ma20": 1000.0},
+        )
+        assert ket_qua is None
+
+    def test_volume_breakout_ma20(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Volume Breakout + MA20",
+            {"close": 99.0, "ma20": 100.0, "volume": 1350.0, "volume_ma20": 1000.0},
+        )
+        assert ket_qua == ("gan_dat", "giá/MA20 cách 1.0%, volume đạt 90%")
+
+    def test_trend_filter_ema_rsi(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Kết hợp: Trend Filter EMA + RSI",
+            {"rsi14": 38.0, "ema50": 99.0, "ema200": 100.0},
+        )
+        assert ket_qua == ("gan_dat", "RSI14/35 cách 3.0 điểm, EMA nền cách 1.0%")
+
+    def test_ca_2_dieu_kien_da_dat_thi_ket_qua_la_da_dat(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Volume Breakout + MA20",
+            {"close": 105.0, "ma20": 100.0, "volume": 1600.0, "volume_ma20": 1000.0},
+        )
+        assert ket_qua == ("da_dat", "giá/MA20 đã đạt, volume đã đạt")
+
+    def test_mua_va_giu_khong_ap_dung(self):
+        from dashboard.app import _kiem_tra_gan_dat_theo_bo_chi_so
+        ket_qua = _kiem_tra_gan_dat_theo_bo_chi_so(
+            "Mua và giữ (Buy & Hold)", {"close": 100.0, "ma20": 100.0},
+        )
+        assert ket_qua is None
+
+
+class TestTimBoChiSoGanDat:
+    def test_chua_co_giai_doan_tra_ve_gach_ngang(self):
+        from dashboard.app import _tim_bo_chi_so_gan_dat
+        assert _tim_bo_chi_so_gan_dat({}, None, {}) == "—"
+
+    def test_chi_lay_bo_co_ln_tren_nguong_va_gan_dat(self):
+        from dashboard.app import _tim_bo_chi_so_gan_dat
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+                # LN duoi nguong 5% -> khong duoc xet du co gan dat
+                "RSI14 (Quá mua/Quá bán 30-70)": {"downtrend": {"n_trades": 2, "total_return_pct": 3.0}},
+            },
+        }
+        chi_bao = {"close": 99.0, "ma20": 100.0, "rsi14": 20.0}
+        ket_qua = _tim_bo_chi_so_gan_dat(pp_data, "downtrend", chi_bao)
+        assert ket_qua == "🔔 MA20 (giá/MA20 cách 1.0%)"
+
+    def test_da_dat_xep_truoc_gan_dat(self):
+        from dashboard.app import _tim_bo_chi_so_gan_dat
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+                "RSI14 (Quá mua/Quá bán 30-70)": {"downtrend": {"n_trades": 2, "total_return_pct": 20.0}},
+            },
+        }
+        # MA20 gan dat (99 cach 100 = 1%), RSI14 da dat (25 <= 30)
+        chi_bao = {"close": 99.0, "ma20": 100.0, "rsi14": 25.0}
+        ket_qua = _tim_bo_chi_so_gan_dat(pp_data, "downtrend", chi_bao)
+        assert ket_qua == "✅ RSI14 (RSI14/30 đã đạt); 🔔 MA20 (giá/MA20 cách 1.0%)"
+
+    def test_khong_co_bo_nao_gan_dat_tra_ve_gach_ngang(self):
+        from dashboard.app import _tim_bo_chi_so_gan_dat
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+            },
+        }
+        # gia qua xa MA20 (10%)
+        chi_bao = {"close": 90.0, "ma20": 100.0}
+        assert _tim_bo_chi_so_gan_dat(pp_data, "downtrend", chi_bao) == "—"
+
+
+# ==============================================================================
 # Test: build_watchlist_detail_table (hàm thuần túy, không cần AppTest)
 # ==============================================================================
 
