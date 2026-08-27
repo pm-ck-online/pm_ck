@@ -4393,6 +4393,156 @@ def remove_symbols_from_watchlist(watchlist: list[str], symbols_to_remove: list[
     return [s for s in watchlist if s not in to_remove]
 
 
+def _dinh_dang_thong_diep_trang_thai_phien(dang_gio_giao_dich: bool, da_khop_lenh: bool) -> str:
+    """Ghép trạng thái giờ giao dịch + trạng thái khớp lệnh thành 1 thông
+    điệp duy nhất cho người dùng — dùng ở mục "🔴 Giá Realtime"."""
+    if not dang_gio_giao_dich:
+        return (
+            "🌙 Ngoài giờ giao dịch — giá hiển thị là giá đóng cửa/tham "
+            "chiếu gần nhất, sẽ không đổi cho tới phiên kế tiếp."
+        )
+    if da_khop_lenh:
+        return "🟢 Đang trong giờ giao dịch — giá đã khớp lệnh trong phiên."
+    return (
+        "🟡 Đang trong giờ giao dịch nhưng CHƯA có lệnh nào khớp (VD trước "
+        "ATO) — đang hiển thị giá THAM CHIẾU, chưa phải giá khớp thật."
+    )
+
+
+def _tao_data_collector_cho_tra_cuu_realtime():
+    """Khởi tạo `DataCollector` dùng ĐÚNG cấu hình `config.yaml`
+    (adapter/retry/trading_hours...) — tái sử dụng `main.build_data_collector()`
+    thay vì tự lặp lại logic chọn adapter. Import trễ (bên trong hàm) để
+    KHÔNG kéo theo toàn bộ phụ thuộc của `main.py` vào mỗi lần tải trang
+    dashboard — chỉ cần khi người dùng thực sự bấm nút tra cứu realtime.
+    """
+    from main import build_data_collector, load_config
+
+    config_path = os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml")
+    config = load_config(config_path)
+    return build_data_collector(config)
+
+
+def _hien_thi_ket_qua_tra_cuu_realtime(ket_qua: dict, dang_gio_giao_dich: bool) -> None:
+    da_khop_lenh = ket_qua.get("da_khop_lenh", True)  # nguồn cũ/Mock không có field này -> coi là giá thật
+    st.info(_dinh_dang_thong_diep_trang_thai_phien(dang_gio_giao_dich, da_khop_lenh))
+
+    if ket_qua.get("du_lieu_day_du") is False:
+        # vnstock đôi khi chỉ trả bảng giá TỐI GIẢN (thiếu giá khớp/khối
+        # lượng/bid-ask) — đã xác nhận thực tế dao động ngay giữa 2 lần
+        # gọi liên tiếp, không phải lỗi thao tác. Cảnh báo rõ để người
+        # dùng không hiểu nhầm đây là dữ liệu đầy đủ.
+        st.warning(
+            "⚠️ vnstock chỉ trả về bảng giá TỐI GIẢN lúc này (thiếu giá "
+            "khớp/khối lượng/bid-ask chi tiết) — thử bấm lại sau ít phút."
+        )
+
+    gia = ket_qua.get("price")
+    phan_tram = ket_qua.get("phan_tram_thay_doi")
+    volume = ket_qua.get("volume")
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.metric(
+            f"Giá {ket_qua.get('symbol', '')}",
+            f"{gia:,.0f}đ" if gia is not None else "—",
+            f"{phan_tram:+.2f}%" if phan_tram is not None else None,
+            delta_color="inverse",  # quy ước bảng giá VN: đỏ=tăng, xanh=giảm (ngược US)
+        )
+    with col2:
+        st.metric("Khối lượng khớp (tích lũy)", f"{volume:,.0f}" if volume is not None else "—")
+    with col3:
+        timestamp = ket_qua.get("timestamp")
+        st.metric("Cập nhật lúc", timestamp.strftime("%H:%M:%S %d/%m/%Y") if timestamp else "—")
+
+    chi_tiet = []
+    if ket_qua.get("gia_tham_chieu") is not None:
+        chi_tiet.append(("Giá tham chiếu", f"{ket_qua['gia_tham_chieu']:,.0f}đ"))
+    if ket_qua.get("gia_tran") is not None:
+        chi_tiet.append(("Giá trần", f"{ket_qua['gia_tran']:,.0f}đ"))
+    if ket_qua.get("gia_san") is not None:
+        chi_tiet.append(("Giá sàn", f"{ket_qua['gia_san']:,.0f}đ"))
+    if ket_qua.get("gia_mua_1") is not None:
+        chi_tiet.append((
+            "Giá mua tốt nhất",
+            f"{ket_qua['gia_mua_1']:,.0f}đ ({ket_qua.get('khoi_luong_mua_1') or 0:,.0f} CP)",
+        ))
+    if ket_qua.get("gia_ban_1") is not None:
+        chi_tiet.append((
+            "Giá bán tốt nhất",
+            f"{ket_qua['gia_ban_1']:,.0f}đ ({ket_qua.get('khoi_luong_ban_1') or 0:,.0f} CP)",
+        ))
+    if ket_qua.get("khoi_ngoai_con_lai") is not None:
+        chi_tiet.append(("Room khối ngoại còn lại", f"{ket_qua['khoi_ngoai_con_lai']:,.0f}"))
+
+    if chi_tiet:
+        st.markdown("##### Chi tiết bảng giá")
+        for nhan, gia_tri in chi_tiet:
+            st.write(f"- **{nhan}**: {gia_tri}")
+
+
+def render_realtime_price_lookup_section(storage: Storage) -> None:
+    """Tra cứu giá REALTIME cho 1 mã — gọi TRỰC TIẾP API vnstock ngay khi
+    bấm nút, KHÔNG qua batch hàng ngày (`run_full_market.py`)/storage.
+
+    NGOẠI LỆ DUY NHẤT trên dashboard được phép gọi thẳng
+    `core/data_collector.py` (xem ghi chú kiến trúc đầu file) — vì đúng
+    mục đích của mục này là lấy giá SÁT THỜI GIAN THỰC NHẤT CÓ THỂ, khác
+    với phần còn lại của dashboard vốn CHỈ đọc dữ liệu đã tính sẵn trong
+    storage (giá đóng cửa của phiên OHLCV gần nhất, chỉ cập nhật 1
+    lần/ngày qua batch chạy sau giờ đóng cửa — có thể trễ tới gần 1 ngày
+    làm việc). Để tránh vượt giới hạn tốc độ gọi API của vnstock (~60
+    request/phút) khi nhiều người CÙNG xem dashboard, mục này CHỈ tra cứu
+    ĐÚNG 1 MÃ tại 1 THỜI ĐIỂM khi người dùng chủ động bấm nút — KHÔNG tự
+    động chạy hàng loạt cho cả watchlist.
+    """
+    st.subheader("🔴 Giá Realtime (tra cứu trực tiếp)")
+    st.caption(
+        "Gọi TRỰC TIẾP tới vnstock ngay khi bấm nút — giá sát thời gian "
+        "thực nhất hệ thống có thể lấy được. KHÁC với TOÀN BỘ các mục khác "
+        "trên dashboard (biểu đồ nến, tính cách giao dịch, cổ phiếu dài "
+        "hạn...), vốn hiển thị giá ĐÓNG CỬA của phiên gần nhất — chỉ cập "
+        "nhật 1 LẦN/NGÀY qua batch chạy sau giờ đóng cửa, có thể trễ tới "
+        "gần 1 ngày làm việc so với hiện tại. LƯU Ý ĐƠN VỊ: giá ở đây hiển "
+        "thị NGUYÊN ĐỒNG (VD 20.800đ) — khác với các mục khác hiển thị "
+        "theo NGHÌN ĐỒNG (VD 25.4)."
+    )
+
+    all_symbols = sorted(storage.query_all_keys("indicator_snapshot"))
+    if not all_symbols:
+        st.info("Chưa có dữ liệu mã nào trong hệ thống — hãy chạy pipeline trước.")
+        return
+
+    col_chon, col_nut = st.columns([3, 1])
+    with col_chon:
+        ma = st.selectbox(
+            "Chọn mã cần tra cứu", options=all_symbols, key="realtime_lookup_symbol",
+        )
+    with col_nut:
+        st.write("")
+        bam_nut = st.button(
+            "🔄 Lấy giá Realtime", key="realtime_lookup_button", use_container_width=True,
+        )
+
+    if not bam_nut:
+        return
+
+    try:
+        collector = _tao_data_collector_cho_tra_cuu_realtime()
+    except Exception as exc:  # noqa: BLE001
+        st.error(f"Không khởi tạo được kết nối dữ liệu: {exc}")
+        return
+
+    with st.spinner(f"Đang lấy giá realtime cho {ma} từ vnstock..."):
+        try:
+            ket_qua = collector.get_realtime_price(ma)
+        except Exception as exc:  # noqa: BLE001
+            st.error(f"Lỗi khi lấy giá realtime cho {ma}: {exc}")
+            return
+
+    _hien_thi_ket_qua_tra_cuu_realtime(ket_qua, dang_gio_giao_dich=collector.is_trading_hours())
+
+
 def render_watchlist_manager_section(storage: Storage) -> None:
     """Quản lý watchlist (thêm/xóa mã), lưu bền vào storage — hiển thị
     như MỘT MỤC trong danh sách điều hướng (không còn cố định ở sidebar).
@@ -4709,6 +4859,7 @@ DASHBOARD_GROUPS = [
         "📌 Tổng hợp",
         "🔖 Danh sách theo dõi + Lý do",
         "📋 Watchlist (thêm/xóa mã)",
+        "🔴 Giá Realtime (tra cứu trực tiếp)",
         "🕯️ Biểu đồ nến",
         "📒 Nhật ký giao dịch mua/bán",
         "📦 Khuyến nghị phân bổ vốn (đơn giản)",
@@ -4825,6 +4976,7 @@ def main() -> None:
         ("📌 Tổng hợp", render_tong_hop_section, (storage,)),
         ("🔖 Danh sách theo dõi + Lý do", render_danh_sach_theo_doi_section, (storage,)),
         ("📋 Watchlist (thêm/xóa mã)", render_watchlist_manager_section, (storage,)),
+        ("🔴 Giá Realtime (tra cứu trực tiếp)", render_realtime_price_lookup_section, (storage,)),
         ("🕯️ Biểu đồ nến", render_chart_section, (storage, symbols)),
         ("📒 Nhật ký giao dịch mua/bán", render_trade_journal_section, (storage, symbols)),
         ("🌐 Giai đoạn thị trường (định tính)", render_market_regime_section, (storage,)),

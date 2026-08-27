@@ -126,6 +126,41 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    qua giao diện web Settings -> Secrets, không phải file trong repo) —
    xem `.streamlit/secrets.toml.example` (file MẪU, an toàn, không có
    giá trị thật) để biết định dạng cần nhập.
+4l. **Giá hiển thị trên TOÀN BỘ dashboard (trừ mục realtime riêng bên
+   dưới) là giá ĐÓNG CỬA của phiên OHLCV gần nhất** (`indicator_snapshot
+   .close`), chỉ cập nhật 1 LẦN/NGÀY qua batch `run_full_market.py`
+   (khuyến nghị chạy sau giờ đóng cửa) — CÓ THỂ TRỄ TỚI GẦN 1 NGÀY LÀM
+   VIỆC, và đứng yên hoàn toàn trong giờ giao dịch (rà soát thực tế
+   27/08/2026). Cơ chế `get_realtime_price()`/`fetch_realtime_price()`
+   (gọi `vnstock.Market().quote()`, KHÔNG qua cache) đã có sẵn từ trước
+   nhưng CHỈ được gọi ở `main.py` (watchlist nhỏ) — KHÔNG ở
+   `run_full_market.py` — và category `realtime_price` nó ghi ra KHÔNG
+   được dashboard đọc lại ở đâu cả (hoàn toàn chết). ĐÃ THÊM (27/08/2026)
+   mục dashboard MỚI **"🔴 Giá Realtime (tra cứu trực tiếp)"**
+   (`render_realtime_price_lookup_section` trong `dashboard/app.py`) —
+   NGOẠI LỆ DUY NHẤT được phép gọi thẳng `core/data_collector.py` từ
+   dashboard (mọi mục khác CHỈ đọc storage, xem docstring đầu file), vì
+   đây đúng là mục đích: lấy giá SÁT THỜI GIAN THỰC NHẤT CÓ THỂ. Thiết kế
+   CỐ Ý KHÔNG mở rộng batch: chỉ tra cứu ĐÚNG 1 MÃ khi người dùng chủ
+   động bấm nút (không tự động, không hàng loạt) để tránh vượt giới hạn
+   ~60 request/phút của vnstock khi nhiều người cùng xem dashboard — mở
+   rộng `realtime_price` sang `run_full_market.py` KHÔNG giải quyết được
+   vấn đề "trễ" (vẫn chỉ là 1 snapshot batch khác), nên KHÔNG làm việc đó.
+   **PHÁT HIỆN QUAN TRỌNG khi build**: `market.quote()` của vnstock KHÔNG
+   ổn định về số cột trả về — có lúc trả ĐẦY ĐỦ bảng giá (close_price/
+   volume_accumulated/bid/ask/time...), có lúc CHỈ trả bộ tối giản
+   (symbol/exchange/ceiling/floor/reference_price/foreign_room, THIẾU
+   HẲN close_price/volume/time) — dao động NGAY GIỮA 2 lần gọi cách nhau
+   vài giây, không phải do đổi phiên bản thư viện. `fetch_realtime_price()`
+   đã sửa để KHÔNG coi close_price/volume_accumulated/time là bắt buộc
+   (chỉ cần ÍT NHẤT close_price HOẶC reference_price), luôn fallback về
+   giá tham chiếu + trả thêm cờ `du_lieu_day_du: bool` để dashboard cảnh
+   báo khi gặp bảng giá tối giản — xem `core/data_collector.py`. LƯU Ý
+   ĐƠN VỊ: `fetch_ohlcv()`/`indicator_snapshot.close` cho giá đã CHIA
+   1000 (VD "25.4"), còn `fetch_realtime_price()`/`quote()` cho giá NGUYÊN
+   ĐỒNG chưa chia (VD "20800") — 2 endpoint khác nhau của CÙNG 1 thư viện,
+   PHẢI giữ nguyên khác biệt này khi hiển thị (đã ghi rõ trong caption
+   mục mới), không tự ý quy đổi nếu chưa xác minh lại.
 4k. **Mục "🧮 Cổ phiếu dài hạn" (bổ sung 25/08/2026) THAY THẾ HOÀN TOÀN**
    mục "🚦 Báo cáo tín hiệu Mua/Bán từng mã" cũ trên dashboard (theo yêu
    cầu người dùng) — dashboard KHÔNG còn hiển thị tín hiệu MUA/BÁN/GIỮ

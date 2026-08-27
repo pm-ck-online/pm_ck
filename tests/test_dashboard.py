@@ -809,6 +809,34 @@ class TestTimBoChiSoGanDat:
 
 
 # ==============================================================================
+# Test: "🔴 Giá Realtime (tra cứu trực tiếp)" — thông điệp trạng thái phiên
+# ==============================================================================
+
+class TestDinhDangThongDiepTrangThaiPhien:
+    def test_ngoai_gio_giao_dich(self):
+        from dashboard.app import _dinh_dang_thong_diep_trang_thai_phien
+        thong_diep = _dinh_dang_thong_diep_trang_thai_phien(
+            dang_gio_giao_dich=False, da_khop_lenh=True,
+        )
+        assert "Ngoài giờ giao dịch" in thong_diep
+
+    def test_trong_gio_va_da_khop_lenh(self):
+        from dashboard.app import _dinh_dang_thong_diep_trang_thai_phien
+        thong_diep = _dinh_dang_thong_diep_trang_thai_phien(
+            dang_gio_giao_dich=True, da_khop_lenh=True,
+        )
+        assert "đã khớp lệnh" in thong_diep
+
+    def test_trong_gio_nhung_chua_khop_lenh(self):
+        from dashboard.app import _dinh_dang_thong_diep_trang_thai_phien
+        thong_diep = _dinh_dang_thong_diep_trang_thai_phien(
+            dang_gio_giao_dich=True, da_khop_lenh=False,
+        )
+        assert "CHƯA có lệnh nào khớp" in thong_diep
+        assert "tham chiếu" in thong_diep.lower()
+
+
+# ==============================================================================
 # Test: build_watchlist_detail_table (hàm thuần túy, không cần AppTest)
 # ==============================================================================
 

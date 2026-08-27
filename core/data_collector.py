@@ -38,6 +38,17 @@ import pandas as pd
 logger = logging.getLogger("pm_ck.data_collector")
 
 
+def _doc_so_thuc(gia_tri: Any) -> Optional[float]:
+    """Đọc `gia_tri` thành float, trả `None` nếu thiếu/NaN/không hợp lệ —
+    dùng cho các cột TÙY CHỌN của bảng giá vnstock (không phải mọi mã/thời
+    điểm đều có đủ bid/ask/khối ngoại)."""
+    try:
+        so = float(gia_tri)
+    except (TypeError, ValueError):
+        return None
+    return None if pd.isna(so) else so
+
+
 # ==============================================================================
 # NGOẠI LỆ (Exceptions)
 # ==============================================================================
@@ -292,8 +303,16 @@ class VnstockDataSource(DataSource):
         - `fetch_ohlcv`: hoạt động — cột trả về gồm
           ['time','open','high','low','close','volume'], được chuẩn hóa
           lại thành ['date','open','high','low','close','volume'].
-        - `fetch_realtime_price`: hoạt động — lấy từ `close_price` và
-          `volume_accumulated` trong bảng giá (quote) mà vnstock trả về.
+        - `fetch_realtime_price`: hoạt động — lấy từ bảng giá (quote/price
+          board) mà vnstock trả về, gồm `close_price`/`volume_accumulated`
+          + các trường bổ sung (giá tham chiếu/trần/sàn, bid/ask 1, khối
+          ngoại còn lại). Trước giờ khớp lệnh (close_price=0) tự động dùng
+          giá THAM CHIẾU thay thế, đánh dấu qua `da_khop_lenh=False` — xem
+          chi tiết ngay trong thân hàm bên dưới. LƯU Ý ĐƠN VỊ: khác với
+          `fetch_ohlcv` (giá đã chia 1000, VD "25.4"), giá từ `quote()` là
+          FULL VND chưa chia 1000 (VD "20800") — đã xác nhận qua kiểm tra
+          cấu trúc thực tế (`market.quote()` trả `close_price=20800` cho
+          HPG khi giá đang ở vùng ~20.800đ).
         - `fetch_fundamentals` / `fetch_news`: CHƯA triển khai — cấu trúc
           API tương ứng của vnstock chưa được xác minh đầy đủ. Gọi 2 hàm
           này sẽ raise `NotImplementedError` kèm hướng dẫn rõ ràng.
@@ -386,25 +405,76 @@ class VnstockDataSource(DataSource):
         if quote_df is None or len(quote_df) == 0:
             raise DataSourceError(f"vnstock không trả về dữ liệu giá cho '{symbol}'.")
 
-        required = {"close_price", "volume_accumulated", "time"}
-        missing = required - set(quote_df.columns)
-        if missing:
+        # ĐÃ XÁC NHẬN THỰC TẾ (27/08/2026, gọi lặp lại nhiều lần liên tiếp):
+        # `market.quote()` KHÔNG ổn định về số cột trả về — có lúc trả ĐẦY
+        # ĐỦ bảng giá (close_price/volume_accumulated/bid/ask/time...), có
+        # lúc CHỈ trả bộ cột tối giản (symbol/exchange/ceiling_price/
+        # floor_price/reference_price/foreign_room, THIẾU HẲN close_price/
+        # volume_accumulated/time) — không phải do đổi phiên bản thư viện,
+        # mà dao động NGAY GIỮA 2 lần gọi cách nhau vài giây. Vì vậy KHÔNG
+        # được coi close_price/volume_accumulated/time là bắt buộc (khác
+        # với fetch_ohlcv ở trên) — chỉ bắt buộc có ÍT NHẤT 1 cột giá dùng
+        # được (close_price HOẶC reference_price), mọi cột khác đọc qua
+        # `.get()`, thiếu thì trả None thay vì raise lỗi.
+        if not ({"close_price", "reference_price"} & set(quote_df.columns)):
             raise DataSourceError(
-                f"Cấu trúc dữ liệu quote từ vnstock đã thay đổi, thiếu cột "
-                f"{sorted(missing)}. Cần cập nhật lại VnstockDataSource.fetch_realtime_price()."
+                f"vnstock không trả về cột giá nào (close_price/reference_price) "
+                f"cho '{symbol}' — cấu trúc bảng giá: {sorted(quote_df.columns)}."
             )
 
         row = quote_df.iloc[0]
         try:
-            timestamp = datetime.fromtimestamp(float(row["time"]) / 1000.0)
+            timestamp = datetime.fromtimestamp(float(row.get("time")) / 1000.0)
         except (TypeError, ValueError):
+            # Không có cột "time" (bảng giá tối giản) hoặc giá trị không
+            # đọc được -> dùng thời điểm gọi API làm mốc thay thế.
             timestamp = datetime.now()
+
+        close_price = _doc_so_thuc(row.get("close_price")) or 0.0
+        gia_tham_chieu = _doc_so_thuc(row.get("reference_price"))
+        # Trước giờ khớp lệnh (chưa qua ATO), mã bị đình chỉ/không có giao
+        # dịch trong phiên, HOẶC bảng giá trả về ở dạng tối giản (không có
+        # cột close_price) — dùng giá THAM CHIẾU thay thế để không hiển
+        # thị "giá 0đ" gây hiểu lầm. `da_khop_lenh=False` đánh dấu rõ đây
+        # KHÔNG phải giá đã khớp thật trong phiên.
+        da_khop_lenh = close_price > 0
+        gia_hien_thi = close_price if da_khop_lenh else (
+            gia_tham_chieu if gia_tham_chieu is not None else None
+        )
+        if gia_hien_thi is None:
+            raise DataSourceError(
+                f"vnstock không trả về giá nào dùng được cho '{symbol}' "
+                f"(close_price=0 và reference_price cũng thiếu)."
+            )
+
+        # Tự tính % thay đổi từ price/reference_price (cùng đơn vị thô từ
+        # CÙNG 1 dòng dữ liệu) thay vì tin thẳng cột `percent_change` của
+        # vnstock — tránh rủi ro sai lệch đơn vị (đã có tiền lệ cấu trúc dữ
+        # liệu vnstock không ổn định — xem ghi chú trên).
+        if da_khop_lenh and gia_tham_chieu:
+            phan_tram_thay_doi = (close_price - gia_tham_chieu) / gia_tham_chieu * 100
+        else:
+            phan_tram_thay_doi = _doc_so_thuc(row.get("percent_change"))
 
         return {
             "symbol": symbol,
-            "price": float(row["close_price"]),
-            "volume": float(row["volume_accumulated"]),
+            "price": gia_hien_thi,
+            "volume": _doc_so_thuc(row.get("volume_accumulated")) or 0.0,
             "timestamp": timestamp,
+            "da_khop_lenh": da_khop_lenh,
+            # False khi vnstock chỉ trả bảng giá tối giản (thiếu close_price/
+            # volume_accumulated/bid/ask) — dashboard dùng để cảnh báo dữ
+            # liệu đang bị giới hạn, không phải lỗi thao tác của người dùng.
+            "du_lieu_day_du": "close_price" in quote_df.columns and "volume_accumulated" in quote_df.columns,
+            "gia_tham_chieu": gia_tham_chieu,
+            "gia_tran": _doc_so_thuc(row.get("ceiling_price")),
+            "gia_san": _doc_so_thuc(row.get("floor_price")),
+            "phan_tram_thay_doi": phan_tram_thay_doi,
+            "gia_mua_1": _doc_so_thuc(row.get("bid_price_1")),
+            "khoi_luong_mua_1": _doc_so_thuc(row.get("bid_vol_1")),
+            "gia_ban_1": _doc_so_thuc(row.get("ask_price_1")),
+            "khoi_luong_ban_1": _doc_so_thuc(row.get("ask_vol_1")),
+            "khoi_ngoai_con_lai": _doc_so_thuc(row.get("foreign_room")),
         }
 
     def fetch_fundamentals(self, symbol: str) -> FundamentalData:

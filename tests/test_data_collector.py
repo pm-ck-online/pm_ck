@@ -329,7 +329,13 @@ class TestVnstockDataSource:
                     "exchange": "HOSE",
                     "close_price": 20800,
                     "volume_accumulated": 27198700,
-                    # ... các cột khác không cần thiết cho test này
+                    "reference_price": 20550,
+                    "ceiling_price": 21980,
+                    "floor_price": 19120,
+                    "percent_change": 1.22,
+                    "bid_price_1": 20750, "bid_vol_1": 15000,
+                    "ask_price_1": 20800, "ask_vol_1": 8200,
+                    "foreign_room": 2_306_491_297,
                 }])
 
         fake_module.Market = FakeMarket
@@ -369,20 +375,130 @@ class TestVnstockDataSource:
         assert result["price"] == pytest.approx(20800)
         assert result["volume"] == pytest.approx(27198700)
         assert isinstance(result["timestamp"], datetime)
+        # Đã khớp lệnh (close_price=20800 > 0) -> lấy đúng giá khớp, và %
+        # thay đổi TỰ TÍNH từ (20800-20550)/20550*100, không lấy thẳng cột
+        # percent_change (=1.22) của vnstock.
+        assert result["da_khop_lenh"] is True
+        assert result["gia_tham_chieu"] == pytest.approx(20550)
+        assert result["gia_tran"] == pytest.approx(21980)
+        assert result["gia_san"] == pytest.approx(19120)
+        assert result["phan_tram_thay_doi"] == pytest.approx((20800 - 20550) / 20550 * 100)
+        assert result["gia_mua_1"] == pytest.approx(20750)
+        assert result["khoi_luong_mua_1"] == pytest.approx(15000)
+        assert result["gia_ban_1"] == pytest.approx(20800)
+        assert result["khoi_luong_ban_1"] == pytest.approx(8200)
+        assert result["khoi_ngoai_con_lai"] == pytest.approx(2_306_491_297)
+        assert result["du_lieu_day_du"] is True
 
-    def test_fetch_realtime_price_raises_on_missing_columns(self, monkeypatch):
+    def test_fetch_realtime_price_handles_minimal_board_response(self, monkeypatch):
+        """ĐÃ XÁC NHẬN THỰC TẾ (27/08/2026): `market.quote()` đôi khi trả về
+        bảng giá TỐI GIẢN — chỉ có symbol/exchange/ceiling/floor/reference/
+        foreign_room, THIẾU HẲN close_price/volume_accumulated/time/bid/ask
+        — dao động ngay giữa 2 lần gọi liên tiếp, không phải do đổi phiên
+        bản thư viện. Hàm PHẢI vẫn trả về giá THAM CHIẾU thay vì raise lỗi,
+        và đánh dấu `du_lieu_day_du=False` để dashboard biết mà cảnh báo."""
         fake_module = types.ModuleType("vnstock")
 
-        class BadMarket:
+        class FakeMarket:
             def quote(self, symbol):
-                return pd.DataFrame([{"symbol": symbol}])  # thiếu cột giá
+                return pd.DataFrame([{
+                    "symbol": symbol,
+                    "exchange": "HOSE",
+                    "ceiling_price": 21980,
+                    "floor_price": 19120,
+                    "reference_price": 20550,
+                    "foreign_room": 2_306_491_297,
+                }])
 
-        fake_module.Market = BadMarket
+        fake_module.Market = FakeMarket
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        result = source.fetch_realtime_price("HPG")
+
+        assert result["price"] == pytest.approx(20550)
+        assert result["da_khop_lenh"] is False
+        assert result["du_lieu_day_du"] is False
+        assert result["volume"] == pytest.approx(0.0)
+        assert isinstance(result["timestamp"], datetime)  # rơi về datetime.now() vì thiếu "time"
+
+    def test_fetch_realtime_price_raises_when_no_price_column_at_all(self, monkeypatch):
+        """Không có CẢ close_price LẪN reference_price -> không còn cách
+        nào suy ra giá -> phải raise lỗi rõ ràng thay vì trả giá sai/None
+        âm thầm."""
+        fake_module = types.ModuleType("vnstock")
+
+        class FakeMarket:
+            def quote(self, symbol):
+                return pd.DataFrame([{"symbol": symbol, "exchange": "HOSE"}])
+
+        fake_module.Market = FakeMarket
         monkeypatch.setitem(sys.modules, "vnstock", fake_module)
 
         source = VnstockDataSource()
         with pytest.raises(DataSourceError):
             source.fetch_realtime_price("HPG")
+
+    def test_fetch_realtime_price_falls_back_to_reference_price_when_not_yet_matched(
+        self, monkeypatch,
+    ):
+        """Trước giờ khớp lệnh (ATO chưa chạy) hoặc mã không có giao dịch
+        trong phiên, vnstock trả close_price=0 -> phải dùng giá THAM CHIẾU
+        thay thế (không hiển thị "giá 0đ" gây hiểu lầm), và đánh dấu rõ
+        `da_khop_lenh=False` để phân biệt với giá đã khớp thật."""
+        fake_module = types.ModuleType("vnstock")
+
+        class FakeMarket:
+            def quote(self, symbol):
+                return pd.DataFrame([{
+                    "symbol": symbol,
+                    "time": 1784622792999,
+                    "close_price": 0,
+                    "volume_accumulated": 0,
+                    "reference_price": 20550,
+                }])
+
+        fake_module.Market = FakeMarket
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        result = source.fetch_realtime_price("HPG")
+
+        assert result["da_khop_lenh"] is False
+        assert result["price"] == pytest.approx(20550)
+        assert result["gia_tham_chieu"] == pytest.approx(20550)
+
+    def test_fetch_realtime_price_missing_optional_columns_returns_none(
+        self, monkeypatch,
+    ):
+        """Các cột TÙY CHỌN (bid/ask, khối ngoại, reference_price...) không
+        có trong bảng giá trả về không được làm hàm lỗi — chỉ cần CÓ ÍT
+        NHẤT close_price HOẶC reference_price là đủ để trả về giá."""
+        fake_module = types.ModuleType("vnstock")
+
+        class FakeMarket:
+            def quote(self, symbol):
+                return pd.DataFrame([{
+                    "symbol": symbol,
+                    "time": 1784622792999,
+                    "close_price": 20800,
+                    "volume_accumulated": 27198700,
+                }])
+
+        fake_module.Market = FakeMarket
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        result = source.fetch_realtime_price("HPG")
+
+        assert result["gia_tham_chieu"] is None
+        assert result["gia_mua_1"] is None
+        assert result["khoi_ngoai_con_lai"] is None
+        # Không có reference_price -> phan_tram_thay_doi rơi về fallback
+        # đọc cột percent_change (cũng không có ở đây) -> None
+        assert result["phan_tram_thay_doi"] is None
+        # Có ĐỦ close_price + volume_accumulated -> coi là bảng giá đầy đủ
+        assert result["du_lieu_day_du"] is True
 
     def test_raises_clear_error_when_vnstock_not_installed(self, monkeypatch):
         # Đặt sys.modules["vnstock"] = None là cách buộc Python raise
