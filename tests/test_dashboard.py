@@ -223,6 +223,20 @@ class TestDashboardSmoke:
                 assert not hang_hpg.empty
                 assert hang_hpg.iloc[0]["Nguồn giá"] == "⚠️ Lỗi Realtime (dùng đóng cửa)"
                 assert hang_hpg.iloc[0]["Giá"] == pytest.approx(32.5)  # rơi về EOD
+                # Realtime bị chặn (fixture) -> không xác định được giai
+                # đoạn realtime -> "—" (khác "Chưa đủ 200 phiên lịch sử",
+                # vốn dành cho trường hợp lấy realtime THÀNH CÔNG nhưng
+                # thiếu lịch sử).
+                assert "Giai đoạn realtime" in cols
+                assert hang_hpg.iloc[0]["Giai đoạn realtime"] == "—"
+                # Các cột đã bị ẨN theo yêu cầu (27/08/2026) — không được
+                # xuất hiện lại trong bảng.
+                cot_da_an = {
+                    "Tính cách (Character)", "Điểm dứt khoát (Character Score)",
+                    "Điểm lình xình (Choppiness Score)", "Cảnh báo (Warning)",
+                    "Độ tin cậy thấp (Low Confidence)", "Mức cảnh báo (ngắn hạn)",
+                }
+                assert not (cot_da_an & set(cols))
                 break
         else:
             pytest.fail("Không tìm thấy bảng \"Tính cách giao dịch\" có cột \"Nguồn giá\".")
@@ -889,6 +903,76 @@ class TestTimBoChiSoGanDat:
 
 
 # ==============================================================================
+# Test: _tinh_khuyen_nghi — gộp tín hiệu vào GẦN ĐÂY (N phiên) + ra HÔM NAY
+# (tin_hieu_giao_dich, tính từ entry/exit_series THẬT của
+# core.long_term_indicator_backtest.xay_8_bo_chi_so) thành 1 khuyến nghị.
+# LƯU Ý: "vào" và "ra" PHẢI xét ở 2 THỜI ĐIỂM KHÁC NHAU (gần đây vs hôm
+# nay) — nếu xét cùng 1 thời điểm, 2 điều kiện này LOẠI TRỪ LẪN NHAU (VD
+# giá không thể vừa > MA20 vừa < MA20), "Chốt" sẽ KHÔNG BAO GIỜ xảy ra.
+# ==============================================================================
+
+class TestTinhKhuyenNghi:
+    def test_chua_co_giai_doan_tra_ve_gach_ngang(self):
+        from dashboard.app import _tinh_khuyen_nghi
+        assert _tinh_khuyen_nghi({}, None, {}) == "—"
+
+    def test_chua_bo_nao_vao_gan_day_tra_ve_cho_giao_dich(self):
+        from dashboard.app import _tinh_khuyen_nghi
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+            },
+        }
+        tin_hieu = {"MA20 (Giá cắt MA20)": {"vao_gan_day": False, "ra_hom_nay": False}}
+        assert _tinh_khuyen_nghi(pp_data, "downtrend", tin_hieu) == "Chờ giao dịch"
+
+    def test_ln_duoi_nguong_khong_duoc_xet_du_da_vao_gan_day(self):
+        from dashboard.app import _tinh_khuyen_nghi
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 3.0}},
+            },
+        }
+        tin_hieu = {"MA20 (Giá cắt MA20)": {"vao_gan_day": True, "ra_hom_nay": False}}
+        assert _tinh_khuyen_nghi(pp_data, "downtrend", tin_hieu) == "Chờ giao dịch"
+
+    def test_da_vao_gan_day_chua_ra_hom_nay_la_tiep_tuc_giu(self):
+        from dashboard.app import _tinh_khuyen_nghi
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+            },
+        }
+        tin_hieu = {"MA20 (Giá cắt MA20)": {"vao_gan_day": True, "ra_hom_nay": False}}
+        assert _tinh_khuyen_nghi(pp_data, "downtrend", tin_hieu) == "Tiếp tục giữ CP"
+
+    def test_da_vao_gan_day_va_ra_hom_nay_la_chot(self):
+        from dashboard.app import _tinh_khuyen_nghi
+        pp_data = {
+            "results": {
+                "RSI14 (Quá mua/Quá bán 30-70)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+            },
+        }
+        # Vao lenh (RSI<30) xay ra 5 phien truoc, HOM NAY RSI da qua 70 -> ra
+        tin_hieu = {"RSI14 (Quá mua/Quá bán 30-70)": {"vao_gan_day": True, "ra_hom_nay": True}}
+        assert _tinh_khuyen_nghi(pp_data, "downtrend", tin_hieu) == "Chốt"
+
+    def test_1_trong_2_bo_ra_hom_nay_van_la_chot(self):
+        from dashboard.app import _tinh_khuyen_nghi
+        pp_data = {
+            "results": {
+                "MA20 (Giá cắt MA20)": {"downtrend": {"n_trades": 3, "total_return_pct": 12.0}},
+                "RSI14 (Quá mua/Quá bán 30-70)": {"downtrend": {"n_trades": 2, "total_return_pct": 8.0}},
+            },
+        }
+        tin_hieu = {
+            "MA20 (Giá cắt MA20)": {"vao_gan_day": True, "ra_hom_nay": False},
+            "RSI14 (Quá mua/Quá bán 30-70)": {"vao_gan_day": True, "ra_hom_nay": True},
+        }
+        assert _tinh_khuyen_nghi(pp_data, "downtrend", tin_hieu) == "Chốt"
+
+
+# ==============================================================================
 # Test: _tinh_chi_bao_gan_dat_theo_realtime_cached — tính lại MA/EMA/RSI/BB
 # bằng cách thay giá đóng cửa phiên gần nhất bằng giá REALTIME
 # ==============================================================================
@@ -1032,6 +1116,57 @@ class TestTinhChiBaoGanDatTheoRealtime:
         ket_qua = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage2, ("BCR",))
 
         assert "loi" in ket_qua["BCR"]
+
+    def test_tin_hieu_giao_dich_vao_gan_day_va_ra_hom_nay_o_2_ngay_khac_nhau(
+        self, isolated_db_path, monkeypatch,
+    ):
+        """Kịch bản: 28 phiên PHẲNG ở 20.0, RỒI 1 phiên rơi mạnh xuống 10.0
+        (2 phiên trước "hôm nay" -> đủ điều kiện Bollinger Bounce VÀO lệnh:
+        giá <= dải dưới), rồi giá realtime HÔM NAY hồi mạnh lên 30.0 (rõ
+        ràng >= MA20/dải giữa -> đủ điều kiện Bollinger Bounce RA lệnh).
+        Đây CHÍNH LÀ kịch bản đã bị lỗi thiết kế trước đó (kiểm tra vào/ra
+        cùng 1 ngày khiến "Chốt" không bao giờ xảy ra) — xác nhận sau khi
+        sửa, "vao_gan_day" và "ra_hom_nay" ĐÚNG ở 2 THỜI ĐIỂM KHÁC NHAU vẫn
+        cùng lên True được, đủ điều kiện cho "Chốt" ở `_tinh_khuyen_nghi`."""
+        from dashboard.app import _tinh_chi_bao_gan_dat_theo_realtime_cached
+        import dashboard.app as app_module
+
+        storage = Storage(db_path=isolated_db_path)
+        records = [
+            {
+                "date": f"2025-{(1 + i // 28):02d}-{(1 + i % 28):02d}",
+                "open": 20.0, "high": 20.0, "low": 20.0, "close": 20.0,
+                "volume": 1_000_000,
+            }
+            for i in range(28)
+        ]
+        # Phiên áp chót (index 28): rơi mạnh xuống 10.0 — chạm rõ ràng
+        # dưới dải Bollinger dưới (đang xoay quanh 20.0).
+        records.append({
+            "date": "2025-02-01", "open": 10.0, "high": 10.0, "low": 10.0,
+            "close": 10.0, "volume": 1_000_000,
+        })
+        storage.save("ohlcv_history", "VIX", {"records": records})
+        storage.close()
+
+        # Giá realtime HÔM NAY (thay thế phiên cuối) = 30.0 nghìn đồng
+        # (=30,000đ) — hồi mạnh, rõ ràng vượt MA20/dải giữa.
+        fake_collector = _FakeCollectorGanDatRealtime({
+            "VIX": {"price": 30000.0, "volume": 1_000_000.0, "da_khop_lenh": True},
+        })
+        monkeypatch.setattr(
+            app_module, "_tao_data_collector_cho_tra_cuu_realtime",
+            lambda: fake_collector,
+        )
+
+        st.cache_data.clear()
+        storage2 = Storage(db_path=isolated_db_path)
+        ket_qua = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage2, ("VIX",))
+
+        tin_hieu = ket_qua["VIX"]["tin_hieu_giao_dich"]
+        bb_bounce = tin_hieu["Bollinger Bounce (mua đáy dải dưới)"]
+        assert bb_bounce["vao_gan_day"] is True
+        assert bb_bounce["ra_hom_nay"] is True
 
 
 # ==============================================================================

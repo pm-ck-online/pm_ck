@@ -3048,6 +3048,59 @@ def _tim_bo_chi_so_gan_dat(
     return "; ".join(text for _, text in ung_vien)
 
 
+# Số phiên "gần đây" để coi 1 bộ chỉ số là "đã vào lệnh" khi tính
+# "Khuyến nghị" — xem giải thích đầy đủ ở `_tinh_khuyen_nghi()`.
+SO_PHIEN_TIN_HIEU_VAO_LENH_GAN_DAY = 20
+
+
+def _tinh_khuyen_nghi(
+    pp_data: dict, giai_doan: Optional[str], tin_hieu_giao_dich: dict, nguong_pct: float = 5.0,
+) -> str:
+    """Gộp tín hiệu vào/ra lệnh (đã tính sẵn trong `tin_hieu_giao_dich`,
+    xem `_tinh_chi_bao_gan_dat_theo_realtime_cached`) của các bộ chỉ số
+    LN>`nguong_pct`% ở `giai_doan` thành 1 khuyến nghị DUY NHẤT:
+        - "Chờ giao dịch": CHƯA có bộ nào có tín hiệu VÀO lệnh trong
+          `SO_PHIEN_TIN_HIEU_VAO_LENH_GAN_DAY` phiên gần đây.
+        - "Chốt": có ít nhất 1 bộ có tín hiệu vào GẦN ĐÂY, VÀ tín hiệu RA
+          của chính bộ đó cũng đúng HÔM NAY (ưu tiên bảo toàn lợi nhuận —
+          chỉ cần 1 tín hiệu cảnh báo ra là đủ).
+        - "Tiếp tục giữ CP": có bộ vào GẦN ĐÂY, nhưng CHƯA bộ nào có tín
+          hiệu ra HÔM NAY.
+
+    QUAN TRỌNG: "vào" và "ra" PHẢI xét ở 2 THỜI ĐIỂM KHÁC NHAU (gần đây
+    vs hôm nay) — nếu dùng CÙNG 1 thời điểm/snapshot, 2 điều kiện này sẽ
+    LOẠI TRỪ LẪN NHAU về mặt toán học cho MỌI bộ trong số 8 bộ (VD giá
+    không thể vừa > MA20 vừa < MA20 cùng lúc), khiến "Chốt" KHÔNG BAO GIỜ
+    xảy ra được — đây là lỗi thiết kế đã phát hiện và sửa 27/08/2026 lúc
+    viết test cho phiên bản đầu tiên (kiểm tra vào/ra cùng 1 snapshot).
+
+    CHỈ MANG TÍNH THAM KHẢO — không phải khuyến nghị đầu tư cá nhân hóa,
+    và KHÔNG theo dõi vị thế thật của người dùng (hệ thống không biết bạn
+    có đang thực sự nắm giữ mã này hay không).
+    """
+    if not giai_doan:
+        return "—"
+    ket_qua = (pp_data or {}).get("results") or {}
+    bo_da_vao_gan_day = []
+    for ten_day_du in TEN_NGAN_BO_CHI_SO_DAI_HAN:
+        stats = (ket_qua.get(ten_day_du) or {}).get(giai_doan) or {}
+        n_lenh = stats.get("n_trades", 0)
+        tong_ln = stats.get("total_return_pct")
+        if not (n_lenh and tong_ln is not None and tong_ln > nguong_pct):
+            continue
+        tin_hieu = (tin_hieu_giao_dich or {}).get(ten_day_du) or {}
+        if tin_hieu.get("vao_gan_day"):
+            bo_da_vao_gan_day.append(ten_day_du)
+
+    if not bo_da_vao_gan_day:
+        return "Chờ giao dịch"
+
+    for ten_day_du in bo_da_vao_gan_day:
+        if (tin_hieu_giao_dich.get(ten_day_du) or {}).get("ra_hom_nay"):
+            return "Chốt"
+    return "Tiếp tục giữ CP"
+
+
 # Giới hạn số mã tối đa cho cột "Gần đạt tiêu chí vào lệnh" (dùng giá
 # REALTIME — 1 lệnh gọi API RIÊNG cho từng mã, khác hẳn các cột khác chỉ
 # đọc storage) — tránh vượt giới hạn tốc độ gọi API của vnstock (~60
@@ -3055,7 +3108,7 @@ def _tim_bo_chi_so_gan_dat(
 NGUONG_TOI_DA_MA_GAN_DAT_REALTIME = 20
 
 
-@st.cache_data(ttl=60, show_spinner="Đang lấy giá Realtime để tính \"Gần đạt tiêu chí vào lệnh\"...")
+@st.cache_data(ttl=60, show_spinner="Đang lấy giá Realtime để tính \"Bộ chỉ số đủ điều kiện vào lệnh\"...")
 def _tinh_chi_bao_gan_dat_theo_realtime_cached(
     _storage: Storage, danh_sach_ma: tuple[str, ...],
 ) -> dict[str, dict]:
@@ -3073,11 +3126,33 @@ def _tinh_chi_bao_gan_dat_theo_realtime_cached(
     `NGUONG_TOI_DA_MA_GAN_DAT_REALTIME`, mỗi mã tốn 1 lệnh gọi API riêng.
 
     Trả về {mã: {"close", "ma20", "ema50", "ema200", "rsi14", "bb_upper",
-    "bb_lower", "volume", "gia_realtime_full_vnd", "da_khop_lenh"}}, hoặc
-    {mã: {"loi": "..."}} nếu lấy giá realtime/lịch sử thất bại cho mã đó
-    (1 mã lỗi không làm hỏng cả batch).
+    "bb_lower", "volume", "gia_realtime_full_vnd", "da_khop_lenh",
+    "giai_doan_realtime", "tin_hieu_giao_dich"}}, hoặc {mã: {"loi": "..."}}
+    nếu lấy giá realtime/lịch sử thất bại cho mã đó (1 mã lỗi không làm
+    hỏng cả batch).
+
+    `giai_doan_realtime` dùng PHƯƠNG PHÁP EMA200 ĐƠN GIẢN (PP1, KHÔNG
+    dùng Ensemble/Markov — quá chậm ~26 giây/mã, không khả thi để tính
+    lại mỗi lần xem) trên CÙNG chuỗi giá đã thay phiên gần nhất bằng giá
+    realtime; `None` nếu mã chưa đủ 200 phiên lịch sử (EMA200 chưa tính
+    được).
+
+    `tin_hieu_giao_dich` = {tên_bộ_chỉ_số: {"vao_gan_day": bool,
+    "ra_hom_nay": bool}} — tái sử dụng ĐÚNG `entry_series`/`exit_series`
+    thật của `core.long_term_indicator_backtest.xay_8_bo_chi_so()` (khớp
+    chính xác với backtest, gồm cả crossover event cho MA20/EMA) trên
+    chuỗi đã thay giá + KHỐI LƯỢNG phiên gần nhất bằng dữ liệu realtime.
+    "vao_gan_day" = entry đúng tại BẤT KỲ ngày nào trong
+    `SO_PHIEN_TIN_HIEU_VAO_LENH_GAN_DAY` phiên gần nhất; "ra_hom_nay" =
+    exit đúng NGAY HÔM NAY (phiên cuối). BẮT BUỘC xét "vào"/"ra" ở 2 THỜI
+    ĐIỂM KHÁC NHAU — nếu xét cùng 1 ngày, 2 điều kiện luôn LOẠI TRỪ NHAU
+    (VD giá không thể vừa > MA20 vừa < MA20) nên sẽ không bao giờ đồng
+    thời đúng, làm "Chốt" ở `_tinh_khuyen_nghi()` không thể xảy ra (lỗi
+    thiết kế đã phát hiện + sửa 27/08/2026).
     """
     from core.indicators import calculate_bollinger_bands, calculate_ema, calculate_ma, calculate_rsi
+    from core.long_term_indicator_backtest import tinh_chi_bao_dai_han, xay_8_bo_chi_so
+    from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
 
     def _gia_tri_cuoi(series: pd.Series) -> Optional[float]:
         gia_tri = series.iloc[-1]
@@ -3110,8 +3185,33 @@ def _tinh_chi_bao_gan_dat_theo_realtime_cached(
 
         df_thay_the = df_ma.copy()
         df_thay_the.loc[df_thay_the.index[-1], "close"] = gia_rt_nghin_dong
+        # Thay luôn khối lượng phiên gần nhất bằng khối lượng khớp tích
+        # lũy Realtime (nếu có) — để các bộ chỉ số dựa vào volume (Bollinger
+        # Breakout+Volume, Volume Breakout+MA20) cũng nhất quán với giá.
+        if gia_rt.get("volume") is not None:
+            df_thay_the.loc[df_thay_the.index[-1], "volume"] = gia_rt["volume"]
 
         bb_upper, _bb_mid, bb_lower = calculate_bollinger_bands(df_thay_the, 20, 2.0)
+
+        # PP1 EMA200 đơn giản — tự bỏ qua (trả Series rỗng) nếu <200 phiên,
+        # không raise lỗi (xem docstring `tinh_chuoi_giai_doan_theo_ngay`).
+        chuoi_giai_doan_rt = tinh_chuoi_giai_doan_theo_ngay({ma: df_thay_the})
+        giai_doan_realtime = chuoi_giai_doan_rt.iloc[-1] if len(chuoi_giai_doan_rt) > 0 else None
+
+        # Tín hiệu vào/ra THẬT (khớp chính xác backtest) — dùng cho
+        # "Khuyến nghị". Yêu cầu ≥20 phiên là đủ cho hầu hết 8 bộ, riêng
+        # EMA Cross/Trend Filter cần ≥200 phiên mới có tín hiệu (NaN nếu
+        # thiếu, entry/exit tự thành False, không raise lỗi).
+        df_bt = tinh_chi_bao_dai_han(df_thay_the)
+        bo_chi_so_series = xay_8_bo_chi_so(df_bt)
+        tin_hieu_giao_dich = {
+            ten_day_du: {
+                "vao_gan_day": bool(entry_s.tail(SO_PHIEN_TIN_HIEU_VAO_LENH_GAN_DAY).any()),
+                "ra_hom_nay": bool(exit_s.iloc[-1]),
+            }
+            for ten_day_du, (entry_s, exit_s) in bo_chi_so_series.items()
+        }
+
         ket_qua[ma] = {
             "close": gia_rt_nghin_dong,
             "ma20": _gia_tri_cuoi(calculate_ma(df_thay_the, 20)),
@@ -3123,6 +3223,8 @@ def _tinh_chi_bao_gan_dat_theo_realtime_cached(
             "volume": gia_rt.get("volume"),
             "gia_realtime_full_vnd": gia_rt.get("price"),
             "da_khop_lenh": gia_rt.get("da_khop_lenh"),
+            "giai_doan_realtime": giai_doan_realtime,
+            "tin_hieu_giao_dich": tin_hieu_giao_dich,
         }
     return ket_qua
 
@@ -3175,27 +3277,42 @@ def render_stock_character_section(storage: Storage) -> None:
         "với cột \"Giá\" để nhất quán trên cùng 1 dòng."
     )
     st.caption(
-        "⚠️ Đây là mô tả CÁCH GIÁ ĐÃ VẬN ĐỘNG trong quá khứ của mã (dựa trên "
-        "percentile so với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị "
-        "mua/bán hay dự báo xu hướng tương lai, chỉ dùng để điều chỉnh độ tin "
-        "cậy tín hiệu Mua/Bán và phân bổ vốn. Cột \"Giai đoạn\" và \"Bộ chỉ số "
-        "LN>5%\" lấy từ mục 🧮 Cổ phiếu dài hạn (phương pháp Ensemble 3 phương "
-        "pháp) — xem mục đó để có bảng đầy đủ cả 3 giai đoạn × 2 phương pháp. "
-        "Cột \"Độ lệch MA20\"/\"Mức cảnh báo\" tính từ giá ở cột \"Giá\" (xem "
-        "\"Nguồn giá\") so với MA20 (<10% Bình thường, 10-15% Nguy cơ điều "
-        "chỉnh, >15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn "
-        "hạn cũ). Cột \"% Volume/MA20 Volume\" = Volume (cùng nguồn với cột "
-        "\"Giá\") ÷ Volume MA20 × 100 — trên 100% nghĩa là khối lượng hiện "
-        "cao hơn trung bình 20 "
-        "phiên; từ 150% trở lên được hệ thống coi là đột biến volume. Cột (tùy "
-        "chọn) \"Gần đạt tiêu chí vào lệnh\" dùng giá REALTIME (gọi trực tiếp "
-        "vnstock ngay lúc bật, KHÔNG phải giá đã lưu) để kiểm tra so với điều "
-        "kiện MUA của từng bộ chỉ số đang LN>5% ở giai đoạn hiện tại — MA20/"
-        "EMA50/EMA200/RSI14/Bollinger Bands đều được TÍNH LẠI bằng cách thay "
-        "giá đóng cửa phiên gần nhất bằng giá realtime. ✅ = đã đạt, 🔔 = gần "
-        "đạt (giá/MA/EMA/BB cách ≤3%, RSI cách ≤5 điểm, hoặc volume đã ≥70% "
-        f"mức cần) — CHỈ để chuẩn bị theo dõi, KHÔNG PHẢI tín hiệu mua ngay. "
-        f"Do tốn 1 lệnh gọi API/mã, CHỈ chạy được khi danh sách đã thu hẹp "
+        "Cột \"Giai đoạn\" và \"Bộ chỉ số LN>5%\" lấy từ mục 🧮 Cổ phiếu dài "
+        "hạn (phương pháp Ensemble 3 phương pháp, tính theo BATCH — có thể "
+        "cũ vài ngày) — xem mục đó để có bảng đầy đủ cả 3 giai đoạn × 2 "
+        "phương pháp. Cột \"Giai đoạn realtime\" (tự động khi danh sách "
+        f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã) phân loại LẠI Uptrend/"
+        "Sideway/Downtrend bằng phương pháp EMA200 đơn giản (PP1 — nhanh, "
+        "tính lại được mỗi lần xem), trên chuỗi giá đã thay phiên gần nhất "
+        "bằng giá REALTIME — \"Chưa đủ 200 phiên lịch sử\" nếu mã chưa đủ "
+        "dữ liệu tính EMA200. Cột \"Độ lệch MA20\" tính từ giá ở cột \"Giá\" "
+        "(xem \"Nguồn giá\") so với MA20 (<10% Bình thường, 10-15% Nguy cơ "
+        "điều chỉnh, >15% Nguy cơ cao). Cột \"% Volume/MA20 Volume\" = "
+        "Volume (cùng nguồn với cột \"Giá\") ÷ Volume MA20 × 100 — trên "
+        "100% nghĩa là khối lượng hiện cao hơn trung bình 20 phiên; từ "
+        "150% trở lên được hệ thống coi là đột biến volume."
+    )
+    st.caption(
+        "Cột (tùy chọn) \"Bộ chỉ số đủ điều kiện vào lệnh\" (đổi tên từ "
+        "\"Gần đạt tiêu chí vào lệnh\") dùng giá REALTIME để kiểm tra so "
+        "với điều kiện MUA của từng bộ chỉ số đang LN>5% ở GIAI ĐOẠN "
+        "REALTIME (không phải giai đoạn batch) — MA20/EMA50/EMA200/RSI14/"
+        "Bollinger Bands đều được TÍNH LẠI bằng cách thay giá đóng cửa "
+        "phiên gần nhất bằng giá realtime. ✅ = đã đạt, 🔔 = gần đạt (giá/"
+        "MA/EMA/BB cách ≤3%, RSI cách ≤5 điểm, hoặc volume đã ≥70% mức "
+        "cần) — CHỈ để chuẩn bị theo dõi, KHÔNG PHẢI tín hiệu mua ngay. "
+        "Cột \"Khuyến nghị\" (đi kèm, dùng tín hiệu vào/ra CHÍNH XÁC của "
+        f"backtest, KHÁC cách tính ✅/🔔 ở trên) gộp thành 1 kết luận: "
+        f"\"Chờ giao dịch\" nếu CHƯA bộ nào có tín hiệu VÀO trong "
+        f"{SO_PHIEN_TIN_HIEU_VAO_LENH_GAN_DAY} phiên gần đây; \"Tiếp tục "
+        "giữ CP\" nếu ĐÃ có bộ vào gần đây mà CHƯA bộ nào có tín hiệu RA "
+        "(bán) ngay HÔM NAY; \"Chốt\" nếu CÓ ÍT NHẤT 1 bộ đã vào gần đây "
+        "mà tín hiệu ra của nó cũng đúng hôm nay. LƯU Ý: hệ thống KHÔNG "
+        "biết bạn có thực sự đang nắm giữ mã này hay không — đây chỉ là "
+        "suy luận từ tín hiệu kỹ thuật, KHÔNG theo dõi vị thế thật. TOÀN "
+        "BỘ 2 cột này CHỈ MANG TÍNH THAM KHẢO, KHÔNG PHẢI khuyến nghị đầu "
+        "tư cá nhân hóa — tự chịu trách nhiệm về quyết định giao dịch. Do "
+        f"tốn 1 lệnh gọi API/mã, CHỈ chạy được khi danh sách đã thu hẹp "
         f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã."
     )
 
@@ -3247,8 +3364,9 @@ def render_stock_character_section(storage: Storage) -> None:
         )
 
     hien_cot_gan_dat = st.checkbox(
-        "🔔 Tính thêm cột \"Gần đạt tiêu chí vào lệnh\" (dùng CHUNG giá "
-        "Realtime với cột \"Giá\" bên dưới nếu danh sách đủ nhỏ)",
+        "🔔 Tính thêm cột \"Bộ chỉ số đủ điều kiện vào lệnh\" + \"Khuyến "
+        "nghị\" (dùng CHUNG giá Realtime với cột \"Giá\" bên dưới nếu danh "
+        "sách đủ nhỏ)",
         key="stock_character_show_gan_dat",
     )
 
@@ -3266,9 +3384,10 @@ def render_stock_character_section(storage: Storage) -> None:
         )
         if hien_cot_gan_dat:
             st.error(
-                f"Cột \"Gần đạt\" dùng giá REALTIME (1 lệnh gọi API riêng/mã) nên "
-                f"CHỈ chạy được khi danh sách ≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã, "
-                "để tránh vượt giới hạn tốc độ gọi API của vnstock."
+                f"Cột \"Bộ chỉ số đủ điều kiện vào lệnh\"/\"Khuyến nghị\" dùng giá "
+                f"REALTIME (1 lệnh gọi API riêng/mã) nên CHỈ chạy được khi danh sách "
+                f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã, để tránh vượt giới hạn tốc "
+                "độ gọi API của vnstock."
             )
 
     character_map = storage.get_latest_many("stock_character", symbol_ids)
@@ -3292,9 +3411,10 @@ def render_stock_character_section(storage: Storage) -> None:
         if record is None:
             continue
         data = record["data"]
+        # "nhan" (nhãn tính cách) vẫn cần cho cột (tùy chọn) "Số lần lịch
+        # sử có đặc tính tương tự" bên dưới — CHỈ ẩn cột hiển thị trực
+        # tiếp "Tính cách (Character)", không xóa dữ liệu gốc.
         nhan = data.get("nhan_tinh_cach")
-        nhan_hien_thi = CHARACTER_LABEL_DISPLAY.get(nhan, nhan)
-        emoji = CHARACTER_LABEL_EMOJI.get(nhan, "")
 
         gia_snap = indicator_map.get(sym)
         gia_eod = gia_snap["data"].get("close") if gia_snap else None
@@ -3323,39 +3443,54 @@ def render_stock_character_section(storage: Storage) -> None:
                 nguon_gia = "🕒 Đóng cửa"
 
         lt_record = long_term_map.get(sym)
+        # "Giai đoạn"/"Bộ chỉ số LN>5%" (2 cột hiển thị, KHÔNG đổi) vẫn
+        # dùng phương pháp Ensemble batch như trước. "Bộ chỉ số đủ điều
+        # kiện vào lệnh"/"Khuyến nghị" (bên dưới) chuyển sang lọc theo
+        # GIAI ĐOẠN REALTIME (PP1) — nên đọc kết quả backtest từ
+        # "regime_fast" (bucket theo ĐÚNG phương pháp PP1) để nhất quán,
+        # không trộn kết quả bucket theo Ensemble với giai đoạn phân loại
+        # theo PP1.
         pp_data = (lt_record["data"].get("regime_ensemble") or {}) if lt_record else {}
+        pp_data_fast = (lt_record["data"].get("regime_fast") or {}) if lt_record else {}
         giai_doan_hien_tai = pp_data.get("current")
+        giai_doan_realtime_key = chi_bao_rt.get("giai_doan_realtime") if co_gia_realtime else None
 
-        do_lech_ma20, muc_canh_bao_ngan_han = _tinh_do_lech_va_canh_bao_ma20(gia_gan_nhat, ma20_gan_nhat)
+        # Chỉ dùng "Độ lệch MA20" — "Mức cảnh báo (ngắn hạn)" đã ẨN khỏi
+        # bảng theo yêu cầu (27/08/2026), không cần lấy giá trị thứ 2.
+        do_lech_ma20, _ = _tinh_do_lech_va_canh_bao_ma20(gia_gan_nhat, ma20_gan_nhat)
 
         row = {
             "Mã": sym,
             "Giá": gia_gan_nhat,
             "Giai đoạn": GIAI_DOAN_DAI_HAN_OPTIONS.get(giai_doan_hien_tai, "—"),
-            "Tính cách (Character)": f"{emoji} {nhan_hien_thi}",
             "Bộ chỉ số LN>5% (giai đoạn hiện tại)": _bo_chi_so_tot_theo_nguong(pp_data, giai_doan_hien_tai),
             "Độ lệch MA20": do_lech_ma20,
-            "Mức cảnh báo (ngắn hạn)": muc_canh_bao_ngan_han,
             "% Volume/MA20 Volume": _tinh_ty_le_volume(volume_gan_nhat, volume_ma20_gan_nhat),
-            "Điểm dứt khoát (Character Score)": data.get("character_score"),
-            "Điểm lình xình (Choppiness Score)": data.get("choppiness_score"),
-            "Cảnh báo (Warning)": _dich_canh_bao(data.get("canh_bao", [])),
-            "Độ tin cậy thấp (Low Confidence)": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
         }
         if not vuot_qua_gioi_han_realtime:
             row["Nguồn giá"] = nguon_gia
+            if co_gia_realtime:
+                row["Giai đoạn realtime"] = GIAI_DOAN_DAI_HAN_OPTIONS.get(
+                    giai_doan_realtime_key, "Chưa đủ 200 phiên lịch sử",
+                )
+            else:
+                row["Giai đoạn realtime"] = "—"
 
         if hien_cot_gan_dat and not vuot_qua_gioi_han_realtime:
             if chi_bao_rt is None or chi_bao_rt.get("loi"):
                 loi_hien_thi = (chi_bao_rt or {}).get("loi", "Không lấy được dữ liệu.")
-                row["Gần đạt tiêu chí vào lệnh"] = f"⚠️ {loi_hien_thi}"
+                row["Bộ chỉ số đủ điều kiện vào lệnh"] = f"⚠️ {loi_hien_thi}"
+                row["Khuyến nghị"] = "—"
             else:
                 # volume_ma20 GIỮ theo dữ liệu đã tính sẵn (trung bình CÁC
                 # PHIÊN TRƯỚC, không gồm hôm nay) — chỉ "close"/"volume"/
                 # MA/EMA/RSI/BB mới thay bằng giá REALTIME (xem hàm tính).
                 chi_bao_hien_tai = {**chi_bao_rt, "volume_ma20": volume_ma20_gan_nhat}
-                row["Gần đạt tiêu chí vào lệnh"] = _tim_bo_chi_so_gan_dat(
-                    pp_data, giai_doan_hien_tai, chi_bao_hien_tai,
+                row["Bộ chỉ số đủ điều kiện vào lệnh"] = _tim_bo_chi_so_gan_dat(
+                    pp_data_fast, giai_doan_realtime_key, chi_bao_hien_tai,
+                )
+                row["Khuyến nghị"] = _tinh_khuyen_nghi(
+                    pp_data_fast, giai_doan_realtime_key, chi_bao_rt.get("tin_hieu_giao_dich") or {},
                 )
 
         if hien_cot_lich_su and nhan:
@@ -3382,21 +3517,17 @@ def render_stock_character_section(storage: Storage) -> None:
         column_config={
             # width="small" cho MỌI cột có nội dung ngắn/số — tránh
             # st.dataframe(width='stretch') kéo giãn các cột này ra thành
-            # khoảng trắng thừa. CHỈ 3 cột có nội dung thật sự dài (câu mô
+            # khoảng trắng thừa. CHỈ 2 cột có nội dung thật sự dài (câu mô
             # tả/liệt kê nhiều bộ chỉ số) được để tự do chiếm phần rộng
-            # còn lại: "Tính cách", "Bộ chỉ số LN>5%", "Gần đạt tiêu chí
-            # vào lệnh".
+            # còn lại: "Bộ chỉ số LN>5%", "Bộ chỉ số đủ điều kiện vào lệnh".
             "Mã": st.column_config.TextColumn(width="small"),
             "Giá": st.column_config.NumberColumn(format="%.2f", width="small"),
             "Nguồn giá": st.column_config.TextColumn(width="small"),
             "Giai đoạn": st.column_config.TextColumn(width="small"),
+            "Giai đoạn realtime": st.column_config.TextColumn(width="small"),
             "Độ lệch MA20": st.column_config.TextColumn(width="small"),
-            "Mức cảnh báo (ngắn hạn)": st.column_config.TextColumn(width="small"),
             "% Volume/MA20 Volume": st.column_config.TextColumn(width="small"),
-            "Điểm dứt khoát (Character Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
-            "Điểm lình xình (Choppiness Score)": st.column_config.NumberColumn(format="%.2f", width="small"),
-            "Cảnh báo (Warning)": st.column_config.TextColumn(width="small"),
-            "Độ tin cậy thấp (Low Confidence)": st.column_config.TextColumn(width="small"),
+            "Khuyến nghị": st.column_config.TextColumn(width="small"),
             "Số lần lịch sử có đặc tính tương tự (trong ~1 năm)": st.column_config.TextColumn(width="small"),
         },
     )
