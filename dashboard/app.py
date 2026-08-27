@@ -3130,17 +3130,27 @@ def render_stock_character_section(storage: Storage) -> None:
     """
     st.subheader("🎭 Tính cách giao dịch từng mã (Trading Character)")
     st.caption(
+        "Cột \"Giá\" TỰ ĐỘNG chuyển sang giá REALTIME (gọi trực tiếp vnstock, "
+        f"KHÔNG qua batch) khi danh sách đang hiện ≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} "
+        "mã — xem cột \"Nguồn giá\" để biết mã nào đang dùng giá realtime "
+        "(🔴), giá đóng cửa phiên gần nhất (🕒, khi danh sách dài hơn), hay "
+        "lấy realtime bị lỗi riêng lẻ (⚠️, tự rơi về giá đóng cửa). \"Độ lệch "
+        "MA20\" và \"% Volume/MA20 Volume\" cũng tự động dùng CÙNG nguồn giá "
+        "với cột \"Giá\" để nhất quán trên cùng 1 dòng."
+    )
+    st.caption(
         "⚠️ Đây là mô tả CÁCH GIÁ ĐÃ VẬN ĐỘNG trong quá khứ của mã (dựa trên "
         "percentile so với chính lịch sử của mã đó) — KHÔNG phải khuyến nghị "
         "mua/bán hay dự báo xu hướng tương lai, chỉ dùng để điều chỉnh độ tin "
         "cậy tín hiệu Mua/Bán và phân bổ vốn. Cột \"Giai đoạn\" và \"Bộ chỉ số "
         "LN>5%\" lấy từ mục 🧮 Cổ phiếu dài hạn (phương pháp Ensemble 3 phương "
         "pháp) — xem mục đó để có bảng đầy đủ cả 3 giai đoạn × 2 phương pháp. "
-        "Cột \"Độ lệch MA20\"/\"Mức cảnh báo\" tính trực tiếp từ giá đóng cửa "
-        "gần nhất so với MA20 (<10% Bình thường, 10-15% Nguy cơ điều chỉnh, "
-        ">15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn hạn cũ). "
-        "Cột \"% Volume/MA20 Volume\" = Volume phiên gần nhất ÷ Volume MA20 × "
-        "100 — trên 100% nghĩa là khối lượng hôm nay cao hơn trung bình 20 "
+        "Cột \"Độ lệch MA20\"/\"Mức cảnh báo\" tính từ giá ở cột \"Giá\" (xem "
+        "\"Nguồn giá\") so với MA20 (<10% Bình thường, 10-15% Nguy cơ điều "
+        "chỉnh, >15% Nguy cơ cao — cùng ngưỡng đã dùng ở mục Tiêu chí ngắn "
+        "hạn cũ). Cột \"% Volume/MA20 Volume\" = Volume (cùng nguồn với cột "
+        "\"Giá\") ÷ Volume MA20 × 100 — trên 100% nghĩa là khối lượng hiện "
+        "cao hơn trung bình 20 "
         "phiên; từ 150% trở lên được hệ thống coi là đột biến volume. Cột (tùy "
         "chọn) \"Gần đạt tiêu chí vào lệnh\" dùng giá REALTIME (gọi trực tiếp "
         "vnstock ngay lúc bật, KHÔNG phải giá đã lưu) để kiểm tra so với điều "
@@ -3201,32 +3211,43 @@ def render_stock_character_section(storage: Storage) -> None:
         )
 
     hien_cot_gan_dat = st.checkbox(
-        "🔔 Tính thêm cột \"Gần đạt tiêu chí vào lệnh\" — dùng giá REALTIME "
-        "(gọi trực tiếp vnstock cho TỪNG mã ngay lúc bấm, không phải giá đã "
-        f"lưu) nên CHỈ chạy được khi danh sách đã thu hẹp "
-        f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã",
+        "🔔 Tính thêm cột \"Gần đạt tiêu chí vào lệnh\" (dùng CHUNG giá "
+        "Realtime với cột \"Giá\" bên dưới nếu danh sách đủ nhỏ)",
         key="stock_character_show_gan_dat",
     )
-    gan_dat_vuot_qua_gioi_han = hien_cot_gan_dat and len(symbol_ids) > NGUONG_TOI_DA_MA_GAN_DAT_REALTIME
-    if gan_dat_vuot_qua_gioi_han:
-        st.error(
-            f"Đang hiện {len(symbol_ids)} mã — cột \"Gần đạt\" dùng giá REALTIME "
-            f"(1 lệnh gọi API riêng/mã) nên CHỈ chạy được khi danh sách "
-            f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã, để tránh vượt giới hạn tốc "
-            "độ gọi API của vnstock. Hãy thu hẹp lại bằng ô chọn/tìm mã ở trên."
+
+    # Danh sách đã đủ nhỏ (≤NGUONG_TOI_DA_MA_GAN_DAT_REALTIME mã) -> TỰ ĐỘNG
+    # lấy giá REALTIME cho cột "Giá" (không cần bật gì thêm) — dùng CHUNG 1
+    # lượt gọi API với cột "Gần đạt tiêu chí vào lệnh" bên dưới (nếu bật),
+    # tránh gọi realtime 2 lần cho cùng 1 mã.
+    vuot_qua_gioi_han_realtime = len(symbol_ids) > NGUONG_TOI_DA_MA_GAN_DAT_REALTIME
+    if vuot_qua_gioi_han_realtime:
+        st.caption(
+            f"🕒 Đang hiện {len(symbol_ids)} mã (>{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME}) — "
+            "cột \"Giá\" hiển thị giá ĐÓNG CỬA phiên gần nhất. Thu hẹp danh sách "
+            f"còn ≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã (ô chọn/tìm mã ở trên) để "
+            "tự động chuyển sang giá REALTIME."
         )
+        if hien_cot_gan_dat:
+            st.error(
+                f"Cột \"Gần đạt\" dùng giá REALTIME (1 lệnh gọi API riêng/mã) nên "
+                f"CHỈ chạy được khi danh sách ≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã, "
+                "để tránh vượt giới hạn tốc độ gọi API của vnstock."
+            )
 
     character_map = storage.get_latest_many("stock_character", symbol_ids)
     # Giá gần nhất: lấy từ indicator_snapshot (đã tính sẵn cho MỌI mã, kể
     # cả mã quét qua run_full_market.py — khác với realtime_price chỉ có
     # ở mã chạy qua main.py, không dùng chung khi quét toàn thị trường).
+    # Đây là giá DỰ PHÒNG khi danh sách quá dài để lấy realtime, hoặc khi
+    # lấy realtime thất bại riêng cho 1 mã (xem gan_dat_map bên dưới).
     indicator_map = storage.get_latest_many("indicator_snapshot", symbol_ids)
     # Giai đoạn hiện tại + bộ chỉ số tốt: lấy từ báo cáo "Cổ phiếu dài hạn"
     # (long_term_screener_report), dùng phương pháp Ensemble 3 phương pháp
     # (đáng tin hơn PP1 EMA200 đơn giản — xem 🧮 Cổ phiếu dài hạn).
     long_term_map = storage.get_latest_many("long_term_screener_report", symbol_ids)
     gan_dat_map: dict[str, dict] = {}
-    if hien_cot_gan_dat and not gan_dat_vuot_qua_gioi_han:
+    if not vuot_qua_gioi_han_realtime:
         gan_dat_map = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage, tuple(symbol_ids))
 
     rows = []
@@ -3240,10 +3261,30 @@ def render_stock_character_section(storage: Storage) -> None:
         emoji = CHARACTER_LABEL_EMOJI.get(nhan, "")
 
         gia_snap = indicator_map.get(sym)
-        gia_gan_nhat = gia_snap["data"].get("close") if gia_snap else None
-        ma20_gan_nhat = gia_snap["data"].get("ma20") if gia_snap else None
-        volume_gan_nhat = gia_snap["data"].get("volume") if gia_snap else None
+        gia_eod = gia_snap["data"].get("close") if gia_snap else None
+        ma20_eod = gia_snap["data"].get("ma20") if gia_snap else None
+        volume_eod = gia_snap["data"].get("volume") if gia_snap else None
         volume_ma20_gan_nhat = gia_snap["data"].get("volume_ma_20") if gia_snap else None
+
+        # Danh sách đủ nhỏ -> ƯU TIÊN giá/MA20/volume REALTIME (đã tính lại
+        # bằng cách thay phiên gần nhất bằng giá tức thời — xem hàm
+        # `_tinh_chi_bao_gan_dat_theo_realtime_cached`); mã nào lấy realtime
+        # lỗi riêng lẻ thì rơi về giá đã lưu (EOD), không làm hỏng cả bảng.
+        chi_bao_rt = gan_dat_map.get(sym) if not vuot_qua_gioi_han_realtime else None
+        co_gia_realtime = bool(chi_bao_rt) and not chi_bao_rt.get("loi")
+        if co_gia_realtime:
+            gia_gan_nhat = chi_bao_rt["close"]
+            ma20_gan_nhat = chi_bao_rt.get("ma20")
+            volume_gan_nhat = chi_bao_rt.get("volume")
+            nguon_gia = "🔴 Realtime"
+        else:
+            gia_gan_nhat = gia_eod
+            ma20_gan_nhat = ma20_eod
+            volume_gan_nhat = volume_eod
+            if chi_bao_rt and chi_bao_rt.get("loi"):
+                nguon_gia = "⚠️ Lỗi Realtime (dùng đóng cửa)"
+            else:
+                nguon_gia = "🕒 Đóng cửa"
 
         lt_record = long_term_map.get(sym)
         pp_data = (lt_record["data"].get("regime_ensemble") or {}) if lt_record else {}
@@ -3265,11 +3306,13 @@ def render_stock_character_section(storage: Storage) -> None:
             "Cảnh báo (Warning)": _dich_canh_bao(data.get("canh_bao", [])),
             "Độ tin cậy thấp (Low Confidence)": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
         }
+        if not vuot_qua_gioi_han_realtime:
+            row["Nguồn giá"] = nguon_gia
 
-        if hien_cot_gan_dat and not gan_dat_vuot_qua_gioi_han:
-            chi_bao_rt = gan_dat_map.get(sym) or {"loi": "Không lấy được dữ liệu."}
-            if chi_bao_rt.get("loi"):
-                row["Gần đạt tiêu chí vào lệnh"] = f"⚠️ {chi_bao_rt['loi']}"
+        if hien_cot_gan_dat and not vuot_qua_gioi_han_realtime:
+            if chi_bao_rt is None or chi_bao_rt.get("loi"):
+                loi_hien_thi = (chi_bao_rt or {}).get("loi", "Không lấy được dữ liệu.")
+                row["Gần đạt tiêu chí vào lệnh"] = f"⚠️ {loi_hien_thi}"
             else:
                 # volume_ma20 GIỮ theo dữ liệu đã tính sẵn (trung bình CÁC
                 # PHIÊN TRƯỚC, không gồm hôm nay) — chỉ "close"/"volume"/
@@ -3309,6 +3352,7 @@ def render_stock_character_section(storage: Storage) -> None:
             # vào lệnh".
             "Mã": st.column_config.TextColumn(width="small"),
             "Giá": st.column_config.NumberColumn(format="%.2f", width="small"),
+            "Nguồn giá": st.column_config.TextColumn(width="small"),
             "Giai đoạn": st.column_config.TextColumn(width="small"),
             "Độ lệch MA20": st.column_config.TextColumn(width="small"),
             "Mức cảnh báo (ngắn hạn)": st.column_config.TextColumn(width="small"),
@@ -4461,7 +4505,24 @@ def _tao_data_collector_cho_tra_cuu_realtime():
     thay vì tự lặp lại logic chọn adapter. Import trễ (bên trong hàm) để
     KHÔNG kéo theo toàn bộ phụ thuộc của `main.py` vào mỗi lần tải trang
     dashboard — chỉ cần khi người dùng thực sự bấm nút tra cứu realtime.
+
+    CHẶN GỌI MẠNG THẬT TRONG TEST qua biến môi trường `PM_CK_SKIP_REALTIME`
+    (đặt tự động cho MỌI test qua `tests/conftest.py`, giống hệt cơ chế
+    `PM_CK_SKIP_LOGIN`) — BẮT BUỘC dùng biến môi trường (không phải
+    monkeypatch trực tiếp hàm này) vì `streamlit.testing.v1.AppTest` chạy
+    script trong một namespace/tiến trình con RIÊNG, không dùng lại
+    `sys.modules["dashboard.app"]` của tiến trình pytest — patch hàm qua
+    `monkeypatch.setattr(dashboard.app, ...)` ÂM THẦM KHÔNG có tác dụng
+    với `AppTest` (đã xác nhận thực tế 27/08/2026: mock không hề được gọi
+    nhưng dashboard vẫn gọi API vnstock THẬT). `os.environ` thì CÓ tác
+    dụng vì được đọc lại tại thời điểm chạy, dùng chung giữa mọi tiến
+    trình con.
     """
+    if os.environ.get("PM_CK_SKIP_REALTIME") == "1":
+        raise RuntimeError(
+            "Đã tắt lấy giá Realtime trong môi trường test (PM_CK_SKIP_REALTIME=1)."
+        )
+
     from main import build_data_collector, load_config
 
     config_path = os.path.join(os.path.dirname(__file__), "..", "config", "config.yaml")

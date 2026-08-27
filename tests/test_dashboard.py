@@ -38,6 +38,12 @@ def isolated_db_path(tmp_path, monkeypatch):
     db_path = str(tmp_path / "test_pm_ck.db")
     monkeypatch.setenv("PM_CK_DB_PATH", db_path)
     st.cache_resource.clear()  # đảm bảo không dùng lại kết nối đã cache từ test trước
+    # st.cache_data DÙNG CHUNG 1 bộ nhớ đệm ở CẤP TIẾN TRÌNH (không tự tách
+    # biệt theo test) — nếu không xóa, 1 test gọi hàm cache (VD
+    # _tinh_chi_bao_gan_dat_theo_realtime_cached, khóa cache CHỈ theo danh
+    # sách mã, không theo nội dung storage) có thể ăn nhầm kết quả CŨ từ
+    # test chạy trước đó dùng CÙNG mã nhưng khác dữ liệu/mock.
+    st.cache_data.clear()
     return db_path
 
 
@@ -45,6 +51,13 @@ def isolated_db_path(tmp_path, monkeypatch):
 def seeded_storage(isolated_db_path):
     """Tạo sẵn dữ liệu mẫu vào database TẠM (isolated_db_path), để AppTest
     chạy dashboard đọc được dữ liệu này mà không đụng tới database thật.
+
+    Mục "🎭 Tính cách giao dịch từng mã" TỰ ĐỘNG gọi giá REALTIME khi danh
+    sách đủ nhỏ (xem NGUONG_TOI_DA_MA_GAN_DAT_REALTIME trong
+    dashboard/app.py) — việc chặn gọi mạng thật đã có sẵn qua biến môi
+    trường `PM_CK_SKIP_REALTIME=1` (autouse fixture trong
+    `tests/conftest.py`, xem ghi chú ở đó về lý do PHẢI dùng biến môi
+    trường thay vì monkeypatch trực tiếp hàm khi test qua AppTest).
     """
     storage = Storage(db_path=isolated_db_path)
 
@@ -61,6 +74,16 @@ def seeded_storage(isolated_db_path):
         "close": 32.5, "ma20": 31.0, "ema50": 30.0, "ema100": 28.0,
         "ema200": 27.0, "volume_ma_15": 1_200_000, "volume_ma_20": 1_100_000,
         "price_above_ema200": True,
+    })
+
+    # Mục "🎭 Tính cách giao dịch từng mã" đọc category riêng
+    # "stock_character" (KHÁC "indicator_snapshot") để xác định danh sách
+    # mã cần hiển thị — thiếu seed này thì toàn bộ thân hàm
+    # render_stock_character_section() bị bỏ qua (thoát sớm ở nhánh
+    # "Chưa có dữ liệu"), không test được nhánh chính của mục.
+    storage.save("stock_character", "HPG", {
+        "nhan_tinh_cach": "TRUNG_TINH", "character_score": 0.4,
+        "choppiness_score": 55.0, "canh_bao": [], "do_tin_cay_thap": False,
     })
 
     # Cần thiết để mục "Giai đoạn thị trường" không thoát sớm ở bước lấy
@@ -183,6 +206,25 @@ class TestDashboardSmoke:
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=30)
         assert not at.exception
+
+        # Mục "🎭 Tính cách giao dịch từng mã": danh sách chỉ có 1 mã (HPG,
+        # seed ở seeded_storage) -> TỰ ĐỘNG thử lấy giá Realtime (không cần
+        # bật checkbox nào). Fixture chặn API thật -> phải rơi về giá đóng
+        # cửa (EOD) một cách AN TOÀN, không throw exception, và cột "Nguồn
+        # giá" phải phản ánh đúng trạng thái lỗi/fallback này.
+        for df in at.dataframe:
+            try:
+                cols = list(df.value.columns)
+            except Exception:  # noqa: BLE001
+                continue
+            if "Nguồn giá" in cols and "Mã" in cols:
+                hang_hpg = df.value[df.value["Mã"] == "HPG"]
+                assert not hang_hpg.empty
+                assert hang_hpg.iloc[0]["Nguồn giá"] == "⚠️ Lỗi Realtime (dùng đóng cửa)"
+                assert hang_hpg.iloc[0]["Giá"] == pytest.approx(32.5)  # rơi về EOD
+                break
+        else:
+            pytest.fail("Không tìm thấy bảng \"Tính cách giao dịch\" có cột \"Nguồn giá\".")
 
     def test_single_section_mode_shows_only_selected_section(self, seeded_storage):
         """Chọn chế độ 'Chỉ xem 1 mục' -> chỉ đúng 1 mục được hiển thị,
