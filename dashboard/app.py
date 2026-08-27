@@ -2836,6 +2836,42 @@ def _tinh_ty_le_volume(volume: Optional[float], volume_ma20: Optional[float]) ->
     return f"{volume / volume_ma20 * 100:.0f}%"
 
 
+def _dinh_dang_thoi_gian_ngan_gon(raw_ts, now: Optional[pd.Timestamp] = None) -> str:
+    """Định dạng 1 timestamp đã lưu (từ `record["timestamp"]` do
+    `storage.save()` tự ghi) thành chuỗi NGẮN GỌN cho Ô TRONG BẢNG nhiều
+    dòng — VD "24/08/26 09:15 (3 ngày trước)". Khác với bản đầy đủ dùng ở
+    mục "Giai đoạn thị trường" (1 dòng caption riêng biệt, không phải ô
+    bảng, nên có thể dài hơn).
+
+    LƯU Ý GIỜ: cùng cách hiệu chỉnh đã dùng ở nơi khác trong dashboard —
+    nếu ra số phút ÂM (timestamp "ở tương lai" so với `now`), rất có thể
+    do script ghi bằng giờ VN (UTC+7) trong khi `now` đang tính theo UTC
+    (VD deploy trên Streamlit Cloud) -> tự cộng thêm 7 giờ.
+
+    `now` cho phép truyền vào để TEST được (tính tay), mặc định dùng thời
+    điểm hiện tại thật.
+    """
+    if not raw_ts:
+        return "—"
+    try:
+        ts = pd.Timestamp(raw_ts)
+        moc_hien_tai = now if now is not None else pd.Timestamp.now(tz=None)
+        so_phut_truoc = int((moc_hien_tai - ts).total_seconds() // 60)
+        if so_phut_truoc < 0:
+            so_phut_truoc += 7 * 60
+        so_phut_truoc = max(so_phut_truoc, 0)
+
+        if so_phut_truoc < 60:
+            phan_truoc = f"{so_phut_truoc} phút trước"
+        elif so_phut_truoc < 60 * 24:
+            phan_truoc = f"{so_phut_truoc // 60} giờ trước"
+        else:
+            phan_truoc = f"{so_phut_truoc // (60 * 24)} ngày trước"
+        return f"{ts.strftime('%d/%m/%y %H:%M')} ({phan_truoc})"
+    except Exception:  # noqa: BLE001
+        return str(raw_ts)
+
+
 # ==============================================================================
 # "GẦN ĐẠT tiêu chí vào lệnh" — kiểm tra giá/chỉ báo HIỆN TẠI đã/gần đạt
 # điều kiện MUA của từng bộ chỉ số (trong số các bộ đang LN>5% ở giai đoạn
@@ -3484,6 +3520,13 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
         "phí 0,15%/lượt. Nhiều giai đoạn (đặc biệt Sideway/Downtrend) có thể chỉ có "
         "rất ít lệnh trong lịch sử — KHÔNG nên xem là quy luật đã kiểm chứng."
     )
+    st.caption(
+        "🕒 TOÀN BỘ dữ liệu ở mục này tính từ lịch sử giá ĐÃ LƯU, KHÔNG dùng giá "
+        "Realtime — chỉ tính lại khi chạy `main.py`/`run_full_market.py` (mã nào "
+        "đã có kết quả sẽ bị BỎ QUA ở lần chạy sau, trừ khi chạy lại với "
+        "`force_recompute=True`), nên có thể đã cũ. Xem cột \"Cập nhật lần cuối\" "
+        "để biết dữ liệu từng mã tính từ khi nào."
+    )
 
     symbols = storage.query_all_keys("long_term_screener_report")
     if not symbols:
@@ -3532,6 +3575,7 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
             "Mã": ma,
             "Ngành": _nhan_nganh(data.get("sector") or ""),
             "Giai đoạn hiện tại": GIAI_DOAN_DAI_HAN_OPTIONS.get(giai_doan_hien_tai, "Chưa đủ dữ liệu"),
+            "Cập nhật lần cuối": _dinh_dang_thoi_gian_ngan_gon(record.get("timestamp")),
         }
         for ten_day_du, ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.items():
             stats = (ket_qua.get(ten_day_du) or {}).get(giai_doan_chon) or {}
@@ -3556,7 +3600,7 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
         .drop(columns=["_best_return"]).reset_index(drop=True)
     )
 
-    column_config = {}
+    column_config = {"Cập nhật lần cuối": st.column_config.TextColumn(width="small")}
     for ten_ngan in TEN_NGAN_BO_CHI_SO_DAI_HAN.values():
         column_config[f"{ten_ngan} — Lệnh"] = st.column_config.NumberColumn(format="%d")
         column_config[f"{ten_ngan} — LN %"] = st.column_config.NumberColumn(format="%.2f%%")

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
+import pandas as pd
 import pytest
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -647,6 +648,43 @@ class TestTinhTyLeVolume:
         from dashboard.app import _tinh_ty_le_volume
         # volume = 2,500,000, MA20 = 1,000,000 -> 250%
         assert _tinh_ty_le_volume(2_500_000.0, 1_000_000.0) == "250%"
+
+
+class TestDinhDangThoiGianNganGon:
+    def test_khong_co_timestamp_tra_ve_gach_ngang(self):
+        from dashboard.app import _dinh_dang_thoi_gian_ngan_gon
+        assert _dinh_dang_thoi_gian_ngan_gon(None) == "—"
+        assert _dinh_dang_thoi_gian_ngan_gon("") == "—"
+
+    def test_vai_phut_truoc(self):
+        from dashboard.app import _dinh_dang_thoi_gian_ngan_gon
+        now = pd.Timestamp("2026-08-27 09:30:00")
+        ts = pd.Timestamp("2026-08-27 09:00:00")  # 30 phút trước
+        assert _dinh_dang_thoi_gian_ngan_gon(ts, now=now) == "27/08/26 09:00 (30 phút trước)"
+
+    def test_vai_gio_truoc(self):
+        from dashboard.app import _dinh_dang_thoi_gian_ngan_gon
+        now = pd.Timestamp("2026-08-27 15:00:00")
+        ts = pd.Timestamp("2026-08-27 09:00:00")  # 6 gio truoc = 360 phut
+        assert _dinh_dang_thoi_gian_ngan_gon(ts, now=now) == "27/08/26 09:00 (6 giờ trước)"
+
+    def test_vai_ngay_truoc(self):
+        from dashboard.app import _dinh_dang_thoi_gian_ngan_gon
+        now = pd.Timestamp("2026-08-27 09:00:00")
+        ts = pd.Timestamp("2026-08-24 09:00:00")  # dung 3 ngay truoc
+        assert _dinh_dang_thoi_gian_ngan_gon(ts, now=now) == "24/08/26 09:00 (3 ngày trước)"
+
+    def test_timestamp_tuong_lai_tu_hieu_chinh_gio_vn(self):
+        from dashboard.app import _dinh_dang_thoi_gian_ngan_gon
+        # ts "muon hon" now 2 tieng (VD script ghi gio VN, now tinh theo UTC)
+        # -> so_phut_truoc am -> tu dong +7*60 phut -> con 5 tieng truoc
+        now = pd.Timestamp("2026-08-27 09:00:00")
+        ts = pd.Timestamp("2026-08-27 11:00:00")
+        assert _dinh_dang_thoi_gian_ngan_gon(ts, now=now) == "27/08/26 11:00 (5 giờ trước)"
+
+    def test_gia_tri_khong_hop_le_roi_ve_chuoi_goc(self):
+        from dashboard.app import _dinh_dang_thoi_gian_ngan_gon
+        assert _dinh_dang_thoi_gian_ngan_gon("khong-phai-ngay-thang") == "khong-phai-ngay-thang"
 
     def test_volume_thap_hon_trung_binh(self):
         from dashboard.app import _tinh_ty_le_volume
