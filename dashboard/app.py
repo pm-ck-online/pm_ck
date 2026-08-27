@@ -3012,45 +3012,82 @@ def _tim_bo_chi_so_gan_dat(
     return "; ".join(text for _, text in ung_vien)
 
 
-@st.cache_data(ttl=1800, show_spinner="Đang tính RSI/Bollinger Bands hiện tại cho các mã...")
-def _tinh_rsi_bb_hien_tai_cached(_storage: Storage, danh_sach_ma: tuple[str, ...]) -> dict[str, dict]:
-    """Tính RSI14 + Bollinger Bands(20,2) TẠI PHIÊN GẦN NHẤT cho từng mã
-    — 2 chỉ báo này KHÔNG có sẵn trong `indicator_snapshot` (vốn chỉ có
-    MA20/EMA/volume, xem `core.indicators.get_indicator_snapshot`), nên
-    phải tính lại từ `ohlcv_history`. Lấy OHLCV theo TỪNG LÔ NHỎ (30 mã/
-    lô, tránh timeout Supabase khi danh sách mã lớn — cùng bài học đã áp
-    dụng ở `main.run_market_regime_history_step`). Cache 30 phút vì đây
-    là bước khá nặng nếu danh sách mã lớn.
-    """
-    from core.indicators import calculate_bollinger_bands, calculate_rsi
+# Giới hạn số mã tối đa cho cột "Gần đạt tiêu chí vào lệnh" (dùng giá
+# REALTIME — 1 lệnh gọi API RIÊNG cho từng mã, khác hẳn các cột khác chỉ
+# đọc storage) — tránh vượt giới hạn tốc độ gọi API của vnstock (~60
+# request/phút), đặc biệt khi nhiều người cùng xem dashboard.
+NGUONG_TOI_DA_MA_GAN_DAT_REALTIME = 20
 
-    KICH_THUOC_LO = 30
-    ohlcv_map: dict[str, dict] = {}
-    for i in range(0, len(danh_sach_ma), KICH_THUOC_LO):
-        lo_ma = list(danh_sach_ma[i:i + KICH_THUOC_LO])
-        try:
-            ohlcv_map.update(_storage.get_latest_many("ohlcv_history", lo_ma))
-        except Exception:  # noqa: BLE001 — 1 lô lỗi không được làm hỏng cả bước này
-            continue
+
+@st.cache_data(ttl=60, show_spinner="Đang lấy giá Realtime để tính \"Gần đạt tiêu chí vào lệnh\"...")
+def _tinh_chi_bao_gan_dat_theo_realtime_cached(
+    _storage: Storage, danh_sach_ma: tuple[str, ...],
+) -> dict[str, dict]:
+    """Tính lại MA20/EMA50/EMA200/RSI14/Bollinger Bands(20,2) bằng cách
+    THAY giá đóng cửa phiên gần nhất trong lịch sử OHLCV đã lưu bằng giá
+    REALTIME (gọi trực tiếp vnstock qua `core.data_collector`, KHÔNG qua
+    batch/cache dài hạn) — đúng tinh thần cột "Gần đạt tiêu chí vào lệnh":
+    xét theo giá SÁT THỜI GIAN THỰC NHẤT, không phải giá đã lưu có thể trễ
+    tới 1 ngày làm việc (xem CLAUDE.md mục 4l).
+
+    TTL cache CHỈ 60 GIÂY (khác hẳn cache 30 phút của các mục khác trên
+    dashboard) — đủ để không gọi lại API mỗi khi trang rerun vì thao tác
+    KHÔNG liên quan (VD gõ ô tìm kiếm ở mục khác), nhưng vẫn đủ mới để
+    đúng nghĩa "realtime". CHỈ nên gọi khi danh sách mã đã thu hẹp — xem
+    `NGUONG_TOI_DA_MA_GAN_DAT_REALTIME`, mỗi mã tốn 1 lệnh gọi API riêng.
+
+    Trả về {mã: {"close", "ma20", "ema50", "ema200", "rsi14", "bb_upper",
+    "bb_lower", "volume", "gia_realtime_full_vnd", "da_khop_lenh"}}, hoặc
+    {mã: {"loi": "..."}} nếu lấy giá realtime/lịch sử thất bại cho mã đó
+    (1 mã lỗi không làm hỏng cả batch).
+    """
+    from core.indicators import calculate_bollinger_bands, calculate_ema, calculate_ma, calculate_rsi
+
+    def _gia_tri_cuoi(series: pd.Series) -> Optional[float]:
+        gia_tri = series.iloc[-1]
+        return float(gia_tri) if pd.notna(gia_tri) else None
+
+    try:
+        collector = _tao_data_collector_cho_tra_cuu_realtime()
+    except Exception as exc:  # noqa: BLE001
+        loi = f"Không khởi tạo được kết nối dữ liệu: {exc}"
+        return {ma: {"loi": loi} for ma in danh_sach_ma}
 
     ket_qua: dict[str, dict] = {}
-    for ma, record in ohlcv_map.items():
-        records = record["data"].get("records", [])
-        if len(records) < 20:
+    for ma in danh_sach_ma:
+        df_ma = _load_ohlcv_history_df(_storage, ma)
+        if df_ma is None or len(df_ma) < 20:
+            ket_qua[ma] = {"loi": "Chưa đủ lịch sử giá để tính chỉ báo."}
             continue
+
         try:
-            df_ma = pd.DataFrame(records)
-            df_ma["date"] = pd.to_datetime(df_ma["date"])
-            df_ma = df_ma.sort_values("date").reset_index(drop=True)
-            rsi = calculate_rsi(df_ma, 14)
-            bb_upper, _bb_mid, bb_lower = calculate_bollinger_bands(df_ma, 20, 2.0)
-            ket_qua[ma] = {
-                "rsi14": float(rsi.iloc[-1]) if pd.notna(rsi.iloc[-1]) else None,
-                "bb_upper": float(bb_upper.iloc[-1]) if pd.notna(bb_upper.iloc[-1]) else None,
-                "bb_lower": float(bb_lower.iloc[-1]) if pd.notna(bb_lower.iloc[-1]) else None,
-            }
-        except Exception:  # noqa: BLE001 — 1 mã lỗi không được làm hỏng cả bước này
+            gia_rt = collector.get_realtime_price(ma)
+        except Exception as exc:  # noqa: BLE001
+            ket_qua[ma] = {"loi": f"Lỗi lấy giá realtime: {exc}"}
             continue
+
+        # ĐƠN VỊ: giá realtime là NGUYÊN ĐỒNG (VD 20800), lịch sử OHLCV đã
+        # lưu ở đơn vị NGHÌN ĐỒNG (VD 20.8) — PHẢI quy đổi trước khi thay
+        # vào chuỗi, để MA/EMA/RSI/BB tính ra đúng đơn vị nhất quán với
+        # nhau (xem CLAUDE.md mục 4l).
+        gia_rt_nghin_dong = gia_rt["price"] / 1000.0
+
+        df_thay_the = df_ma.copy()
+        df_thay_the.loc[df_thay_the.index[-1], "close"] = gia_rt_nghin_dong
+
+        bb_upper, _bb_mid, bb_lower = calculate_bollinger_bands(df_thay_the, 20, 2.0)
+        ket_qua[ma] = {
+            "close": gia_rt_nghin_dong,
+            "ma20": _gia_tri_cuoi(calculate_ma(df_thay_the, 20)),
+            "ema50": _gia_tri_cuoi(calculate_ema(df_thay_the, 50)),
+            "ema200": _gia_tri_cuoi(calculate_ema(df_thay_the, 200)),
+            "rsi14": _gia_tri_cuoi(calculate_rsi(df_thay_the, 14)),
+            "bb_upper": _gia_tri_cuoi(bb_upper),
+            "bb_lower": _gia_tri_cuoi(bb_lower),
+            "volume": gia_rt.get("volume"),
+            "gia_realtime_full_vnd": gia_rt.get("price"),
+            "da_khop_lenh": gia_rt.get("da_khop_lenh"),
+        }
     return ket_qua
 
 
@@ -3105,11 +3142,15 @@ def render_stock_character_section(storage: Storage) -> None:
         "Cột \"% Volume/MA20 Volume\" = Volume phiên gần nhất ÷ Volume MA20 × "
         "100 — trên 100% nghĩa là khối lượng hôm nay cao hơn trung bình 20 "
         "phiên; từ 150% trở lên được hệ thống coi là đột biến volume. Cột (tùy "
-        "chọn) \"Gần đạt tiêu chí vào lệnh\" kiểm tra giá/RSI/volume HIỆN TẠI so "
-        "với điều kiện MUA của từng bộ chỉ số đang LN>5% ở giai đoạn hiện tại — "
-        "✅ = đã đạt (tính đến phiên gần nhất), 🔔 = gần đạt (giá/MA/EMA/BB cách "
-        "≤3%, RSI cách ≤5 điểm, hoặc volume đã ≥70% mức cần) — CHỈ để chuẩn bị "
-        "theo dõi, KHÔNG PHẢI tín hiệu mua ngay."
+        "chọn) \"Gần đạt tiêu chí vào lệnh\" dùng giá REALTIME (gọi trực tiếp "
+        "vnstock ngay lúc bật, KHÔNG phải giá đã lưu) để kiểm tra so với điều "
+        "kiện MUA của từng bộ chỉ số đang LN>5% ở giai đoạn hiện tại — MA20/"
+        "EMA50/EMA200/RSI14/Bollinger Bands đều được TÍNH LẠI bằng cách thay "
+        "giá đóng cửa phiên gần nhất bằng giá realtime. ✅ = đã đạt, 🔔 = gần "
+        "đạt (giá/MA/EMA/BB cách ≤3%, RSI cách ≤5 điểm, hoặc volume đã ≥70% "
+        f"mức cần) — CHỈ để chuẩn bị theo dõi, KHÔNG PHẢI tín hiệu mua ngay. "
+        f"Do tốn 1 lệnh gọi API/mã, CHỈ chạy được khi danh sách đã thu hẹp "
+        f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã."
     )
 
     all_symbol_ids = storage.query_all_keys("stock_character")
@@ -3160,15 +3201,19 @@ def render_stock_character_section(storage: Storage) -> None:
         )
 
     hien_cot_gan_dat = st.checkbox(
-        "🔔 Tính thêm cột \"Gần đạt tiêu chí vào lệnh\" (cần tính RSI/Bollinger "
-        "Bands hiện tại cho từng mã — có thể CHẬM ở lần tính đầu nếu bật cho nhiều mã, "
-        "các lần sau nhanh hơn nhờ cache 30 phút)",
+        "🔔 Tính thêm cột \"Gần đạt tiêu chí vào lệnh\" — dùng giá REALTIME "
+        "(gọi trực tiếp vnstock cho TỪNG mã ngay lúc bấm, không phải giá đã "
+        f"lưu) nên CHỈ chạy được khi danh sách đã thu hẹp "
+        f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã",
         key="stock_character_show_gan_dat",
     )
-    if hien_cot_gan_dat and len(symbol_ids) > 30:
-        st.warning(
-            f"Đang hiện {len(symbol_ids)} mã — tính cột \"Gần đạt\" cho quá nhiều mã "
-            "cùng lúc có thể CHẬM ở lần đầu. Nên thu hẹp lại bằng ô chọn mã ở trên trước."
+    gan_dat_vuot_qua_gioi_han = hien_cot_gan_dat and len(symbol_ids) > NGUONG_TOI_DA_MA_GAN_DAT_REALTIME
+    if gan_dat_vuot_qua_gioi_han:
+        st.error(
+            f"Đang hiện {len(symbol_ids)} mã — cột \"Gần đạt\" dùng giá REALTIME "
+            f"(1 lệnh gọi API riêng/mã) nên CHỈ chạy được khi danh sách "
+            f"≤{NGUONG_TOI_DA_MA_GAN_DAT_REALTIME} mã, để tránh vượt giới hạn tốc "
+            "độ gọi API của vnstock. Hãy thu hẹp lại bằng ô chọn/tìm mã ở trên."
         )
 
     character_map = storage.get_latest_many("stock_character", symbol_ids)
@@ -3180,9 +3225,9 @@ def render_stock_character_section(storage: Storage) -> None:
     # (long_term_screener_report), dùng phương pháp Ensemble 3 phương pháp
     # (đáng tin hơn PP1 EMA200 đơn giản — xem 🧮 Cổ phiếu dài hạn).
     long_term_map = storage.get_latest_many("long_term_screener_report", symbol_ids)
-    rsi_bb_map: dict[str, dict] = {}
-    if hien_cot_gan_dat:
-        rsi_bb_map = _tinh_rsi_bb_hien_tai_cached(storage, tuple(symbol_ids))
+    gan_dat_map: dict[str, dict] = {}
+    if hien_cot_gan_dat and not gan_dat_vuot_qua_gioi_han:
+        gan_dat_map = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage, tuple(symbol_ids))
 
     rows = []
     for sym in symbol_ids:
@@ -3221,17 +3266,18 @@ def render_stock_character_section(storage: Storage) -> None:
             "Độ tin cậy thấp (Low Confidence)": "⚠️ Có" if data.get("do_tin_cay_thap") else "",
         }
 
-        if hien_cot_gan_dat:
-            chi_bao_hien_tai = {
-                "close": gia_gan_nhat, "ma20": ma20_gan_nhat,
-                "ema50": gia_snap["data"].get("ema50") if gia_snap else None,
-                "ema200": gia_snap["data"].get("ema200") if gia_snap else None,
-                "volume": volume_gan_nhat, "volume_ma20": volume_ma20_gan_nhat,
-                **rsi_bb_map.get(sym, {}),
-            }
-            row["Gần đạt tiêu chí vào lệnh"] = _tim_bo_chi_so_gan_dat(
-                pp_data, giai_doan_hien_tai, chi_bao_hien_tai,
-            )
+        if hien_cot_gan_dat and not gan_dat_vuot_qua_gioi_han:
+            chi_bao_rt = gan_dat_map.get(sym) or {"loi": "Không lấy được dữ liệu."}
+            if chi_bao_rt.get("loi"):
+                row["Gần đạt tiêu chí vào lệnh"] = f"⚠️ {chi_bao_rt['loi']}"
+            else:
+                # volume_ma20 GIỮ theo dữ liệu đã tính sẵn (trung bình CÁC
+                # PHIÊN TRƯỚC, không gồm hôm nay) — chỉ "close"/"volume"/
+                # MA/EMA/RSI/BB mới thay bằng giá REALTIME (xem hàm tính).
+                chi_bao_hien_tai = {**chi_bao_rt, "volume_ma20": volume_ma20_gan_nhat}
+                row["Gần đạt tiêu chí vào lệnh"] = _tim_bo_chi_so_gan_dat(
+                    pp_data, giai_doan_hien_tai, chi_bao_hien_tai,
+                )
 
         if hien_cot_lich_su and nhan:
             df_ma = _load_ohlcv_history_df(storage, sym)

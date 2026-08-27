@@ -809,6 +809,152 @@ class TestTimBoChiSoGanDat:
 
 
 # ==============================================================================
+# Test: _tinh_chi_bao_gan_dat_theo_realtime_cached — tính lại MA/EMA/RSI/BB
+# bằng cách thay giá đóng cửa phiên gần nhất bằng giá REALTIME
+# ==============================================================================
+
+class _FakeCollectorGanDatRealtime:
+    """Giả lập `DataCollector` cho test — trả giá realtime theo mã đã cấu
+    hình sẵn, KHÔNG gọi mạng thật."""
+
+    def __init__(self, gia_theo_ma: dict):
+        self._gia_theo_ma = gia_theo_ma
+
+    def get_realtime_price(self, symbol: str) -> dict:
+        ket_qua = self._gia_theo_ma.get(symbol)
+        if ket_qua is None:
+            raise RuntimeError(f"Không có dữ liệu giả lập cho mã '{symbol}'.")
+        return ket_qua
+
+
+def _seed_ohlcv_flat(storage: Storage, ma: str, so_phien: int, gia: float) -> None:
+    """Lưu lịch sử OHLCV PHẲNG (open=high=low=close=`gia` mọi phiên) — dùng
+    để tính tay chính xác kỳ vọng MA20/RSI14/Bollinger Bands (chuỗi không
+    biến động -> RSI=100 theo quy ước avg_loss=0, BB độ rộng=0)."""
+    records = [
+        {
+            "date": f"2025-{(1 + i // 28):02d}-{(1 + i % 28):02d}",
+            "open": gia, "high": gia, "low": gia, "close": gia,
+            "volume": 1_000_000,
+        }
+        for i in range(so_phien)
+    ]
+    storage.save("ohlcv_history", ma, {"records": records})
+
+
+class TestTinhChiBaoGanDatTheoRealtime:
+    def test_chuoi_phang_gia_realtime_giong_lich_su(self, isolated_db_path, monkeypatch):
+        """25 phiên lịch sử PHẲNG ở 20.0 (nghìn đồng), giá realtime CŨNG
+        20.000đ (=20.0 nghìn đồng, không đổi) -> MA20/BB=20.0 đúng nghĩa
+        trung bình 1 chuỗi hằng số, RSI14=100.0 (avg_loss=0 xuyên suốt).
+        EMA50/EMA200 phải None vì chưa đủ 50/200 phiên lịch sử."""
+        from dashboard.app import _tinh_chi_bao_gan_dat_theo_realtime_cached
+        import dashboard.app as app_module
+
+        storage = Storage(db_path=isolated_db_path)
+        _seed_ohlcv_flat(storage, "HPG", 25, 20.0)
+        storage.close()
+
+        fake_collector = _FakeCollectorGanDatRealtime({
+            "HPG": {"price": 20000.0, "volume": 1_500_000.0, "da_khop_lenh": True},
+        })
+        monkeypatch.setattr(
+            app_module, "_tao_data_collector_cho_tra_cuu_realtime",
+            lambda: fake_collector,
+        )
+
+        st.cache_data.clear()
+        storage2 = Storage(db_path=isolated_db_path)
+        ket_qua = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage2, ("HPG",))
+
+        assert ket_qua["HPG"]["close"] == pytest.approx(20.0)
+        assert ket_qua["HPG"]["ma20"] == pytest.approx(20.0)
+        assert ket_qua["HPG"]["rsi14"] == pytest.approx(100.0)
+        assert ket_qua["HPG"]["bb_upper"] == pytest.approx(20.0)
+        assert ket_qua["HPG"]["bb_lower"] == pytest.approx(20.0)
+        assert ket_qua["HPG"]["ema50"] is None
+        assert ket_qua["HPG"]["ema200"] is None
+        assert ket_qua["HPG"]["volume"] == pytest.approx(1_500_000.0)
+        assert ket_qua["HPG"]["gia_realtime_full_vnd"] == pytest.approx(20000.0)
+
+    def test_gia_realtime_thay_the_dung_phien_cuoi(self, isolated_db_path, monkeypatch):
+        """20 phiên lịch sử PHẲNG ở 20.0, giá realtime = 21.000đ (=21.0
+        nghìn đồng, KHÁC lịch sử) -> MA20 phải đổi đúng bằng tính tay:
+        (19*20.0 + 21.0)/20 = 20.05 -> xác nhận phiên gần nhất THỰC SỰ bị
+        thay bằng giá realtime, không phải giữ nguyên giá đã lưu."""
+        from dashboard.app import _tinh_chi_bao_gan_dat_theo_realtime_cached
+        import dashboard.app as app_module
+
+        storage = Storage(db_path=isolated_db_path)
+        _seed_ohlcv_flat(storage, "SSI", 20, 20.0)
+        storage.close()
+
+        fake_collector = _FakeCollectorGanDatRealtime({
+            "SSI": {"price": 21000.0, "volume": 800_000.0, "da_khop_lenh": True},
+        })
+        monkeypatch.setattr(
+            app_module, "_tao_data_collector_cho_tra_cuu_realtime",
+            lambda: fake_collector,
+        )
+
+        st.cache_data.clear()
+        storage2 = Storage(db_path=isolated_db_path)
+        ket_qua = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage2, ("SSI",))
+
+        assert ket_qua["SSI"]["close"] == pytest.approx(21.0)
+        assert ket_qua["SSI"]["ma20"] == pytest.approx((19 * 20.0 + 21.0) / 20)
+
+    def test_mot_ma_loi_khong_lam_hong_ca_batch(self, isolated_db_path, monkeypatch):
+        """Mã CEO lấy giá realtime thất bại (lỗi mạng/API) -> chỉ mã đó
+        trả về {"loi": ...}, mã HPG hợp lệ khác trong CÙNG 1 lượt gọi vẫn
+        tính bình thường."""
+        from dashboard.app import _tinh_chi_bao_gan_dat_theo_realtime_cached
+        import dashboard.app as app_module
+
+        storage = Storage(db_path=isolated_db_path)
+        _seed_ohlcv_flat(storage, "HPG", 25, 20.0)
+        _seed_ohlcv_flat(storage, "CEO", 25, 15.0)
+        storage.close()
+
+        fake_collector = _FakeCollectorGanDatRealtime({
+            "HPG": {"price": 20000.0, "volume": 1_000_000.0, "da_khop_lenh": True},
+            # CEO cố ý KHÔNG có trong dict -> fake collector raise lỗi
+        })
+        monkeypatch.setattr(
+            app_module, "_tao_data_collector_cho_tra_cuu_realtime",
+            lambda: fake_collector,
+        )
+
+        st.cache_data.clear()
+        storage2 = Storage(db_path=isolated_db_path)
+        ket_qua = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage2, ("HPG", "CEO"))
+
+        assert "loi" in ket_qua["CEO"]
+        assert ket_qua["HPG"]["ma20"] == pytest.approx(20.0)
+
+    def test_lich_su_qua_ngan_tra_ve_loi(self, isolated_db_path, monkeypatch):
+        """Mã chưa đủ 20 phiên lịch sử -> báo lỗi rõ ràng, KHÔNG gọi API
+        realtime cho mã đó (không cần cấu hình fake collector trả giá)."""
+        from dashboard.app import _tinh_chi_bao_gan_dat_theo_realtime_cached
+        import dashboard.app as app_module
+
+        storage = Storage(db_path=isolated_db_path)
+        _seed_ohlcv_flat(storage, "BCR", 5, 10.0)
+        storage.close()
+
+        monkeypatch.setattr(
+            app_module, "_tao_data_collector_cho_tra_cuu_realtime",
+            lambda: _FakeCollectorGanDatRealtime({}),
+        )
+
+        st.cache_data.clear()
+        storage2 = Storage(db_path=isolated_db_path)
+        ket_qua = _tinh_chi_bao_gan_dat_theo_realtime_cached(storage2, ("BCR",))
+
+        assert "loi" in ket_qua["BCR"]
+
+
+# ==============================================================================
 # Test: "🔴 Giá Realtime (tra cứu trực tiếp)" — thông điệp trạng thái phiên
 # ==============================================================================
 
