@@ -659,6 +659,15 @@ def run_index_step(
     OHLCV để xem trên dashboard — KHÔNG chạy pattern_detector/
     market_regime_detector/capital_allocation cho chỉ số, vì không thể
     "mua" một chỉ số như một cổ phiếu cụ thể.
+
+    "Tính cách giao dịch" (`run_stock_character_step`) THÌ áp dụng được
+    cho chỉ số (bổ sung 27/08/2026, theo yêu cầu người dùng bổ sung VN30
+    vào mục "🎭 Tính cách giao dịch từng mã") — thuần túy mô tả CÁCH giá
+    của chính chỉ số đã vận động (percentile so với lịch sử của chính
+    nó), không liên quan gì tới việc "mua" một vị thế cụ thể. "Cổ phiếu
+    dài hạn" (backtest 8 bộ chỉ số) cũng áp dụng được cùng lý do — xem
+    lệnh gọi `run_long_term_screener_step()` riêng cho chỉ số ở cuối
+    `run_pipeline()`/`update_indices.py`.
     """
     try:
         df = collector.get_index_ohlcv(index_symbol, timeframe="day")
@@ -680,6 +689,8 @@ def run_index_step(
         index_symbol, snapshot["close"], snapshot.get("ema200"),
         snapshot.get("price_above_ema200"),
     )
+
+    run_stock_character_step(storage, index_symbol, df)
 
     # LƯU Ý: KHÔNG gọi collector.get_realtime_price() cho chỉ số — đã xác
     # nhận qua kiểm tra trực tiếp (test_index_quote.py, 27/07/2026) rằng
@@ -851,6 +862,12 @@ def run_pipeline(config: dict) -> None:
 
     # --- Bộ lọc "📈 Cổ phiếu dài hạn" (backtest 8 bộ chỉ số theo giai đoạn) ---
     run_long_term_screener_step(storage, symbol_sector_map)
+    # Áp dụng THÊM cho chỉ số (VNINDEX/VN30/VN100...) — cùng lý do đã nêu
+    # ở docstring `run_index_step()`: thuần túy backtest kỹ thuật trên
+    # chuỗi giá của chính chỉ số, không phụ thuộc khái niệm "mua cổ
+    # phiếu". Bổ sung 27/08/2026 theo yêu cầu người dùng thêm VN30.
+    if index_symbols:
+        run_long_term_screener_step(storage, {idx: "index" for idx in index_symbols})
 
     storage.close()
     logger.info("Hoàn tất pipeline. Chạy 'streamlit run dashboard/app.py' để xem kết quả.")

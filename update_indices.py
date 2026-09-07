@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import logging
 
-from main import build_data_collector, load_config, resolve_storage_path, run_index_step
+from main import (
+    build_data_collector, load_config, resolve_storage_path,
+    run_index_step, run_long_term_screener_step,
+)
 from core.storage import Storage
 
 logging.basicConfig(
@@ -46,6 +49,12 @@ def main() -> None:
                 index_symbol,
             )
             continue
+
+    # Bộ lọc "📈 Cổ phiếu dài hạn" cho chỉ số (bổ sung 27/08/2026, theo
+    # yêu cầu người dùng thêm VN30 vào mục "Tính cách giao dịch"/"Cổ
+    # phiếu dài hạn") — xem giải thích đầy đủ ở docstring `run_index_step()`
+    # trong main.py về việc backtest kỹ thuật áp dụng được cho chỉ số.
+    run_long_term_screener_step(storage, {idx: "index" for idx in index_symbols})
 
     storage.close()
     logger.info("Hoàn tất cập nhật chỉ số thị trường chung.")
