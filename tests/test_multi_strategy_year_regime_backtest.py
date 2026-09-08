@@ -14,6 +14,7 @@ from core.multi_strategy_year_regime_backtest import (
     _tong_hop_von_tuan_tu,
     backtest_to_hop_theo_nam_giai_doan,
     loc_ket_qua_theo_dieu_kien,
+    tim_khuyen_nghi_tot_nhat_theo_ma,
     xay_to_hop_cap_bo_chi_so,
 )
 
@@ -149,6 +150,61 @@ class TestLocKetQuaTheoDieuKien:
     def test_khong_tieu_chi_nao_tra_ve_nguyen_ban(self):
         du_lieu = self._du_lieu()
         assert loc_ket_qua_theo_dieu_kien(du_lieu) == du_lieu
+
+
+# ==============================================================================
+# Test: tim_khuyen_nghi_tot_nhat_theo_ma — "Khuyến nghị bộ chỉ số theo
+# Mã & Giai đoạn" (bổ sung 08/09/2026, theo yêu cầu người dùng sau khi
+# phân tích BSR cho thấy mỗi mã cần đổi bộ chỉ số theo giai đoạn/thời gian)
+# ==============================================================================
+
+class TestTimKhuyenNghiTotNhatTheoMa:
+    def _du_lieu(self):
+        return [
+            {"ma": "HDB", "ten_bo_chi_so": "MA20", "nam": 2025, "giai_doan_chinh": "uptrend", "n_trades": 10, "total_return_pct": 34.85},
+            {"ma": "HDB", "ten_bo_chi_so": "RSI14", "nam": 2025, "giai_doan_chinh": "uptrend", "n_trades": 3, "total_return_pct": 47.96},
+            {"ma": "SSI", "ten_bo_chi_so": "MA20", "nam": 2025, "giai_doan_chinh": "uptrend", "n_trades": 11, "total_return_pct": 47.89},
+            {"ma": "SSI", "ten_bo_chi_so": "RSI14", "nam": 2023, "giai_doan_chinh": None, "n_trades": 1, "total_return_pct": 36.34},
+            {"ma": "GMD", "ten_bo_chi_so": "MA20", "nam": 2026, "giai_doan_chinh": "downtrend", "n_trades": 8, "total_return_pct": -16.88},
+        ]
+
+    def test_chon_dung_dong_lai_cao_nhat_moi_ma_va_sap_xep_giam_dan(self):
+        ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(self._du_lieu(), nam=2025)
+        # GMD (nam 2026) va SSI/RSI14 (nam 2023) bi loai vi loc theo nam=2025.
+        # HDB con 1 dong hop le nhat: RSI14 (47.96% > 34.85% cua MA20).
+        assert [h["ma"] for h in ket_qua] == ["HDB", "SSI"]
+        assert ket_qua[0]["ten_bo_chi_so"] == "RSI14"
+        assert ket_qua[0]["total_return_pct"] == pytest.approx(47.96)
+        assert ket_qua[1]["ten_bo_chi_so"] == "MA20"
+
+    def test_khong_loc_gi_tra_ve_1_dong_moi_ma_phan_biet(self):
+        ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(self._du_lieu())
+        # 3 ma phan biet (HDB, SSI, GMD) -> dung 3 dong, khong trung ma.
+        assert sorted(h["ma"] for h in ket_qua) == ["GMD", "HDB", "SSI"]
+        assert len({h["ma"] for h in ket_qua}) == 3
+
+    def test_khong_dat_nguong_lai_toi_thieu_van_giu_ma_dang_lo(self):
+        # GMD chi co 1 dong duy nhat, dang LO (-16.88%) - van phai xuat
+        # hien trong khuyen nghi (khong dat nguong cung theo lua chon cua
+        # nguoi dung), de nguoi xem tu danh gia qua n_trades/total_return_pct.
+        ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(self._du_lieu())
+        hang_gmd = [h for h in ket_qua if h["ma"] == "GMD"]
+        assert len(hang_gmd) == 1
+        assert hang_gmd[0]["total_return_pct"] == pytest.approx(-16.88)
+
+    def test_loc_theo_so_lenh_toi_thieu_doi_khuyen_nghi_sang_dong_khac(self):
+        # so_lenh_toi_thieu=5 loai HDB/RSI14 (3 lenh) va SSI/RSI14 (1 lenh)
+        # -> khuyen nghi cho HDB phai chuyen sang MA20 (10 lenh, 34.85%).
+        ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(self._du_lieu(), so_lenh_toi_thieu=5)
+        theo_ma = {h["ma"]: h for h in ket_qua}
+        assert theo_ma["HDB"]["ten_bo_chi_so"] == "MA20"
+        assert theo_ma["HDB"]["total_return_pct"] == pytest.approx(34.85)
+        # Thu tu giam dan theo total_return_pct: SSI (47.89) > HDB (34.85) > GMD (-16.88)
+        assert [h["ma"] for h in ket_qua] == ["SSI", "HDB", "GMD"]
+
+    def test_loc_theo_giai_doan(self):
+        ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(self._du_lieu(), giai_doan="downtrend")
+        assert [h["ma"] for h in ket_qua] == ["GMD"]
 
 
 # ==============================================================================

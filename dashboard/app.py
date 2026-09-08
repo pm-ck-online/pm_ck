@@ -3787,6 +3787,31 @@ def _ban_do_ten_ngan_bo_chi_so_va_to_hop() -> dict[str, str]:
     return ban_do
 
 
+def _doc_tat_ca_hang_to_hop_theo_nam(storage: Storage) -> tuple[list[dict], set[int]]:
+    """Đọc + làm phẳng TOÀN BỘ category `chien_luoc_to_hop_theo_nam` cho
+    MỌI mã trong storage — dùng CHUNG cho cả 2 mục "🎯 Lọc bộ chỉ số/tổ
+    hợp theo Năm & Giai đoạn" VÀ "🏆 Khuyến nghị bộ chỉ số theo Mã & Giai
+    đoạn" (tránh đọc storage 2 lần khi cả 2 mục cùng hiển thị trên 1
+    trang ở chế độ xem tất cả).
+
+    Trả về `(tat_ca_hang, cac_nam_co_du_lieu)` — rỗng nếu chưa có dữ liệu.
+    """
+    danh_sach_ma = sorted(storage.query_all_keys("chien_luoc_to_hop_theo_nam"))
+    if not danh_sach_ma:
+        return [], set()
+
+    record_map = storage.get_latest_many("chien_luoc_to_hop_theo_nam", danh_sach_ma)
+    tat_ca_hang: list[dict] = []
+    cac_nam_co_du_lieu: set[int] = set()
+    for ma, record in record_map.items():
+        for hang in record["data"].get("ket_qua", []):
+            hang_moi = dict(hang)
+            hang_moi["ma"] = ma
+            tat_ca_hang.append(hang_moi)
+            cac_nam_co_du_lieu.add(hang["nam"])
+    return tat_ca_hang, cac_nam_co_du_lieu
+
+
 def render_multi_strategy_year_regime_section(storage: Storage) -> None:
     """Lọc TƯƠNG TÁC kết quả "8 bộ chỉ số đơn lẻ + 21 tổ hợp cặp", tách
     theo TỪNG NĂM + giai đoạn chủ yếu, cho TOÀN BỘ watchlist — dữ liệu
@@ -3810,8 +3835,8 @@ def render_multi_strategy_year_regime_section(storage: Storage) -> None:
         "kèm cột \"Số lệnh\" trước khi áp dụng."
     )
 
-    danh_sach_ma = sorted(storage.query_all_keys("chien_luoc_to_hop_theo_nam"))
-    if not danh_sach_ma:
+    tat_ca_hang, cac_nam_co_du_lieu = _doc_tat_ca_hang_to_hop_theo_nam(storage)
+    if not tat_ca_hang:
         st.info(
             "Chưa có dữ liệu. Chạy `main.py` hoặc `run_full_market.py` để tính "
             "(cùng lúc với bước 🧮 Cổ phiếu dài hạn, tái sử dụng chuỗi giai đoạn "
@@ -3819,17 +3844,7 @@ def render_multi_strategy_year_regime_section(storage: Storage) -> None:
         )
         return
 
-    record_map = storage.get_latest_many("chien_luoc_to_hop_theo_nam", danh_sach_ma)
     ban_do_ten_ngan = _ban_do_ten_ngan_bo_chi_so_va_to_hop()
-
-    tat_ca_hang: list[dict] = []
-    cac_nam_co_du_lieu: set[int] = set()
-    for ma, record in record_map.items():
-        for hang in record["data"].get("ket_qua", []):
-            hang_moi = dict(hang)
-            hang_moi["ma"] = ma
-            tat_ca_hang.append(hang_moi)
-            cac_nam_co_du_lieu.add(hang["nam"])
 
     col1, col2, col3 = st.columns(3)
     with col1:
@@ -3901,6 +3916,102 @@ def render_multi_strategy_year_regime_section(storage: Storage) -> None:
             "Số lệnh": st.column_config.NumberColumn(format="%d", width="small"),
             "Tỷ lệ thắng (%)": st.column_config.NumberColumn(format="%.1f%%", width="small"),
             "Lãi cộng dồn năm đó (%)": st.column_config.NumberColumn(format="%+.2f%%", width="small"),
+        },
+    )
+
+
+def render_khuyen_nghi_bo_chi_so_theo_ma_section(storage: Storage) -> None:
+    """[Bổ sung 08/09/2026] Với MỖI mã, khuyến nghị ĐÚNG 1 bộ chỉ số/tổ
+    hợp có lãi cộng dồn CAO NHẤT trong 1 năm + giai đoạn đã chọn — khác
+    mục "🎯 Lọc..." (liệt kê MỌI dòng khớp bộ lọc, có thể nhiều dòng/mã).
+
+    Lý do bổ sung: phân tích tay mã BSR cho thấy "MA20 (Giá cắt MA20)"
+    rất tốt năm 2024-2025 nhưng LỖ nặng năm 2026 (biến động giá tăng gấp
+    đôi khiến MA20 bị "rung lắc"/whipsaw liên tục), trong khi "Bollinger
+    Breakout + Volume" mới là bộ phù hợp nhất cho ĐÚNG mã/năm đó — mỗi mã
+    có thể cần ĐỔI bộ chỉ số theo thời gian/giai đoạn, không cố định 1
+    bộ cho mọi lúc. Mục này quét TOÀN BỘ watchlist để phát hiện khuyến
+    nghị phù hợp nhất mà không cần dò tay từng mã như đã làm với BSR.
+
+    Dữ liệu đọc từ category `chien_luoc_to_hop_theo_nam` (tính SẴN qua
+    `main.run_long_term_screener_step()`, dùng chuỗi giai đoạn Ensemble
+    3 phương pháp) — KHÔNG tính lại ở đây. Xem
+    `core/multi_strategy_year_regime_backtest.py::tim_khuyen_nghi_tot_nhat_theo_ma()`.
+    """
+    from core.multi_strategy_year_regime_backtest import tim_khuyen_nghi_tot_nhat_theo_ma
+
+    st.subheader("🏆 Khuyến nghị bộ chỉ số theo Mã & Giai đoạn")
+    st.caption(
+        "⚠️ BACKTEST LỊCH SỬ, KHÔNG PHẢI khuyến nghị đầu tư. Với MỖI mã, "
+        "chỉ hiện ĐÚNG 1 dòng — bộ chỉ số/tổ hợp có lãi cộng dồn CAO NHẤT "
+        "trong năm + giai đoạn đã chọn (khác mục \"🎯 Lọc...\" liệt kê mọi "
+        "dòng khớp bộ lọc). Mỗi mã có thể cần bộ chỉ số KHÁC NHAU tùy năm/"
+        "giai đoạn — ví dụ thực tế mã BSR: MA20 đơn thuần rất tốt 2024-2025 "
+        "nhưng lỗ nặng 2026 (biến động giá tăng cao khiến MA20 bị nhiễu), "
+        "trong khi \"Bollinger Breakout + Volume\" mới phù hợp cho đúng "
+        "năm đó. **Số lệnh càng ít, kết quả càng KHÔNG đáng tin cậy** — "
+        "luôn xem kèm cột \"Số lệnh\" trước khi áp dụng, mặc định KHÔNG "
+        "đặt ngưỡng lọc cứng để anh tự đánh giá."
+    )
+
+    tat_ca_hang, cac_nam_co_du_lieu = _doc_tat_ca_hang_to_hop_theo_nam(storage)
+    if not tat_ca_hang:
+        st.info(
+            "Chưa có dữ liệu. Chạy `main.py` hoặc `run_full_market.py` để tính "
+            "(cùng lúc với bước 🧮 Cổ phiếu dài hạn, tái sử dụng chuỗi giai đoạn "
+            "Ensemble đã fit — không tốn thêm thời gian đáng kể)."
+        )
+        return
+
+    ban_do_ten_ngan = _ban_do_ten_ngan_bo_chi_so_va_to_hop()
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        nam_chon = st.selectbox(
+            "Năm", sorted(cac_nam_co_du_lieu, reverse=True), key="khuyen_nghi_chon_nam",
+        )
+    with col2:
+        giai_doan_chon = st.selectbox(
+            "Giai đoạn chủ yếu", ["Tất cả"] + list(GIAI_DOAN_DAI_HAN_OPTIONS.keys()),
+            format_func=lambda g: "Tất cả" if g == "Tất cả" else GIAI_DOAN_DAI_HAN_OPTIONS[g],
+            key="khuyen_nghi_chon_giai_doan",
+        )
+    with col3:
+        so_lenh_toi_thieu = st.number_input(
+            "Số lệnh tối thiểu (độ tin cậy)", value=1, min_value=1, step=1, key="khuyen_nghi_so_lenh",
+        )
+
+    ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(
+        tat_ca_hang,
+        nam=nam_chon,
+        giai_doan=None if giai_doan_chon == "Tất cả" else giai_doan_chon,
+        so_lenh_toi_thieu=int(so_lenh_toi_thieu),
+    )
+
+    if not ket_qua:
+        st.warning("Không có mã nào khớp bộ lọc hiện tại.")
+        return
+
+    ten_cot_lai = f"Lãi cộng dồn {nam_chon} (%)"
+    rows = []
+    for h in ket_qua:
+        rows.append({
+            "Mã": h["ma"],
+            "Bộ chỉ số/Tổ hợp khuyến nghị": ban_do_ten_ngan.get(h["ten_bo_chi_so"], h["ten_bo_chi_so"]),
+            "Giai đoạn": GIAI_DOAN_DAI_HAN_OPTIONS.get(h["giai_doan_chinh"], "Chưa đủ dữ liệu"),
+            "Số lệnh": h["n_trades"],
+            "Tỷ lệ thắng (%)": h["win_rate_pct"],
+            ten_cot_lai: h["total_return_pct"],
+        })
+
+    st.caption(f"{len(rows)} mã có khuyến nghị khớp bộ lọc, sắp xếp theo lãi giảm dần.")
+    st.dataframe(
+        pd.DataFrame(rows), hide_index=True, width='stretch',
+        column_config={
+            "Mã": st.column_config.TextColumn(width="small"),
+            "Số lệnh": st.column_config.NumberColumn(format="%d", width="small"),
+            "Tỷ lệ thắng (%)": st.column_config.NumberColumn(format="%.1f%%", width="small"),
+            ten_cot_lai: st.column_config.NumberColumn(format="%+.2f%%", width="small"),
         },
     )
 
@@ -5285,6 +5396,7 @@ DASHBOARD_GROUPS = [
         "🔎 Mã có mô hình thu hẹp biên độ",
         "🧮 Cổ phiếu dài hạn",
         "🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn",
+        "🏆 Khuyến nghị bộ chỉ số theo Mã & Giai đoạn",
         "🎭 Tính cách giao dịch từng mã",
         "💼 Danh mục mô phỏng",
         "🧪 Phòng thí nghiệm chỉ báo",
@@ -5426,6 +5538,7 @@ def main() -> None:
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
         ("🧮 Cổ phiếu dài hạn", render_long_term_stock_screener_section, (storage,)),
         ("🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn", render_multi_strategy_year_regime_section, (storage,)),
+        ("🏆 Khuyến nghị bộ chỉ số theo Mã & Giai đoạn", render_khuyen_nghi_bo_chi_so_theo_ma_section, (storage,)),
         ("🎭 Tính cách giao dịch từng mã", render_stock_character_section, (storage,)),
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
         ("🧪 Phòng thí nghiệm chỉ báo", render_indicator_lab_section, (storage,)),

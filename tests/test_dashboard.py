@@ -276,6 +276,22 @@ class TestDashboardSmoke:
         else:
             pytest.fail("Không tìm thấy bảng \"Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn\".")
 
+        # Mục "🏆 Khuyến nghị bộ chỉ số theo Mã & Giai đoạn" — mặc định
+        # chọn năm mới nhất có dữ liệu (2025) -> chỉ có đúng 1 dòng khớp
+        # (MA20/2025), RSI14 là năm 2024 nên không nằm trong lựa chọn mặc định.
+        for df in at.dataframe:
+            try:
+                cols = list(df.value.columns)
+            except Exception:  # noqa: BLE001
+                continue
+            if "Bộ chỉ số/Tổ hợp khuyến nghị" in cols:
+                assert len(df.value) == 1
+                assert df.value.iloc[0]["Mã"] == "HPG"
+                assert df.value.iloc[0]["Bộ chỉ số/Tổ hợp khuyến nghị"] == "MA20"
+                break
+        else:
+            pytest.fail("Không tìm thấy bảng \"Khuyến nghị bộ chỉ số theo Mã & Giai đoạn\".")
+
     def test_single_section_mode_shows_only_selected_section(self, seeded_storage):
         """Chọn chế độ 'Chỉ xem 1 mục' -> chỉ đúng 1 mục được hiển thị,
         không hiện toàn bộ trang.

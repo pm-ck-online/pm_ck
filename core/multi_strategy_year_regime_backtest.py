@@ -202,3 +202,38 @@ def loc_ket_qua_theo_dieu_kien(
             continue
         ket_qua.append(hang)
     return ket_qua
+
+
+def tim_khuyen_nghi_tot_nhat_theo_ma(
+    danh_sach_hang: list[dict],
+    nam: Optional[int] = None,
+    giai_doan: Optional[str] = None,
+    so_lenh_toi_thieu: int = 1,
+) -> list[dict]:
+    """[Bổ sung 08/09/2026 — "Khuyến nghị bộ chỉ số theo Mã & Giai đoạn"]
+
+    Với MỖI mã (khóa "ma") xuất hiện trong `danh_sach_hang` (đã lọc theo
+    `nam`/`giai_doan`/`so_lenh_toi_thieu` qua `loc_ket_qua_theo_dieu_kien()`
+    ở trên — TÁI SỬ DỤNG, không viết lại logic lọc), chọn ra ĐÚNG 1 dòng
+    có `total_return_pct` CAO NHẤT — trả lời câu hỏi "mã này nên dùng bộ
+    chỉ số/tổ hợp nào là phù hợp nhất trong năm/giai đoạn đang xét?".
+
+    Trả về list — MỖI DÒNG là 1 mã (không trùng mã), sắp xếp GIẢM DẦN theo
+    `total_return_pct` — mã có khuyến nghị lãi cao nhất lên đầu.
+
+    KHÔNG đặt ngưỡng lãi tối thiểu ở đây (khác `loc_ket_qua_theo_dieu_kien`)
+    — mọi mã có ít nhất 1 dòng khớp điều kiện đều có 1 khuyến nghị, kể cả
+    khi khuyến nghị đó bị lỗ (người xem tự đánh giá qua cột `total_return_pct`
+    và `n_trades`, đúng tinh thần "không đặt ngưỡng cứng" đã áp dụng cho
+    toàn bộ mục này).
+    """
+    da_loc = loc_ket_qua_theo_dieu_kien(
+        danh_sach_hang, nam=nam, giai_doan=giai_doan, so_lenh_toi_thieu=so_lenh_toi_thieu,
+    )
+    tot_nhat_theo_ma: dict[str, dict] = {}
+    for hang in da_loc:
+        ma = hang["ma"]
+        hien_tai = tot_nhat_theo_ma.get(ma)
+        if hien_tai is None or hang["total_return_pct"] > hien_tai["total_return_pct"]:
+            tot_nhat_theo_ma[ma] = hang
+    return sorted(tot_nhat_theo_ma.values(), key=lambda h: h["total_return_pct"], reverse=True)
