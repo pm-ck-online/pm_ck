@@ -193,6 +193,25 @@ def seeded_storage(isolated_db_path):
         },
     })
 
+    storage.save("chien_luoc_to_hop_theo_nam", "HPG", {
+        "sector": "banking",
+        "updated_at": "2026-09-07T00:00:00",
+        "ket_qua": [
+            {
+                "ten_bo_chi_so": "MA20 (Giá cắt MA20)", "nam": 2025,
+                "giai_doan_chinh": "uptrend", "so_lenh_giai_doan_chinh": 7,
+                "tong_so_lenh_co_giai_doan": 10, "n_trades": 10,
+                "win_rate_pct": 40.0, "total_return_pct": 34.85,
+            },
+            {
+                "ten_bo_chi_so": "RSI14 (Quá mua/Quá bán 30-70)", "nam": 2024,
+                "giai_doan_chinh": "downtrend", "so_lenh_giai_doan_chinh": 1,
+                "tong_so_lenh_co_giai_doan": 1, "n_trades": 1,
+                "win_rate_pct": 100.0, "total_return_pct": 5.0,
+            },
+        ],
+    })
+
     storage.close()
 
     return isolated_db_path
@@ -240,6 +259,22 @@ class TestDashboardSmoke:
                 break
         else:
             pytest.fail("Không tìm thấy bảng \"Tính cách giao dịch\" có cột \"Nguồn giá\".")
+
+        # Mục "🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn" — với ngưỡng
+        # mặc định 10%, chỉ dòng MA20/2025 (34.85%) qua được, dòng
+        # RSI14/2024 (5.0%) bị loại.
+        for df in at.dataframe:
+            try:
+                cols = list(df.value.columns)
+            except Exception:  # noqa: BLE001
+                continue
+            if "Lãi cộng dồn năm đó (%)" in cols:
+                assert len(df.value) == 1
+                assert df.value.iloc[0]["Mã"] == "HPG"
+                assert df.value.iloc[0]["Năm"] == 2025
+                break
+        else:
+            pytest.fail("Không tìm thấy bảng \"Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn\".")
 
     def test_single_section_mode_shows_only_selected_section(self, seeded_storage):
         """Chọn chế độ 'Chỉ xem 1 mục' -> chỉ đúng 1 mục được hiển thị,

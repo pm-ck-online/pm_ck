@@ -3769,6 +3769,142 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
                 st.dataframe(pd.DataFrame(chi_tiet_rows), hide_index=True, width='stretch')
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def _ban_do_ten_ngan_bo_chi_so_va_to_hop() -> dict[str, str]:
+    """Bản đồ TÊN ĐẦY ĐỦ -> TÊN NGẮN cho CẢ 8 bộ đơn lẻ VÀ 21 tổ hợp cặp
+    — xây bằng ĐÚNG vòng lặp ghép cặp mà
+    `core.multi_strategy_year_regime_backtest.xay_to_hop_cap_bo_chi_so()`
+    dùng để đặt tên, để CHẮC CHẮN khớp với tên đã lưu trong storage.
+    KHÔNG tách chuỗi " + " để suy ngược lại tên gốc — KHÔNG AN TOÀN vì
+    "Bollinger Breakout + Volume" (1 trong 8 tên gốc) tự nó ĐÃ CHỨA " + ".
+    """
+    ban_do = dict(TEN_NGAN_BO_CHI_SO_DAI_HAN)
+    ten_hop_le = [t for t in TEN_NGAN_BO_CHI_SO_DAI_HAN if t != "Mua và giữ (Buy & Hold)"]
+    for i in range(len(ten_hop_le)):
+        for j in range(i + 1, len(ten_hop_le)):
+            ten_a, ten_b = ten_hop_le[i], ten_hop_le[j]
+            ban_do[f"{ten_a} + {ten_b}"] = f"{TEN_NGAN_BO_CHI_SO_DAI_HAN[ten_a]} + {TEN_NGAN_BO_CHI_SO_DAI_HAN[ten_b]}"
+    return ban_do
+
+
+def render_multi_strategy_year_regime_section(storage: Storage) -> None:
+    """Lọc TƯƠNG TÁC kết quả "8 bộ chỉ số đơn lẻ + 21 tổ hợp cặp", tách
+    theo TỪNG NĂM + giai đoạn chủ yếu, cho TOÀN BỘ watchlist — dữ liệu
+    đọc từ category `chien_luoc_to_hop_theo_nam` (tính SẴN qua
+    `main.run_long_term_screener_step()`, KHÔNG tính live ở đây — xem
+    `core/multi_strategy_year_regime_backtest.py`).
+    """
+    from core.multi_strategy_year_regime_backtest import loc_ket_qua_theo_dieu_kien
+
+    st.subheader("🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn")
+    st.caption(
+        "⚠️ BACKTEST LỊCH SỬ, KHÔNG PHẢI khuyến nghị đầu tư. Mở rộng mục "
+        "🧮 Cổ phiếu dài hạn: THÊM 21 TỔ HỢP 2 bộ chỉ số (vào lệnh khi CẢ "
+        "2 cùng đồng ý — AND, ra lệnh khi 1 TRONG 2 báo hiệu — OR), VÀ "
+        "tách kết quả theo TỪNG NĂM DƯƠNG LỊCH (lãi cộng dồn RIÊNG năm "
+        "đó, không cộng dồn qua các năm khác) thay vì chỉ theo giai đoạn "
+        "trên toàn bộ lịch sử. Cột \"Giai đoạn\" là giai đoạn CHỦ YẾU "
+        "(Ensemble 3 phương pháp) tại ngày VÀO LỆNH của các lệnh trong "
+        "năm đó — 1 năm có thể trải qua NHIỀU giai đoạn khác nhau. "
+        "**Số lệnh càng ít, kết quả càng KHÔNG đáng tin cậy** — luôn xem "
+        "kèm cột \"Số lệnh\" trước khi áp dụng."
+    )
+
+    danh_sach_ma = sorted(storage.query_all_keys("chien_luoc_to_hop_theo_nam"))
+    if not danh_sach_ma:
+        st.info(
+            "Chưa có dữ liệu. Chạy `main.py` hoặc `run_full_market.py` để tính "
+            "(cùng lúc với bước 🧮 Cổ phiếu dài hạn, tái sử dụng chuỗi giai đoạn "
+            "Ensemble đã fit — không tốn thêm thời gian đáng kể)."
+        )
+        return
+
+    record_map = storage.get_latest_many("chien_luoc_to_hop_theo_nam", danh_sach_ma)
+    ban_do_ten_ngan = _ban_do_ten_ngan_bo_chi_so_va_to_hop()
+
+    tat_ca_hang: list[dict] = []
+    cac_nam_co_du_lieu: set[int] = set()
+    for ma, record in record_map.items():
+        for hang in record["data"].get("ket_qua", []):
+            hang_moi = dict(hang)
+            hang_moi["ma"] = ma
+            tat_ca_hang.append(hang_moi)
+            cac_nam_co_du_lieu.add(hang["nam"])
+
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        nguong_lai_pct = st.number_input(
+            "Ngưỡng lãi tối thiểu/năm (%)", value=10.0, step=1.0, key="to_hop_nam_nguong_lai",
+        )
+    with col2:
+        so_lenh_toi_thieu = st.number_input(
+            "Số lệnh tối thiểu (độ tin cậy)", value=1, min_value=1, step=1, key="to_hop_nam_so_lenh",
+        )
+    with col3:
+        nam_chon = st.selectbox(
+            "Năm", ["Tất cả"] + sorted(cac_nam_co_du_lieu, reverse=True), key="to_hop_nam_chon_nam",
+        )
+
+    col4, col5 = st.columns(2)
+    with col4:
+        cac_ten_bo_chi_so = sorted({h["ten_bo_chi_so"] for h in tat_ca_hang})
+        bo_chi_so_chon = st.selectbox(
+            "Bộ chỉ số/Tổ hợp", ["Tất cả"] + cac_ten_bo_chi_so,
+            format_func=lambda t: "Tất cả" if t == "Tất cả" else ban_do_ten_ngan.get(t, t),
+            key="to_hop_nam_chon_bo_chi_so",
+        )
+    with col5:
+        giai_doan_chon = st.selectbox(
+            "Giai đoạn chủ yếu", ["Tất cả"] + list(GIAI_DOAN_DAI_HAN_OPTIONS.keys()),
+            format_func=lambda g: "Tất cả" if g == "Tất cả" else GIAI_DOAN_DAI_HAN_OPTIONS[g],
+            key="to_hop_nam_chon_giai_doan",
+        )
+
+    ket_qua_loc = loc_ket_qua_theo_dieu_kien(
+        tat_ca_hang,
+        nguong_lai_pct=nguong_lai_pct,
+        ten_bo_chi_so=None if bo_chi_so_chon == "Tất cả" else bo_chi_so_chon,
+        giai_doan=None if giai_doan_chon == "Tất cả" else giai_doan_chon,
+        nam=None if nam_chon == "Tất cả" else nam_chon,
+        so_lenh_toi_thieu=int(so_lenh_toi_thieu),
+    )
+
+    if not ket_qua_loc:
+        st.warning("Không có mã/bộ chỉ số nào khớp bộ lọc hiện tại.")
+        return
+
+    rows = []
+    for h in sorted(ket_qua_loc, key=lambda x: x["total_return_pct"], reverse=True):
+        rows.append({
+            "Mã": h["ma"],
+            "Bộ chỉ số/Tổ hợp": ban_do_ten_ngan.get(h["ten_bo_chi_so"], h["ten_bo_chi_so"]),
+            "Năm": h["nam"],
+            "Giai đoạn": (
+                GIAI_DOAN_DAI_HAN_OPTIONS.get(h["giai_doan_chinh"], "Chưa đủ dữ liệu")
+                + (
+                    f" ({h['so_lenh_giai_doan_chinh']}/{h['tong_so_lenh_co_giai_doan']} lệnh)"
+                    if h["giai_doan_chinh"] and h["so_lenh_giai_doan_chinh"] < h["tong_so_lenh_co_giai_doan"]
+                    else ""
+                )
+            ),
+            "Số lệnh": h["n_trades"],
+            "Tỷ lệ thắng (%)": h["win_rate_pct"],
+            "Lãi cộng dồn năm đó (%)": h["total_return_pct"],
+        })
+
+    st.caption(f"Tìm thấy {len(rows)} dòng khớp bộ lọc.")
+    st.dataframe(
+        pd.DataFrame(rows), hide_index=True, width='stretch',
+        column_config={
+            "Mã": st.column_config.TextColumn(width="small"),
+            "Năm": st.column_config.NumberColumn(format="%d", width="small"),
+            "Số lệnh": st.column_config.NumberColumn(format="%d", width="small"),
+            "Tỷ lệ thắng (%)": st.column_config.NumberColumn(format="%.1f%%", width="small"),
+            "Lãi cộng dồn năm đó (%)": st.column_config.NumberColumn(format="%+.2f%%", width="small"),
+        },
+    )
+
+
 def _doc_chuoi_giai_doan_da_luu(storage: Storage, key_luu: str) -> Optional[pd.Series]:
     """Đọc chuỗi giai đoạn ĐÃ LƯU SẴN (tính bởi `run_market_regime_history_step()`
     trong main.py, chạy 1 lần/ngày qua run_full_market.py) — RẤT NHANH
@@ -5148,6 +5284,7 @@ DASHBOARD_GROUPS = [
         "📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)",
         "🔎 Mã có mô hình thu hẹp biên độ",
         "🧮 Cổ phiếu dài hạn",
+        "🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn",
         "🎭 Tính cách giao dịch từng mã",
         "💼 Danh mục mô phỏng",
         "🧪 Phòng thí nghiệm chỉ báo",
@@ -5272,6 +5409,7 @@ def main() -> None:
         ("📦 Khuyến nghị phân bổ vốn (ATR14 chi tiết)", render_capital_allocation_v2_section, (storage, symbols)),
         ("🔎 Mã có mô hình thu hẹp biên độ", render_pattern_section, (storage,)),
         ("🧮 Cổ phiếu dài hạn", render_long_term_stock_screener_section, (storage,)),
+        ("🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn", render_multi_strategy_year_regime_section, (storage,)),
         ("🎭 Tính cách giao dịch từng mã", render_stock_character_section, (storage,)),
         ("💼 Danh mục mô phỏng", render_portfolio_section, (storage,)),
         ("🧪 Phòng thí nghiệm chỉ báo", render_indicator_lab_section, (storage,)),

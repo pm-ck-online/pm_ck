@@ -1208,6 +1208,17 @@ def run_long_term_screener_step(
     `long_term_screener_report` sẽ được BỎ QUA (trừ khi
     `force_recompute=True`), giúp resume an toàn nếu chương trình bị ngắt
     giữa chừng — không cần thêm category checkpoint riêng.
+
+    BỔ SUNG 07/09/2026 (theo yêu cầu người dùng, sau khi phân tích tay
+    HDB/SSI/GMD): CÙNG LÚC tính thêm bộ lọc "8 bộ đơn lẻ + 21 tổ hợp cặp,
+    bucket theo TỪNG NĂM + giai đoạn chủ yếu" — TÁI SỬ DỤNG NGUYÊN `df`/
+    `regime_ensemble` VỪA TÍNH Ở TRÊN (KHÔNG fit lại Markov lần 2 cho
+    CÙNG 1 mã — đắt đỏ nhất trong toàn bộ bước này), lưu vào category
+    MỚI `chien_luoc_to_hop_theo_nam`. Xem
+    `core/multi_strategy_year_regime_backtest.py` để biết chi tiết công
+    thức tổ hợp + cách bucket theo năm/giai đoạn, và
+    `dashboard/app.py::render_multi_strategy_year_regime_section()` để
+    lọc kết quả tương tác trên dashboard.
     """
     from datetime import datetime
 
@@ -1216,6 +1227,7 @@ def run_long_term_screener_step(
     )
     from core.market_regime_detector import tinh_chuoi_giai_doan_theo_ngay
     from core.market_regime_ensemble import tinh_chuoi_ensemble_theo_ngay
+    from core.multi_strategy_year_regime_backtest import backtest_to_hop_theo_nam_giai_doan
 
     so_da_tinh, so_bo_qua, so_loi = 0, 0, 0
 
@@ -1264,6 +1276,26 @@ def run_long_term_screener_step(
             logger.exception("Lỗi khi tính bộ lọc dài hạn cho %s — bỏ qua, tiếp tục mã tiếp theo.", ma)
             so_loi += 1
             continue
+
+        # Bước "8 bộ đơn lẻ + 21 tổ hợp theo năm" — TÁCH RIÊNG try/except:
+        # `long_term_screener_report` đã lưu thành công ở trên (checkpoint
+        # đã tính là XONG cho mã này) — 1 lỗi ở bước bổ sung này KHÔNG được
+        # phép làm hỏng việc đếm so_da_tinh/so_loi của bước chính, và cũng
+        # không nên coi mã này là "lỗi" (nó SẼ bị bỏ qua vĩnh viễn ở bước bổ
+        # sung nếu re-run, vì checkpoint dựa trên long_term_screener_report
+        # đã có — chấp nhận đánh đổi này, đơn giản hơn thêm checkpoint riêng).
+        try:
+            ket_qua_to_hop_nam = backtest_to_hop_theo_nam_giai_doan(df, regime_ensemble)
+            storage.save("chien_luoc_to_hop_theo_nam", ma, {
+                "sector": nganh,
+                "updated_at": datetime.now().isoformat(),
+                "ket_qua": ket_qua_to_hop_nam,
+            })
+        except Exception:
+            logger.exception(
+                "Lỗi khi tính bộ lọc tổ hợp theo năm cho %s — bỏ qua bước bổ sung, "
+                "'Cổ phiếu dài hạn' của mã này vẫn đã lưu thành công.", ma,
+            )
 
     logger.info(
         "Bộ lọc 'Cổ phiếu dài hạn': %d mã vừa tính, %d mã bỏ qua (đã có sẵn), %d mã lỗi.",

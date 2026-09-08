@@ -68,4 +68,12 @@ class TestRunLongTermScreenerStepChoChiSo:
         assert record["data"]["sector"] == "index"
         assert "regime_fast" in record["data"]
         assert "regime_ensemble" in record["data"]
+
+        # Bổ sung 07/09/2026: cùng lượt chạy còn lưu THÊM bộ lọc tổ hợp
+        # theo năm, tái sử dụng regime_ensemble vừa tính (không fit lại
+        # Markov lần 2).
+        record_to_hop = storage.get_latest("chien_luoc_to_hop_theo_nam", "VN30")
+        assert record_to_hop is not None
+        assert record_to_hop["data"]["sector"] == "index"
+        assert isinstance(record_to_hop["data"]["ket_qua"], list)
         storage.close()
