@@ -223,3 +223,41 @@ class TestBacktestToHopTheoNamGiaiDoan:
         assert len(ket_qua) > 0
         assert all(h["giai_doan_chinh"] is None for h in ket_qua)
         assert all(h["tong_so_lenh_co_giai_doan"] == 0 for h in ket_qua)
+
+    def test_stop_loss_pct_duoc_chuyen_thang_xuong_run_backtest(self):
+        # Đối chiếu chéo: kết quả trả về khi truyền stop_loss_pct phải
+        # KHỚP với backtest trực tiếp cùng bộ chỉ số, cùng stop_loss_pct.
+        df = _tao_gia_xu_huong_tang(seed=42)
+        regime_series = pd.Series(
+            ["uptrend"] * len(df),
+            index=pd.to_datetime(df["date"]),
+        )
+
+        ket_qua = backtest_to_hop_theo_nam_giai_doan(
+            df, regime_series, initial_capital=1_000_000_000.0, stop_loss_pct=2.0,
+        )
+        assert len(ket_qua) > 0
+
+        df_bt = tinh_chi_bao_dai_han(df)
+        bo_8 = xay_8_bo_chi_so(df_bt)
+        entry_ma20, exit_ma20 = bo_8["MA20 (Giá cắt MA20)"]
+        result_voi_stop_loss = run_backtest(
+            df_bt, entry_signal_fn=lambda _df: entry_ma20, exit_signal_fn=lambda _df: exit_ma20,
+            initial_cash=1_000_000_000.0, fee_pct=0.15, stop_loss_pct=2.0,
+        )
+        assert any(t.stop_loss_triggered for t in result_voi_stop_loss.trades), (
+            "kịch bản test cần ít nhất 1 lệnh bị cắt lỗ để phép đối chiếu có ý nghĩa"
+        )
+
+        if result_voi_stop_loss.trades:
+            nam_dau = pd.Timestamp(result_voi_stop_loss.trades[0].entry_date).year
+            trades_nam_dau = [
+                t for t in result_voi_stop_loss.trades if pd.Timestamp(t.entry_date).year == nam_dau
+            ]
+            doi_chieu = _tong_hop_von_tuan_tu(trades_nam_dau, 1_000_000_000.0)
+            hang_tuong_ung = [
+                h for h in ket_qua if h["ten_bo_chi_so"] == "MA20 (Giá cắt MA20)" and h["nam"] == nam_dau
+            ]
+            assert len(hang_tuong_ung) == 1
+            assert hang_tuong_ung[0]["total_return_pct"] == pytest.approx(doi_chieu["total_return_pct"])
+            assert hang_tuong_ung[0]["n_trades"] == doi_chieu["n_trades"]

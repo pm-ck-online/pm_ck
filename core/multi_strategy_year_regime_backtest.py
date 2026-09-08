@@ -98,11 +98,18 @@ def backtest_to_hop_theo_nam_giai_doan(
     regime_series: pd.Series,
     initial_capital: float = 1_000_000_000.0,
     fee_pct: float = 0.15,
+    stop_loss_pct: Optional[float] = None,
 ) -> list[dict]:
     """Backtest 8 bộ chỉ số đơn lẻ + 21 tổ hợp cặp cho 1 mã (`df`), bucket
     kết quả theo TỪNG NĂM có ít nhất 1 lệnh, kèm GIAI ĐOẠN CHỦ YẾU (giai
     đoạn xuất hiện nhiều nhất tại ngày VÀO LỆNH của các lệnh trong năm
     đó, tính theo `regime_series` truyền vào).
+
+    `stop_loss_pct`: nếu truyền (VD 2.0 = cắt lỗ tối đa 2%), chuyển thẳng
+    xuống `backtest.backtest_engine.run_backtest()` cho MỌI bộ chỉ số/tổ
+    hợp — mỗi lệnh sẽ tự động đóng nếu lỗ (theo giá đóng cửa) chạm ngưỡng
+    này, bất kể tín hiệu thoát riêng của chiến lược. Mặc định `None` =
+    không áp dụng, giữ nguyên hành vi cũ.
 
     Trả về list các dict — MỖI DÒNG là 1 tổ hợp (tên_bộ_chỉ_số, năm) có
     ít nhất 1 lệnh trong năm đó:
@@ -127,6 +134,7 @@ def backtest_to_hop_theo_nam_giai_doan(
         result = run_backtest(
             df_bt, entry_signal_fn=lambda _df, e=entry: e, exit_signal_fn=lambda _df, x=exit_: x,
             initial_cash=initial_capital, fee_pct=fee_pct,
+            stop_loss_pct=stop_loss_pct,
         )
         trades = result.trades
         if not trades:

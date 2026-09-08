@@ -60,6 +60,7 @@ class Trade:
     pnl: float          # lãi/lỗ tuyệt đối (VND), đã trừ phí 2 chiều
     pnl_pct: float       # lãi/lỗ theo % trên vốn đã bỏ ra cho lệnh này
     forced_close: bool = False  # True nếu bị đóng cưỡng bức do hết dữ liệu
+    stop_loss_triggered: bool = False  # True nếu đóng do chạm stop_loss_pct (ưu tiên hơn exit_signal_fn cùng ngày)
 
 
 @dataclass
@@ -128,6 +129,7 @@ def run_backtest(
     initial_cash: float = 100_000_000.0,
     fee_pct: float = 0.15,
     position_size_pct: float = 100.0,
+    stop_loss_pct: Optional[float] = None,
 ) -> BacktestResult:
     """Chạy mô phỏng giao dịch trên danh mục ẢO theo tín hiệu cho trước.
 
@@ -145,6 +147,15 @@ def run_backtest(
             mua/bán (phí môi giới + thuế bán, mặc định 0.15%).
         position_size_pct: % vốn khả dụng dùng cho mỗi lệnh mua (mặc định
             100% — dùng toàn bộ vốn hiện có).
+        stop_loss_pct: nếu truyền (VD 2.0 = giới hạn lỗ tối đa 2%), TỰ
+            ĐỘNG đóng vị thế nếu mức lỗ (theo giá ĐÓNG CỬA so với giá vào
+            lệnh) đạt tới hoặc vượt ngưỡng này — kiểm tra MỖI NGÀY đang
+            giữ vị thế, ƯU TIÊN HƠN `exit_signal_fn` của chiến lược (nếu
+            CẢ 2 cùng đúng trong cùng 1 ngày, vẫn tính là đóng do
+            stop-loss — xem `Trade.stop_loss_triggered`). Thực thi ở giá
+            MỞ CỬA phiên kế tiếp, giống mọi hành động khác trong hàm này
+            — tránh lookahead bias. Mặc định `None` = KHÔNG áp dụng,
+            giữ nguyên hành vi cũ (không ảnh hưởng caller hiện có nào).
 
     Trả về `BacktestResult`.
     """
@@ -175,6 +186,7 @@ def run_backtest(
     entry_fee_amount = 0.0
 
     pending_action: Optional[str] = None  # "buy" | "sell" | None
+    pending_stop_loss = False  # True nếu "sell" đang treo là do chạm stop_loss_pct
     trades: list[Trade] = []
     equity_values: list[float] = []
     dates: list[pd.Timestamp] = []
@@ -222,6 +234,7 @@ def run_backtest(
                 exit_fee=fee_amount,
                 pnl=pnl,
                 pnl_pct=pnl_pct,
+                stop_loss_triggered=pending_stop_loss,
             ))
             cash += net_proceeds
             qty = 0
@@ -231,6 +244,7 @@ def run_backtest(
             entry_cost = 0.0
             entry_fee_amount = 0.0
             pending_action = None
+            pending_stop_loss = False
 
         # --- Bước B: định giá danh mục cuối ngày (mark-to-market) ---
         equity_today = cash + (qty * today_close if in_position else 0.0)
@@ -241,8 +255,13 @@ def run_backtest(
         #     cho phiên KẾ TIẾP (tránh lookahead bias) ---
         if i < n - 1:  # không còn "ngày mai" để thực thi nếu là phiên cuối
             if in_position:
-                if bool(exit_signals.iloc[i]):
+                stop_loss_hit = (
+                    stop_loss_pct is not None and entry_price > 0
+                    and (today_close - entry_price) / entry_price * 100.0 <= -abs(stop_loss_pct)
+                )
+                if stop_loss_hit or bool(exit_signals.iloc[i]):
                     pending_action = "sell"
+                    pending_stop_loss = stop_loss_hit
             else:
                 if bool(entry_signals.iloc[i]):
                     pending_action = "buy"

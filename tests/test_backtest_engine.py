@@ -182,6 +182,120 @@ class TestForcedClose:
 
 
 # ==============================================================================
+# Test: stop_loss_pct — cắt lỗ tối đa theo giá đóng cửa, thực thi tại giá
+# mở cửa phiên kế tiếp, ƯU TIÊN HƠN exit_signal_fn nếu trùng ngày.
+# ==============================================================================
+
+class TestStopLossPct:
+    """Kịch bản chung: giá 100, 95, 90, 85, 120.
+
+    entry_signal = [True, False, False, False, False] -> mua tại open ngày 1 (=95).
+    Với stop_loss_pct=2.0:
+        Ngày 1: close=95 -> lỗ 0% -> chưa cắt.
+        Ngày 2: close=90 -> lỗ (90-95)/95*100 = -5.263...% <= -2% -> CẮT LỖ.
+        Ngày 3: thực thi bán tại open=85 (KHÔNG phải đúng -2%, vì giá đã
+            giảm tiếp qua đêm từ 90 xuống 85 -> lỗ thực tế nặng hơn ngưỡng).
+    """
+
+    def test_cat_lo_thuc_thi_tai_open_ngay_ke_tiep(self):
+        df = _make_df([100, 95, 90, 85, 120])
+        entry_fn = _signal_fn_from_list([True, False, False, False, False])
+        exit_fn = _signal_fn_from_list([False] * 5)  # chiến lược không bao giờ tự bán
+
+        result = run_backtest(
+            df, entry_fn, exit_fn,
+            initial_cash=1_000_000.0, fee_pct=0.0, position_size_pct=100.0,
+            stop_loss_pct=2.0,
+        )
+
+        assert result.n_trades == 1
+        trade = result.trades[0]
+        qty = int(1_000_000 // 95)
+        assert trade.entry_price == pytest.approx(95)
+        assert trade.exit_price == pytest.approx(85)
+        assert trade.stop_loss_triggered is True
+        assert trade.forced_close is False
+        expected_pnl = qty * 85 - qty * 95
+        assert trade.pnl == pytest.approx(expected_pnl, abs=1)
+
+    def test_khong_truyen_stop_loss_pct_giu_nguyen_hanh_vi_cu(self):
+        # Cùng kịch bản trên nhưng KHÔNG truyền stop_loss_pct -> giữ vị thế
+        # tới hết dữ liệu -> đóng cưỡng bức tại close ngày cuối (=120).
+        df = _make_df([100, 95, 90, 85, 120])
+        entry_fn = _signal_fn_from_list([True, False, False, False, False])
+        exit_fn = _signal_fn_from_list([False] * 5)
+
+        result = run_backtest(
+            df, entry_fn, exit_fn,
+            initial_cash=1_000_000.0, fee_pct=0.0, position_size_pct=100.0,
+        )
+
+        assert result.n_trades == 1
+        trade = result.trades[0]
+        assert trade.forced_close is True
+        assert trade.stop_loss_triggered is False
+        assert trade.exit_price == pytest.approx(120)
+
+    def test_cat_lo_va_tin_hieu_ban_trung_ngay_uu_tien_cat_lo(self):
+        # exit_signal của chiến lược CŨNG bán ở đúng ngày 2 (cùng ngày cắt
+        # lỗ) -> vẫn phải ghi nhận stop_loss_triggered=True.
+        df = _make_df([100, 95, 90, 85, 120])
+        entry_fn = _signal_fn_from_list([True, False, False, False, False])
+        exit_fn = _signal_fn_from_list([False, False, True, False, False])
+
+        result = run_backtest(
+            df, entry_fn, exit_fn,
+            initial_cash=1_000_000.0, fee_pct=0.0, position_size_pct=100.0,
+            stop_loss_pct=2.0,
+        )
+
+        assert result.n_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_price == pytest.approx(85)
+        assert trade.stop_loss_triggered is True
+
+    def test_tin_hieu_ban_chien_luoc_rieng_khong_bi_gan_nham_la_cat_lo(self):
+        # Giá TĂNG liên tục -> stop_loss_pct=2.0 không bao giờ kích hoạt,
+        # bán hoàn toàn do exit_signal của chiến lược -> stop_loss_triggered
+        # phải là False.
+        df = _make_df([100, 105, 110, 115, 120])
+        entry_fn = _signal_fn_from_list([True, False, False, False, False])
+        exit_fn = _signal_fn_from_list([False, False, True, False, False])
+
+        result = run_backtest(
+            df, entry_fn, exit_fn,
+            initial_cash=1_000_000.0, fee_pct=0.0, position_size_pct=100.0,
+            stop_loss_pct=2.0,
+        )
+
+        assert result.n_trades == 1
+        trade = result.trades[0]
+        assert trade.exit_price == pytest.approx(115)
+        assert trade.stop_loss_triggered is False
+
+    def test_bien_lo_dung_bang_nguong_van_kich_hoat(self):
+        # Lỗ ĐÚNG BẰNG -2.0% (không vượt quá) vẫn phải kích hoạt cắt lỗ
+        # (điều kiện <=, không phải <).
+        df = _make_df([100, 100, 98, 90, 120])
+        entry_fn = _signal_fn_from_list([True, False, False, False, False])
+        exit_fn = _signal_fn_from_list([False] * 5)
+
+        result = run_backtest(
+            df, entry_fn, exit_fn,
+            initial_cash=1_000_000.0, fee_pct=0.0, position_size_pct=100.0,
+            stop_loss_pct=2.0,
+        )
+
+        assert result.n_trades == 1
+        trade = result.trades[0]
+        assert trade.entry_price == pytest.approx(100)
+        # (98-100)/100*100 = -2.0% đúng bằng ngưỡng -> cắt lỗ ngày 2,
+        # thực thi tại open ngày 3 (=90)
+        assert trade.exit_price == pytest.approx(90)
+        assert trade.stop_loss_triggered is True
+
+
+# ==============================================================================
 # Test: make_crossover_signals
 # ==============================================================================
 
