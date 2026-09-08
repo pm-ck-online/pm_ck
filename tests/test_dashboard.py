@@ -1389,6 +1389,24 @@ class TestPerUserWatchlist:
         storage.close()
 
 
+class TestRequireLoginBoQuaKhiChuaCauHinhAuth:
+    """Sự cố thực tế 08/09/2026: setup máy mới, `.streamlit/secrets.toml`
+    (chứa OAuth thật) chưa được copy sang (không nằm trong git) -> bấm nút
+    đăng nhập bị crash `StreamlitAuthError`. Đã sửa `require_login()` để
+    TỰ ĐỘNG bỏ qua đăng nhập khi chưa có mục `[auth]` trong secrets.toml
+    (dùng cá nhân cục bộ, không public link)."""
+
+    def test_tra_ve_ngay_khi_chua_co_muc_auth_trong_secrets(self, monkeypatch):
+        from dashboard.app import require_login
+        monkeypatch.delenv("PM_CK_SKIP_LOGIN", raising=False)
+        # Môi trường test không có secrets.toml thật -> st.secrets.get("auth")
+        # phải an toàn là falsy (rỗng/None). Nếu require_login() KHÔNG trả về
+        # sớm, nó sẽ gọi st.stop() (raise lỗi vì không có ScriptRunContext
+        # thật trong pytest) -> hàm chạy xong không lỗi nghĩa là đã bỏ qua
+        # đúng như kỳ vọng.
+        require_login()
+
+
 class TestResolveDbPath:
     """Rà soát sự cố thực tế 28/07/2026: dashboard TRƯỚC ĐÂY không hề đọc
     config.yaml, luôn cố định dùng SQLite cục bộ dù người dùng đã đổi

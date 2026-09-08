@@ -5316,8 +5316,24 @@ def require_login() -> None:
     chặn xem nội dung — set biến môi trường `PM_CK_SKIP_LOGIN=1` để bỏ
     qua bước này trong môi trường test (xem `tests/conftest.py`). KHÔNG
     set biến này khi chạy thật (`streamlit run`).
+
+    CHẠY CỤC BỘ CHO 1 NGƯỜI DÙNG (KHÔNG cần đăng nhập): nếu `secrets.toml`
+    CHƯA có mục `[auth]` (trường hợp phổ biến khi chạy `streamlit run` cục
+    bộ trên máy riêng, không public link cho ai khác) — TỰ ĐỘNG bỏ qua
+    toàn bộ bước đăng nhập, không hiện màn hình chặn. Chỉ khi ĐÃ cấu hình
+    `[auth]` (thường là lúc deploy Streamlit Cloud + public link cho nhiều
+    người) thì mới thực sự bắt đăng nhập Google — tránh
+    `StreamlitAuthError` khi bấm nút đăng nhập lúc chưa cấu hình OAuth
+    (sự cố thực tế khi setup máy mới 08/09/2026).
     """
     if os.environ.get("PM_CK_SKIP_LOGIN") == "1":
+        return
+
+    try:
+        auth_da_cau_hinh = bool(st.secrets.get("auth"))
+    except Exception:  # noqa: BLE001
+        auth_da_cau_hinh = False  # Không có secrets.toml (chạy cục bộ) -> bỏ qua
+    if not auth_da_cau_hinh:
         return
 
     if not getattr(st.user, "is_logged_in", False):
