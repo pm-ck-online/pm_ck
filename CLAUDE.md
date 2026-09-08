@@ -222,6 +222,29 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    `AppTest`) khi có thể; nếu cần kiểm tra hành vi UI cụ thể, GHÉP vào một
    test smoke ĐÃ CÓ SẴN VÀ ỔN ĐỊNH thay vì tạo class `AppTest` mới — tránh
    tăng thêm số lượng `AppTest.from_file()` trong file không cần thiết.
+4n. **LỖI TÁI DIỄN LẦN 3 (08/09/2026): 1 category checkpoint CŨ chặn mất
+   category MỚI thêm sau — mục "🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai
+   đoạn" trên dashboard luôn báo "chưa có dữ liệu" dù đã chạy đầy đủ
+   `run_full_market.py`**. Nguyên nhân: `run_long_term_screener_step()`
+   dùng CHUNG 1 điều kiện `continue` cho CẢ 2 category
+   (`long_term_screener_report` VÀ `chien_luoc_to_hop_theo_nam` — category
+   sau thêm vào 07/09/2026, SAU KHI category trước đã có sẵn dữ liệu cho
+   hầu hết mã) — mã nào ĐÃ có `long_term_screener_report` từ đợt chạy
+   TRƯỚC bị bỏ qua (`continue`) TRƯỚC KHI kịp chạy tới đoạn tính
+   `chien_luoc_to_hop_theo_nam`, nên category mới KHÔNG BAO GIỜ được tính
+   cho các mã đó dù chạy lại `run_full_market.py` bao nhiêu lần (không có
+   `force_recompute=True`) — bản thân code cũ THẬM CHÍ ĐÃ CÓ COMMENT tự
+   thừa nhận đánh đổi này ("chấp nhận đánh đổi này") nhưng không nhận ra
+   nó sẽ chặn HOÀN TOÀN, vĩnh viễn. Đã sửa: TÁCH điều kiện checkpoint
+   thành 2 biến độc lập (`can_tinh_report`, `can_tinh_to_hop`), mỗi mã chỉ
+   tính lại ĐÚNG category còn thiếu (Ensemble vẫn phải fit lại nếu thiếu
+   BẤT KỲ category nào, vì không lưu `regime_ensemble` riêng). **BÀI HỌC
+   TỔNG QUÁT (LẦN THỨ 3 cùng dạng lỗi, xem thêm 4c/4c2)**: khi thêm 1
+   category storage MỚI vào 1 bước lặp-theo-mã ĐÃ CÓ checkpoint dựa trên 1
+   category KHÁC, PHẢI kiểm tra checkpoint đó ĐỘC LẬP theo TỪNG category
+   liên quan — không dùng chung 1 điều kiện `continue`/skip cho nhiều
+   category có "tuổi đời" khác nhau, vì category cũ luôn khiến category
+   mới bị bỏ qua vĩnh viễn cho các bản ghi đã tồn tại từ trước.
 5. **Toàn bộ code/comment/UI dùng tiếng Việt** (người dùng không đọc tiếng
    Anh trôi chảy). Giữ nguyên quy ước này cho mọi code mới.
 6. **Vietstock/CafeF/dữ liệu tài chính doanh nghiệp CHƯA có nguồn** — các

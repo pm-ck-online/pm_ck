@@ -77,3 +77,38 @@ class TestRunLongTermScreenerStepChoChiSo:
         assert record_to_hop["data"]["sector"] == "index"
         assert isinstance(record_to_hop["data"]["ket_qua"], list)
         storage.close()
+
+    def test_ma_da_co_long_term_screener_report_tu_truoc_van_duoc_bo_sung_chien_luoc_to_hop(self):
+        """Sự cố thực tế 08/09/2026: mục "Lọc bộ chỉ số/tổ hợp theo Năm &
+        Giai đoạn" trên dashboard luôn báo "chưa có dữ liệu" dù đã chạy
+        đầy đủ `run_full_market.py` — vì checkpoint CŨ dùng CHUNG 1 điều
+        kiện `continue` cho cả 2 category: mã nào ĐÃ có
+        `long_term_screener_report` TỪ TRƯỚC (VD tính từ đợt chạy trước
+        khi tính năng tổ hợp-theo-năm ra đời) sẽ bị bỏ qua VĨNH VIỄN,
+        không bao giờ có `chien_luoc_to_hop_theo_nam` dù chạy lại bao
+        nhiêu lần. Mô phỏng đúng kịch bản: seed sẵn `long_term_screener_report`
+        (giống mã đã tính từ trước), rồi gọi `run_long_term_screener_step()`
+        BÌNH THƯỜNG (không `force_recompute`) -> `chien_luoc_to_hop_theo_nam`
+        PHẢI được tính bổ sung, không bị bỏ qua theo mã kia."""
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(MockDataSource())
+        run_index_step(collector, storage, "VN30", config={})
+
+        # Giả lập mã ĐÃ được tính long_term_screener_report từ 1 đợt chạy
+        # TRƯỚC (trước khi có category chien_luoc_to_hop_theo_nam).
+        storage.save("long_term_screener_report", "VN30", {
+            "sector": "index", "updated_at": "2026-01-01T00:00:00",
+            "regime_fast": {"current": None, "best_strategy": None, "results": {}},
+            "regime_ensemble": {"current": None, "best_strategy": None, "results": {}},
+        })
+        assert storage.get_latest("chien_luoc_to_hop_theo_nam", "VN30") is None
+
+        run_long_term_screener_step(storage, {"VN30": "index"})
+
+        record_to_hop = storage.get_latest("chien_luoc_to_hop_theo_nam", "VN30")
+        assert record_to_hop is not None, (
+            "chien_luoc_to_hop_theo_nam phải được tính bổ sung dù "
+            "long_term_screener_report đã có sẵn từ trước"
+        )
+        assert isinstance(record_to_hop["data"]["ket_qua"], list)
+        storage.close()
