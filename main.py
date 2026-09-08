@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from typing import Optional
 
 import yaml
@@ -51,6 +52,22 @@ from core.notifier import Notifier, RealTelegramClient
 from core.paper_portfolio import create_portfolio
 from core.pattern_detector import detect_narrowing_pattern
 from core.storage import Storage, is_connection_error
+
+# Đảm bảo stdout/stderr LUÔN in được tiếng Việt có dấu (UTF-8), bất kể
+# console/terminal đang ở codepage nào — tránh UnicodeEncodeError khi
+# output bị CHUYỂN HƯỚNG ra file (VD "python run_full_market.py >>
+# update_log.txt" trong update_pm_ck_daily.bat chạy qua Task Scheduler)
+# trên Windows: mặc định dùng codepage hệ thống (thường cp1252) thay vì
+# UTF-8 khi không có TTY thật. SỰ CỐ THỰC TẾ (08/09/2026): setup máy MỚI
+# — cả 3 script run_full_market.py/update_indices.py/update_vcp.py đều
+# dừng ngay ở print() ĐẦU TIÊN có dấu tiếng Việt, batch coi như không
+# chạy được gì. Đặt ở main.py vì CẢ 3 script trên đều import từ đây,
+# chạy TRƯỚC bất kỳ print() nào của riêng chúng.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8")
+    except (AttributeError, ValueError):
+        pass  # stream không hỗ trợ reconfigure (VD đã bị thay thế) -> bỏ qua an toàn
 
 logging.basicConfig(
     level=logging.INFO,
