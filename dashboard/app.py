@@ -3875,8 +3875,12 @@ def render_multi_strategy_year_regime_section(storage: Storage) -> None:
             key="to_hop_nam_chon_giai_doan",
         )
 
+    cac_ma = sorted({h["ma"] for h in tat_ca_hang})
+    ma_hien_thi = set(render_search_box_if_needed(cac_ma, key="to_hop_nam_search"))
+    tat_ca_hang_theo_ma = [h for h in tat_ca_hang if h["ma"] in ma_hien_thi]
+
     ket_qua_loc = loc_ket_qua_theo_dieu_kien(
-        tat_ca_hang,
+        tat_ca_hang_theo_ma,
         nguong_lai_pct=nguong_lai_pct,
         ten_bo_chi_so=None if bo_chi_so_chon == "Tất cả" else bo_chi_so_chon,
         giai_doan=None if giai_doan_chon == "Tất cả" else giai_doan_chon,
@@ -3981,8 +3985,12 @@ def render_khuyen_nghi_bo_chi_so_theo_ma_section(storage: Storage) -> None:
             "Số lệnh tối thiểu (độ tin cậy)", value=1, min_value=1, step=1, key="khuyen_nghi_so_lenh",
         )
 
+    cac_ma = sorted({h["ma"] for h in tat_ca_hang})
+    ma_hien_thi = set(render_search_box_if_needed(cac_ma, key="khuyen_nghi_search"))
+    tat_ca_hang_theo_ma = [h for h in tat_ca_hang if h["ma"] in ma_hien_thi]
+
     ket_qua = tim_khuyen_nghi_tot_nhat_theo_ma(
-        tat_ca_hang,
+        tat_ca_hang_theo_ma,
         nam=nam_chon,
         giai_doan=None if giai_doan_chon == "Tất cả" else giai_doan_chon,
         so_lenh_toi_thieu=int(so_lenh_toi_thieu),
