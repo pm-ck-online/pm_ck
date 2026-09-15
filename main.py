@@ -38,6 +38,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+from datetime import datetime, timedelta
 from typing import Optional
 
 import yaml
@@ -1205,6 +1206,28 @@ def run_market_regime_ensemble_step(storage: Storage) -> None:
     )
 
 
+SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN = 7
+
+
+def _da_qua_han_lam_moi_co_phieu_dai_han(record: Optional[dict], so_ngay: int) -> bool:
+    """Trả về `True` nếu CẦN tính lại: `record` chưa từng có (`None`), thiếu
+    trường `updated_at`, giá trị đó không đọc được, HOẶC đã quá `so_ngay`
+    ngày kể từ lúc tính (so với thời điểm hiện tại). Dùng CHUNG cho cả 2
+    category `long_term_screener_report` và `chien_luoc_to_hop_theo_nam`
+    trong `run_long_term_screener_step()` bên dưới.
+    """
+    if record is None:
+        return True
+    updated_at_raw = record["data"].get("updated_at")
+    if not updated_at_raw:
+        return True
+    try:
+        updated_at = datetime.fromisoformat(updated_at_raw)
+    except (ValueError, TypeError):
+        return True
+    return (datetime.now() - updated_at) > timedelta(days=so_ngay)
+
+
 def run_long_term_screener_step(
     storage: Storage, symbol_sector_map: dict, force_recompute: bool = False,
 ) -> None:
@@ -1250,9 +1273,18 @@ def run_long_term_screener_step(
     đó — mã thiếu `chien_luoc_to_hop_theo_nam` vẫn cần fit lại Ensemble
     (không lưu `regime_ensemble` riêng) nhưng KHÔNG cần tính lại
     `long_term_screener_report` nếu đã có.
-    """
-    from datetime import datetime
 
+    BỔ SUNG 15/09/2026 (theo yêu cầu người dùng — nhận thấy "Cổ phiếu dài
+    hạn" của SSI vẫn ghi "Cập nhật lần cuối: 26/08/2026" dù đã chạy batch
+    hàng ngày liên tục): checkpoint giờ có thêm điều kiện "QUÁ HẠN" —
+    `SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN` (mặc định 7 ngày) — mã nào có
+    `updated_at` cũ hơn ngần ấy ngày sẽ TỰ ĐỘNG được tính lại, không cần
+    `force_recompute=True` thủ công nữa. Do phần lớn watchlist được tính
+    CÙNG 1 đợt backfill ban đầu, lần đầu bật tính năng này (và mỗi ~7 ngày
+    sau đó) sẽ có 1 NGÀY batch chạy lâu hơn hẳn (gần bằng đợt backfill full
+    ~1.5-2 giờ) do nhiều mã cùng "đến hạn" 1 lúc — đã cảnh báo trước, không
+    phải lỗi.
+    """
     from core.long_term_indicator_backtest import (
         backtest_toan_bo_8_bo_chi_so, tim_bo_chi_so_tot_nhat,
     )
@@ -1263,8 +1295,12 @@ def run_long_term_screener_step(
     so_da_tinh, so_bo_qua, so_loi = 0, 0, 0
 
     for ma, nganh in symbol_sector_map.items():
-        can_tinh_report = force_recompute or storage.get_latest("long_term_screener_report", ma) is None
-        can_tinh_to_hop = force_recompute or storage.get_latest("chien_luoc_to_hop_theo_nam", ma) is None
+        can_tinh_report = force_recompute or _da_qua_han_lam_moi_co_phieu_dai_han(
+            storage.get_latest("long_term_screener_report", ma), SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
+        )
+        can_tinh_to_hop = force_recompute or _da_qua_han_lam_moi_co_phieu_dai_han(
+            storage.get_latest("chien_luoc_to_hop_theo_nam", ma), SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
+        )
 
         if not can_tinh_report and not can_tinh_to_hop:
             so_bo_qua += 1

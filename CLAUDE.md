@@ -245,6 +245,22 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    liên quan — không dùng chung 1 điều kiện `continue`/skip cho nhiều
    category có "tuổi đời" khác nhau, vì category cũ luôn khiến category
    mới bị bỏ qua vĩnh viễn cho các bản ghi đã tồn tại từ trước.
+4o. **BỔ SUNG 15/09/2026 — checkpoint "Cổ phiếu dài hạn" giờ có HẠN LÀM
+   MỚI, không còn "tính 1 lần rồi bỏ qua vĩnh viễn"**: sự cố thực tế —
+   người dùng chạy batch hàng ngày liên tục nhưng mục "🧮 Cổ phiếu dài
+   hạn" của SSI vẫn báo "Cập nhật lần cuối: 26/08/2026" (checkpoint cũ ở
+   mục 4k/4n chỉ hỏi "đã có bản ghi chưa", không hỏi "bản ghi đó đã CŨ
+   chưa"). Đã thêm `main._da_qua_han_lam_moi_co_phieu_dai_han()` +
+   hằng số `SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN = 7` — mã nào có
+   `updated_at` quá 7 ngày sẽ TỰ ĐỘNG được tính lại (không cần
+   `force_recompute=True` thủ công), áp dụng độc lập cho CẢ 2 category
+   `long_term_screener_report` và `chien_luoc_to_hop_theo_nam` (đúng
+   nguyên tắc "checkpoint độc lập theo category" ở mục 4n). **HỆ QUẢ CẦN
+   BIẾT**: vì phần lớn watchlist được tính CÙNG 1 đợt backfill ban đầu,
+   chúng sẽ cùng "đến hạn" gần như CÙNG LÚC mỗi ~7 ngày — batch hàng ngày
+   sẽ có 1 NGÀY chạy lâu hơn hẳn (gần bằng đợt backfill full ~1.5-2 giờ)
+   vào đúng ngày đó, các ngày còn lại vẫn nhanh (~35-40 phút) như bình
+   thường — đây là hành vi ĐÃ BIẾT TRƯỚC, không phải lỗi.
 5. **Toàn bộ code/comment/UI dùng tiếng Việt** (người dùng không đọc tiếng
    Anh trôi chảy). Giữ nguyên quy ước này cho mọi code mới.
 6. **Vietstock/CafeF/dữ liệu tài chính doanh nghiệp CHƯA có nguồn** — các

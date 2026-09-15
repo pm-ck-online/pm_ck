@@ -10,9 +10,16 @@ lưu category `stock_character` (giống cổ phiếu thường) là chỉ số 
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 from core.data_collector import DataCollector, MockDataSource
 from core.storage import Storage
-from main import run_index_step, run_long_term_screener_step
+from main import (
+    SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
+    _da_qua_han_lam_moi_co_phieu_dai_han,
+    run_index_step,
+    run_long_term_screener_step,
+)
 
 
 class TestRunIndexStepTinhCachGiaoDich:
@@ -95,9 +102,11 @@ class TestRunLongTermScreenerStepChoChiSo:
         run_index_step(collector, storage, "VN30", config={})
 
         # Giả lập mã ĐÃ được tính long_term_screener_report từ 1 đợt chạy
-        # TRƯỚC (trước khi có category chien_luoc_to_hop_theo_nam).
+        # TRƯỚC (trước khi có category chien_luoc_to_hop_theo_nam) — dùng
+        # updated_at MỚI (hôm nay) để KHÔNG bị coi là quá hạn làm mới (xem
+        # TestLamMoiTheoHanCoPhieuDaiHan bên dưới cho riêng hành vi quá hạn).
         storage.save("long_term_screener_report", "VN30", {
-            "sector": "index", "updated_at": "2026-01-01T00:00:00",
+            "sector": "index", "updated_at": datetime.now().isoformat(),
             "regime_fast": {"current": None, "best_strategy": None, "results": {}},
             "regime_ensemble": {"current": None, "best_strategy": None, "results": {}},
         })
@@ -111,4 +120,95 @@ class TestRunLongTermScreenerStepChoChiSo:
             "long_term_screener_report đã có sẵn từ trước"
         )
         assert isinstance(record_to_hop["data"]["ket_qua"], list)
+
+
+# ==============================================================================
+# Test: _da_qua_han_lam_moi_co_phieu_dai_han — hàm thuần túy
+# ==============================================================================
+
+class TestDaQuaHanLamMoiCoPhieuDaiHan:
+    def test_record_none_can_tinh_lai(self):
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(None, 7) is True
+
+    def test_thieu_updated_at_can_tinh_lai(self):
+        assert _da_qua_han_lam_moi_co_phieu_dai_han({"data": {}}, 7) is True
+
+    def test_updated_at_khong_doc_duoc_can_tinh_lai(self):
+        record = {"data": {"updated_at": "khong-phai-ngay-thang"}}
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(record, 7) is True
+
+    def test_moi_hom_nay_chua_can_tinh_lai(self):
+        record = {"data": {"updated_at": datetime.now().isoformat()}}
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(record, 7) is False
+
+    def test_5_ngay_truoc_chua_qua_han_7_ngay(self):
+        record = {"data": {"updated_at": (datetime.now() - timedelta(days=5)).isoformat()}}
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(record, 7) is False
+
+    def test_10_ngay_truoc_da_qua_han_7_ngay(self):
+        record = {"data": {"updated_at": (datetime.now() - timedelta(days=10)).isoformat()}}
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(record, 7) is True
+
+    def test_dieu_kien_la_lon_hon_khong_phai_lon_hon_bang(self):
+        # Dùng 6.99/7.01 ngày (thay vì đúng 7.0) để tránh sai số nhỏ giữa
+        # lúc tạo timestamp và lúc so sánh làm test không ổn định.
+        record_chua_qua = {"data": {"updated_at": (datetime.now() - timedelta(days=6.99)).isoformat()}}
+        record_da_qua = {"data": {"updated_at": (datetime.now() - timedelta(days=7.01)).isoformat()}}
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(record_chua_qua, 7) is False
+        assert _da_qua_han_lam_moi_co_phieu_dai_han(record_da_qua, 7) is True
+
+
+# ==============================================================================
+# Test: run_long_term_screener_step tự làm mới theo hạn — sự cố thực tế
+# 15/09/2026: dù chạy batch hàng ngày, "Cổ phiếu dài hạn" của SSI vẫn báo
+# "Cập nhật lần cuối: 26/08/2026" vì checkpoint cũ chỉ hỏi "đã có chưa",
+# không hỏi "đã CŨ chưa". Đã sửa: tự tính lại nếu quá
+# SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN (7) ngày, không cần force_recompute.
+# ==============================================================================
+
+class TestLamMoiTheoHanCoPhieuDaiHan:
+    def _seed_bao_cao_cu(self, storage: Storage, updated_at: str) -> None:
+        storage.save("long_term_screener_report", "VN30", {
+            "sector": "index", "updated_at": updated_at,
+            "regime_fast": {"current": None, "best_strategy": None, "results": {}},
+            "regime_ensemble": {"current": None, "best_strategy": None, "results": {}},
+        })
+        storage.save("chien_luoc_to_hop_theo_nam", "VN30", {
+            "sector": "index", "updated_at": updated_at, "ket_qua": [],
+        })
+
+    def test_du_lieu_qua_han_tu_dong_duoc_tinh_lai(self):
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(MockDataSource())
+        run_index_step(collector, storage, "VN30", config={})
+
+        ngay_cu = (datetime.now() - timedelta(days=SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN + 3)).isoformat()
+        self._seed_bao_cao_cu(storage, ngay_cu)
+
+        run_long_term_screener_step(storage, {"VN30": "index"})
+
+        record_report = storage.get_latest("long_term_screener_report", "VN30")
+        record_to_hop = storage.get_latest("chien_luoc_to_hop_theo_nam", "VN30")
+        assert record_report["data"]["updated_at"] != ngay_cu, (
+            "Bản ghi quá hạn phải được tính lại với updated_at MỚI"
+        )
+        assert record_to_hop["data"]["updated_at"] != ngay_cu
+        assert (datetime.now() - datetime.fromisoformat(record_report["data"]["updated_at"])) < timedelta(minutes=5)
+
+    def test_du_lieu_con_moi_khong_bi_tinh_lai(self):
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(MockDataSource())
+        run_index_step(collector, storage, "VN30", config={})
+
+        ngay_moi = (datetime.now() - timedelta(days=2)).isoformat()
+        self._seed_bao_cao_cu(storage, ngay_moi)
+
+        run_long_term_screener_step(storage, {"VN30": "index"})
+
+        record_report = storage.get_latest("long_term_screener_report", "VN30")
+        record_to_hop = storage.get_latest("chien_luoc_to_hop_theo_nam", "VN30")
+        # Chưa quá hạn -> KHÔNG bị tính lại -> updated_at giữ nguyên giá
+        # trị đã seed (không có bản ghi MỚI nào được lưu đè lên).
+        assert record_report["data"]["updated_at"] == ngay_moi
+        assert record_to_hop["data"]["updated_at"] == ngay_moi
         storage.close()
