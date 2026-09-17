@@ -595,6 +595,59 @@ class TestFilterSymbolsBySearch:
 
 
 # ==============================================================================
+# Test: _tinh_gia_tri_mac_dinh_giai_doan_can_xem — phản hồi người dùng
+# 17/09/2026: mục "🧮 Cổ phiếu dài hạn" luôn mặc định "Giai đoạn cần xem"
+# = Uptrend bất kể mã đang xem thực sự ở giai đoạn nào, khiến cột LN%
+# không khớp với cột "Giai đoạn hiện tại" hiển thị cùng dòng, dễ hiểu
+# nhầm là số liệu mâu thuẫn.
+# ==============================================================================
+
+class TestTinhGiaTriMacDinhGiaiDoanCanXem:
+    def _report_map(self, giai_doan_fast="downtrend", giai_doan_ensemble="downtrend"):
+        return {
+            "MWG": {"data": {
+                "regime_fast": {"current": giai_doan_fast},
+                "regime_ensemble": {"current": giai_doan_ensemble},
+            }},
+        }
+
+    def test_dung_1_ma_tra_ve_giai_doan_hien_tai_cua_ma_do(self):
+        from dashboard.app import _tinh_gia_tri_mac_dinh_giai_doan_can_xem
+        ket_qua = _tinh_gia_tri_mac_dinh_giai_doan_can_xem(
+            ["MWG"], self._report_map(giai_doan_ensemble="downtrend"), "regime_ensemble",
+        )
+        assert ket_qua == "downtrend"
+
+    def test_doi_phuong_phap_doi_ca_ket_qua(self):
+        from dashboard.app import _tinh_gia_tri_mac_dinh_giai_doan_can_xem
+        report_map = self._report_map(giai_doan_fast="sideway", giai_doan_ensemble="downtrend")
+        assert _tinh_gia_tri_mac_dinh_giai_doan_can_xem(["MWG"], report_map, "regime_fast") == "sideway"
+        assert _tinh_gia_tri_mac_dinh_giai_doan_can_xem(["MWG"], report_map, "regime_ensemble") == "downtrend"
+
+    def test_khong_co_ma_nao_tra_ve_uptrend_mac_dinh(self):
+        from dashboard.app import _tinh_gia_tri_mac_dinh_giai_doan_can_xem
+        assert _tinh_gia_tri_mac_dinh_giai_doan_can_xem([], self._report_map(), "regime_ensemble") == "uptrend"
+
+    def test_nhieu_hon_1_ma_tra_ve_uptrend_mac_dinh_khong_ro_rang(self):
+        from dashboard.app import _tinh_gia_tri_mac_dinh_giai_doan_can_xem
+        report_map = {
+            "MWG": {"data": {"regime_ensemble": {"current": "downtrend"}}},
+            "HPG": {"data": {"regime_ensemble": {"current": "uptrend"}}},
+        }
+        ket_qua = _tinh_gia_tri_mac_dinh_giai_doan_can_xem(["MWG", "HPG"], report_map, "regime_ensemble")
+        assert ket_qua == "uptrend"
+
+    def test_ma_chua_co_du_lieu_giai_doan_hien_tai_tra_ve_uptrend_mac_dinh(self):
+        from dashboard.app import _tinh_gia_tri_mac_dinh_giai_doan_can_xem
+        report_map = {"MWG": {"data": {"regime_ensemble": {"current": None}}}}
+        assert _tinh_gia_tri_mac_dinh_giai_doan_can_xem(["MWG"], report_map, "regime_ensemble") == "uptrend"
+
+    def test_ma_khong_co_trong_report_map_tra_ve_uptrend_mac_dinh(self):
+        from dashboard.app import _tinh_gia_tri_mac_dinh_giai_doan_can_xem
+        assert _tinh_gia_tri_mac_dinh_giai_doan_can_xem(["ABC"], {}, "regime_ensemble") == "uptrend"
+
+
+# ==============================================================================
 # Test: _bo_chi_so_tot_theo_nguong (hàm thuần túy dùng ở mục Tính cách
 # giao dịch — liệt kê bộ chỉ số LN>5% theo giai đoạn hiện tại)
 # ==============================================================================

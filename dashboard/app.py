@@ -3646,6 +3646,25 @@ TEN_NGAN_BO_CHI_SO_DAI_HAN = {
 }
 
 
+def _tinh_gia_tri_mac_dinh_giai_doan_can_xem(
+    displayed_symbols: list[str], report_map: dict, phuong_phap: str,
+) -> str:
+    """Tính giá trị MẶC ĐỊNH cho ô "Giai đoạn cần xem" ở mục "🧮 Cổ phiếu
+    dài hạn" — nếu tìm kiếm đã thu hẹp danh sách còn ĐÚNG 1 mã, trả về
+    giai đoạn HIỆN TẠI của mã đó (theo `phuong_phap` đã chọn: "regime_fast"
+    hoặc "regime_ensemble"), để cột LN% hiển thị khớp với cột "Giai đoạn
+    hiện tại" của đúng mã đang xem. Nếu không (0 hoặc >1 mã, không rõ
+    ràng nên chọn giai đoạn của mã nào), trả về "uptrend" như mặc định cũ.
+    """
+    if len(displayed_symbols) == 1:
+        record = report_map.get(displayed_symbols[0])
+        if record is not None:
+            giai_doan_hien_tai = (record["data"].get(phuong_phap) or {}).get("current")
+            if giai_doan_hien_tai in GIAI_DOAN_DAI_HAN_OPTIONS:
+                return giai_doan_hien_tai
+    return "uptrend"
+
+
 def render_long_term_stock_screener_section(storage: Storage) -> None:
     """Bộ lọc "Cổ phiếu dài hạn" (bổ sung — thay thế mục tín hiệu Mua/Bán
     ngắn hạn cũ) — so sánh 8 bộ chỉ số kỹ thuật (`core.long_term_indicator_
@@ -3682,21 +3701,35 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
 
     report_map = storage.get_latest_many("long_term_screener_report", symbols)
 
-    col_pp, col_gd = st.columns(2)
-    with col_pp:
-        phuong_phap = st.selectbox(
-            "Phương pháp phân loại giai đoạn", list(PHUONG_PHAP_GIAI_DOAN_DAI_HAN.keys()),
-            format_func=lambda k: PHUONG_PHAP_GIAI_DOAN_DAI_HAN[k],
-            index=1, key="long_term_screener_phuong_phap",
-        )
-    with col_gd:
-        giai_doan_chon = st.selectbox(
-            "Giai đoạn cần xem", list(GIAI_DOAN_DAI_HAN_OPTIONS.keys()),
-            format_func=lambda k: GIAI_DOAN_DAI_HAN_OPTIONS[k],
-            key="long_term_screener_giai_doan",
-        )
+    phuong_phap = st.selectbox(
+        "Phương pháp phân loại giai đoạn", list(PHUONG_PHAP_GIAI_DOAN_DAI_HAN.keys()),
+        format_func=lambda k: PHUONG_PHAP_GIAI_DOAN_DAI_HAN[k],
+        index=1, key="long_term_screener_phuong_phap",
+    )
 
     displayed_symbols = render_search_box_if_needed(sorted(symbols), key="long_term_screener_search")
+    search_text_hien_tai = st.session_state.get("long_term_screener_search", "")
+
+    # BỔ SUNG 17/09/2026 (phản hồi người dùng): TỰ ĐỘNG chọn "Giai đoạn
+    # cần xem" theo ĐÚNG giai đoạn HIỆN TẠI của mã đang tìm — trước đây
+    # ô này luôn mặc định "Uptrend" bất kể mã đang xem thực sự ở giai
+    # đoạn nào, khiến cột LN% trong bảng KHÔNG khớp với cột "Giai đoạn
+    # hiện tại" hiển thị cùng dòng, dễ hiểu nhầm là 2 con số mâu thuẫn
+    # nhau (thực ra chỉ là đang xem 2 giai đoạn khác nhau). Dùng key ĐỘNG
+    # theo nội dung ô tìm kiếm để widget tự làm mới giá trị mặc định mỗi
+    # khi từ khóa tìm đổi, nhưng vẫn giữ lựa chọn thủ công của người dùng
+    # nếu họ tự đổi mà KHÔNG đổi từ khóa tìm kiếm.
+    gia_tri_mac_dinh_giai_doan = _tinh_gia_tri_mac_dinh_giai_doan_can_xem(
+        displayed_symbols, report_map, phuong_phap,
+    )
+
+    cac_giai_doan = list(GIAI_DOAN_DAI_HAN_OPTIONS.keys())
+    giai_doan_chon = st.selectbox(
+        "Giai đoạn cần xem", cac_giai_doan,
+        format_func=lambda k: GIAI_DOAN_DAI_HAN_OPTIONS[k],
+        index=cac_giai_doan.index(gia_tri_mac_dinh_giai_doan),
+        key=f"long_term_screener_giai_doan__{search_text_hien_tai}",
+    )
 
     chi_hien_loi = st.checkbox(
         "Chỉ hiện mã có ít nhất 1 bộ chỉ số sinh lời dương ở giai đoạn đã chọn",
