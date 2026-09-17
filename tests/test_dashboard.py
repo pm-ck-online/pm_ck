@@ -1057,6 +1057,43 @@ def _seed_ohlcv_flat(storage: Storage, ma: str, so_phien: int, gia: float) -> No
     storage.save("ohlcv_history", ma, {"records": records})
 
 
+class TestDungChiSoDaiDienTuCacMa:
+    """Sự cố thực tế 17/09/2026 trên Streamlit Cloud: mục "🧭 Ensemble 3
+    phương pháp" vỡ toàn trang với ValueError "cannot reindex on an axis
+    with duplicate labels" — do ohlcv_history của 1 mã trong nhóm có 2
+    dòng CÙNG NGÀY, khiến pd.concat() không căn chỉnh được index."""
+
+    def test_1_ma_co_ngay_trung_lap_khong_lam_vo_ham(self, isolated_db_path):
+        from dashboard.app import _dung_chi_so_dai_dien_tu_cac_ma
+
+        storage = Storage(db_path=isolated_db_path)
+        _seed_ohlcv_flat(storage, "AAA", so_phien=25, gia=10.0)
+
+        # Ma BBB co 1 ngay bi GHI TRUNG 2 LAN (gia khac nhau, mo phong
+        # dung sinh ra do 1 lan fetch loi/retry ghi them thay vi thay the).
+        records_trung_lap = [
+            {"date": "2025-01-01", "open": 20.0, "high": 20.0, "low": 20.0, "close": 20.0, "volume": 1_000_000},
+            {"date": "2025-01-02", "open": 20.0, "high": 20.0, "low": 20.0, "close": 20.0, "volume": 1_000_000},
+            {"date": "2025-01-02", "open": 21.0, "high": 21.0, "low": 21.0, "close": 21.0, "volume": 1_000_000},
+        ] + [
+            {"date": f"2025-01-{3 + i:02d}", "open": 20.0, "high": 20.0, "low": 20.0, "close": 20.0, "volume": 1_000_000}
+            for i in range(22)
+        ]
+        storage.save("ohlcv_history", "BBB", {"records": records_trung_lap})
+
+        ket_qua = _dung_chi_so_dai_dien_tu_cac_ma(storage, ["AAA", "BBB"])
+
+        assert ket_qua is not None
+        assert not ket_qua.empty
+        # BBB con dung 24 ngay phan biet sau khi bo trung (01-01..01-24),
+        # nam TRON trong pham vi 25 ngay cua AAA (01-01..01-25) -> pd.concat
+        # axis=1 noi UNION 2 chuoi ngay -> ket qua van du 25 ngay (ngay
+        # 01-25 chi co gia tri tu AAA, khong bi dropna vi khong PHAI ca 2
+        # cot deu NaN).
+        assert len(ket_qua) == 25
+        storage.close()
+
+
 class TestTinhChiBaoGanDatTheoRealtime:
     def test_chuoi_phang_gia_realtime_giong_lich_su(self, isolated_db_path, monkeypatch):
         """25 phiên lịch sử PHẲNG ở 20.0 (nghìn đồng), giá realtime CŨNG

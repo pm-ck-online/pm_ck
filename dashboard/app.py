@@ -2320,6 +2320,17 @@ def _dung_chi_so_dai_dien_tu_cac_ma(storage: Storage, danh_sach_ma: list[str]) -
     KHÔNG có sẵn chỉ số ngành thật — lấy trung bình giá đóng cửa đã
     CHUẨN HÓA (mỗi mã quy về gốc 100 tại ngày đầu tiên) của các mã trong
     nhóm, dùng CHUNG 1 lượt get_latest_many để tối ưu tốc độ.
+
+    SỬA LỖI 17/09/2026 (sự cố thực tế trên Streamlit Cloud):
+    `ValueError: cannot reindex on an axis with duplicate labels` khi
+    `pd.concat(..., axis=1)` — do `ohlcv_history` của ÍT NHẤT 1 mã trong
+    nhóm có 2+ dòng CÙNG NGÀY (dữ liệu trùng lặp, có thể do 1 lần fetch
+    lỗi/retry ghi thêm thay vì thay thế) khiến index sau `set_index("date")`
+    bị trùng — `pd.concat` không thể căn chỉnh (reindex) các Series khi
+    có index trùng lặp. Đã thêm bước loại bỏ ngày trùng (giữ dòng CUỐI —
+    giả định lần ghi sau là bản cập nhật mới hơn/chính xác hơn) TRƯỚC khi
+    đưa vào `pd.concat`, để mục "🧭 Ensemble 3 phương pháp" không bị vỡ
+    toàn trang chỉ vì 1 mã lỗi dữ liệu.
     """
     if not danh_sach_ma:
         return None
@@ -2332,6 +2343,7 @@ def _dung_chi_so_dai_dien_tu_cac_ma(storage: Storage, danh_sach_ma: list[str]) -
         df_ma = pd.DataFrame(records)
         df_ma["date"] = pd.to_datetime(df_ma["date"])
         df_ma = df_ma.sort_values("date").set_index("date")
+        df_ma = df_ma[~df_ma.index.duplicated(keep="last")]
         gia_dau = df_ma["close"].iloc[0]
         if gia_dau and gia_dau > 0:
             danh_sach_df_chuan_hoa.append(df_ma["close"] / gia_dau * 100)
