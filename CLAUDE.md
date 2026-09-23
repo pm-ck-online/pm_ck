@@ -338,6 +338,62 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    trong), checkpoint theo THỜI GIAN đơn thuần KHÔNG đủ — cần thêm kiểm
    tra CẤU TRÚC (danh sách khóa/trường có đúng như phiên bản code hiện
    tại mong đợi hay không).
+4r. **LỖI NGHIÊM TRỌNG ĐÃ SỬA 23/09/2026 — hết hạn mức API vnstock làm
+   CHẾT CỨNG TOÀN BỘ batch giữa chừng, xuyên thủng mọi try/except**: sự
+   cố thực tế — người dùng chạy `update_pm_ck_daily.bat`/2 tác vụ
+   Task Scheduler ("Cập nhật toàn thị trường pm_ck", "Cập nhật watchlist
+   pm_ck") nhưng dữ liệu không cập nhật, log (`logs\main_update.log`)
+   dừng đột ngột ở dòng `Process terminated.` sau khi mới xử lý được
+   ~20/212 mã (từ đầu watchlist tới "BMI"), KHÔNG có traceback lỗi Python
+   bình thường nào. Nguyên nhân: `vnai` (dependency đi kèm `vnstock`,
+   quản lý hạn mức 60 request/phút bản Cộng đồng — chính là nguồn các
+   banner quảng cáo "GIỚI HẠN API ĐÃ ĐẠT TỐI ĐA" hay thấy trong log) tự
+   gọi `sys.exit("Rate limit exceeded... Process terminated.")` khi hết
+   hạn mức (xem `venv/Lib/site-packages/vnai/beam/quota.py::
+   CleanErrorContext.__exit__`) — `sys.exit()` raise `SystemExit`, kế
+   thừa `BaseException` chứ KHÔNG PHẢI `Exception`, nên **không hề bị bắt
+   bởi bất kỳ `except Exception:` nào** — kể cả các khối try/except
+   "1 mã lỗi không được làm hỏng cả pipeline" đã có sẵn ở TẤT CẢ 4 entry
+   point (`main.py::run_pipeline()`, `run_full_market.py`,
+   `update_indices.py`, `update_vcp.py`) — khiến `SystemExit` lan thẳng
+   ra ngoài, giết chết toàn bộ tiến trình Python ngay lập tức, dừng batch
+   vĩnh viễn tại đúng mã đang xử lý dở, không hề resume/retry được nữa
+   dù `run_full_market.py` vốn đã có checkpoint (checkpoint chỉ giúp khi
+   tiến trình dừng và CHẠY LẠI, không giúp nếu Task Scheduler chỉ chạy
+   1 lần/ngày và lần đó đã chết giữa chừng).
+
+   **CÁCH SỬA**: SỬA TẠI ĐÚNG 1 ĐIỂM DUY NHẤT — 4 hàm của
+   `VnstockDataSource` trong `core/data_collector.py` (`fetch_ohlcv`,
+   `fetch_realtime_price`, `fetch_index_ohlcv`, `fetch_symbol_sector_map`)
+   vốn đã có sẵn khối `try: ... except Exception as exc: raise
+   DataSourceError(...) from exc` bọc MỌI lệnh gọi `vnstock` (nguyên tắc
+   đã có từ trước: "bọc mọi lỗi thành DataSourceError thống nhất") — chỉ
+   cần đổi `except Exception as exc:` thành `except (Exception,
+   SystemExit) as exc:` ở CẢ 4 chỗ. Nhờ vậy `SystemExit` của `vnai` biến
+   thành 1 `DataSourceError` bình thường NGAY TẠI NGUỒN, tự động chảy
+   đúng qua cơ chế `_call_with_retry()` (retry rồi mới bỏ cuộc) VÀ mọi
+   `except Exception:` theo-từng-mã ở tầng trên đã có sẵn — KHÔNG cần sửa
+   riêng lẻ ở cả 4 entry point (tuân đúng nguyên tắc DRY, 1 điểm sửa duy
+   nhất thay vì rải rác nhiều nơi). Có test hand-verify riêng cho cả 4
+   hàm (`tests/test_data_collector.py`, class `TestVnstockDataSource`,
+   4 test `test_*_converts_vnai_systemexit_to_datasourceerror`) — mô
+   phỏng `vnai` bằng cách raise thẳng `SystemExit(...)` trong hàm giả lập
+   `market.equity()/quote()/index()/Listing().symbols_by_industries()`,
+   xác nhận kết quả là `DataSourceError` (bắt được), không phải
+   `SystemExit` (không bắt được) lan ra ngoài.
+
+   **BÀI HỌC TỔNG QUÁT**: khi 1 dependency bên thứ 3 (không phải code của
+   dự án) có thể tự ý gọi `sys.exit()`/raise `SystemExit`/`BaseException`
+   (không chỉ `Exception` thường), MỌI khối `except Exception:` trong dự
+   án — dù đã áp dụng đúng nguyên tắc "1 mã lỗi không làm hỏng cả
+   pipeline" — vẫn XUYÊN THỦNG được nếu không xử lý riêng. Cách xử lý
+   ĐÚNG là bắt sự cố đó NGAY TẠI ĐIỂM GỌI THƯ VIỆN NGOÀI (nơi code dự án
+   tiếp xúc trực tiếp với dependency, ở đây là 4 hàm `VnstockDataSource`)
+   và quy đổi về loại lỗi nội bộ chuẩn của dự án (`DataSourceError`) —
+   KHÔNG rải `except (Exception, SystemExit):` ra khắp các vòng lặp gọi
+   ở tầng trên (dễ sót, khó bảo trì, và có thể vô tình nuốt luôn
+   `KeyboardInterrupt` thật của người dùng nếu viết ẩu bằng
+   `except BaseException:`).
 5. **Toàn bộ code/comment/UI dùng tiếng Việt** (người dùng không đọc tiếng
    Anh trôi chảy). Giữ nguyên quy ước này cho mọi code mới.
 6. **Vietstock/CafeF/dữ liệu tài chính doanh nghiệp CHƯA có nguồn** — các

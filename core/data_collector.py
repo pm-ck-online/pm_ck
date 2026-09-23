@@ -373,7 +373,19 @@ class VnstockDataSource(DataSource):
                 )
             else:
                 raw_df = market.equity(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
-        except Exception as exc:  # noqa: BLE001 — bọc mọi lỗi thành DataSourceError thống nhất
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — bọc mọi lỗi thành DataSourceError thống nhất
+            # SystemExit: thư viện phụ thuộc "vnai" (đi kèm vnstock, quản lý
+            # hạn mức API) tự gọi sys.exit() khi hết hạn mức 60 request/phút
+            # thay vì raise 1 Exception thường (xem venv/Lib/site-packages/
+            # vnai/beam/quota.py::CleanErrorContext.__exit__) — SystemExit
+            # là BaseException, KHÔNG bị bắt bởi `except Exception:` ở các
+            # vòng lặp theo-từng-mã (main.py/run_full_market.py/
+            # update_indices.py/update_vcp.py), nên trước đây làm CHẾT
+            # TOÀN BỘ tiến trình batch giữa chừng, dù mọi nơi gọi hàm này
+            # đều đã có "1 mã lỗi không làm hỏng cả pipeline". Bắt luôn ở
+            # đây để nó chỉ còn là 1 DataSourceError bình thường — được
+            # retry (_call_with_retry) rồi bỏ qua đúng 1 mã như mọi lỗi
+            # mạng khác, không lan ra ngoài.
             raise DataSourceError(
                 f"Lỗi khi lấy OHLCV từ vnstock cho '{symbol}': {exc}"
             ) from exc
@@ -397,7 +409,7 @@ class VnstockDataSource(DataSource):
 
         try:
             quote_df = market.quote(symbol)
-        except Exception as exc:  # noqa: BLE001
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — xem chú thích ở fetch_ohlcv() về SystemExit của "vnai"
             raise DataSourceError(
                 f"Lỗi khi lấy giá hiện tại từ vnstock cho '{symbol}': {exc}"
             ) from exc
@@ -515,7 +527,7 @@ class VnstockDataSource(DataSource):
                 )
             else:
                 raw_df = market.index(symbol).ohlcv(interval=interval, count=self._ohlcv_count)
-        except Exception as exc:  # noqa: BLE001
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — xem chú thích ở fetch_ohlcv() về SystemExit của "vnai"
             raise DataSourceError(
                 f"Lỗi khi lấy dữ liệu chỉ số từ vnstock cho '{symbol}': {exc}"
             ) from exc
@@ -553,7 +565,7 @@ class VnstockDataSource(DataSource):
         try:
             listing = Listing(source="KBS")
             df = listing.symbols_by_industries()
-        except Exception as exc:  # noqa: BLE001
+        except (Exception, SystemExit) as exc:  # noqa: BLE001 — xem chú thích ở fetch_ohlcv() về SystemExit của "vnai"
             raise DataSourceError(
                 f"Lỗi khi lấy danh sách mã theo ngành từ vnstock: {exc}"
             ) from exc

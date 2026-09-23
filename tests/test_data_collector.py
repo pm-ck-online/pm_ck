@@ -367,6 +367,36 @@ class TestVnstockDataSource:
         with pytest.raises(DataSourceError):
             source.fetch_ohlcv("HPG")
 
+    def test_fetch_ohlcv_converts_vnai_systemexit_to_datasourceerror(self, monkeypatch):
+        """XÁC NHẬN THỰC TẾ (23/09/2026): thư viện `vnai` (dependency của
+        vnstock, quản lý hạn mức 60 request/phút) tự gọi
+        `sys.exit("Rate limit exceeded. ... Process terminated.")` — raise
+        `SystemExit` — khi hết hạn mức, thay vì 1 Exception thường (xem
+        `venv/Lib/site-packages/vnai/beam/quota.py::CleanErrorContext.
+        __exit__`). Vì `SystemExit` là `BaseException`, nó XUYÊN THỦNG mọi
+        `except Exception:` bảo vệ theo-từng-mã ở main.py/run_full_market.py/
+        update_indices.py/update_vcp.py — sự cố thực tế: batch hàng ngày
+        chết CỨNG giữa chừng (mới xử lý ~20/212 mã) mà KHÔNG hề có traceback
+        lỗi bình thường nào được log. Phải bắt được NGAY tại đây, biến nó
+        thành `DataSourceError` như mọi lỗi mạng khác, để `_call_with_retry`
+        + vòng lặp theo-từng-mã ở tầng trên hoạt động đúng như thiết kế."""
+        fake_module = types.ModuleType("vnstock")
+
+        class QuotaExceededEquity:
+            def ohlcv(self, interval, count):
+                raise SystemExit("Rate limit exceeded. Process terminated.")
+
+        class QuotaExceededMarket:
+            def equity(self, symbol):
+                return QuotaExceededEquity()
+
+        fake_module.Market = QuotaExceededMarket
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        with pytest.raises(DataSourceError):
+            source.fetch_ohlcv("HPG")
+
     def test_fetch_realtime_price_parses_correctly(self, fake_vnstock_module):
         source = VnstockDataSource()
         result = source.fetch_realtime_price("HPG")
@@ -433,6 +463,23 @@ class TestVnstockDataSource:
                 return pd.DataFrame([{"symbol": symbol, "exchange": "HOSE"}])
 
         fake_module.Market = FakeMarket
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        with pytest.raises(DataSourceError):
+            source.fetch_realtime_price("HPG")
+
+    def test_fetch_realtime_price_converts_vnai_systemexit_to_datasourceerror(self, monkeypatch):
+        """Cùng lý do với `test_fetch_ohlcv_converts_vnai_systemexit_to_datasourceerror`
+        — SystemExit của `vnai` khi hết hạn mức phải được bọc lại thành
+        DataSourceError, không lan ra ngoài."""
+        fake_module = types.ModuleType("vnstock")
+
+        class QuotaExceededMarket:
+            def quote(self, symbol):
+                raise SystemExit("Rate limit exceeded. Process terminated.")
+
+        fake_module.Market = QuotaExceededMarket
         monkeypatch.setitem(sys.modules, "vnstock", fake_module)
 
         source = VnstockDataSource()
@@ -572,6 +619,24 @@ class TestVnstockDataSource:
         with pytest.raises(DataSourceError):
             source.fetch_symbol_sector_map()
 
+    def test_fetch_symbol_sector_map_converts_vnai_systemexit_to_datasourceerror(self, monkeypatch):
+        """Cùng lý do với `test_fetch_ohlcv_converts_vnai_systemexit_to_datasourceerror`."""
+        fake_module = types.ModuleType("vnstock")
+
+        class QuotaExceededListing:
+            def __init__(self, source=None):
+                self.source = source
+
+            def symbols_by_industries(self):
+                raise SystemExit("Rate limit exceeded. Process terminated.")
+
+        fake_module.Listing = QuotaExceededListing
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        with pytest.raises(DataSourceError):
+            source.fetch_symbol_sector_map()
+
     def test_fetch_index_ohlcv_renames_time_to_date(self, fake_vnstock_module):
         source = VnstockDataSource()
         df = source.fetch_index_ohlcv("VNINDEX", timeframe="day")
@@ -591,6 +656,25 @@ class TestVnstockDataSource:
                 return BadIndex()
 
         fake_module.Market = BadMarket
+        monkeypatch.setitem(sys.modules, "vnstock", fake_module)
+
+        source = VnstockDataSource()
+        with pytest.raises(DataSourceError):
+            source.fetch_index_ohlcv("VNINDEX")
+
+    def test_fetch_index_ohlcv_converts_vnai_systemexit_to_datasourceerror(self, monkeypatch):
+        """Cùng lý do với `test_fetch_ohlcv_converts_vnai_systemexit_to_datasourceerror`."""
+        fake_module = types.ModuleType("vnstock")
+
+        class QuotaExceededIndex:
+            def ohlcv(self, interval, count):
+                raise SystemExit("Rate limit exceeded. Process terminated.")
+
+        class QuotaExceededMarket:
+            def index(self, symbol):
+                return QuotaExceededIndex()
+
+        fake_module.Market = QuotaExceededMarket
         monkeypatch.setitem(sys.modules, "vnstock", fake_module)
 
         source = VnstockDataSource()
