@@ -2024,22 +2024,52 @@ def render_indicator_lab_section(storage: Storage) -> None:
 def render_hdtl_vn30_section(storage: Storage) -> None:
     """Công cụ tính toán HĐTL VN30 (bổ sung 04/08/2026) — entry range,
     phân bổ vốn (ràng buộc kép: rủi ro 2% NAV + trần ký quỹ), và R:R.
-    Toàn bộ input NHẬP TAY (không phụ thuộc dữ liệu tự động) — vì HĐTL
-    VN30 cần nguồn dữ liệu phái sinh riêng (HNX/công ty chứng khoán),
-    KHÔNG lấy được qua vnstock/Binance đang dùng cho phần còn lại của
-    hệ thống.
+
+    BỔ SUNG 23/09/2026: "Giá tham chiếu"/"ATR14" giờ TỰ ĐIỀN từ dữ liệu
+    VN30F1M lấy tự động hàng ngày qua vnstock (`main.run_vn30f1m_step()`,
+    category `indicator_snapshot` key "VN30F1M") — vẫn cho sửa tay. Trước
+    đây docstring này ghi "HĐTL VN30 cần nguồn dữ liệu phái sinh riêng,
+    KHÔNG lấy được qua vnstock" — giả định đó đã LỖI THỜI/SAI, đã kiểm
+    chứng thực tế vnstock TỰ nhận diện + lấy được mã phái sinh qua ĐÚNG
+    endpoint cổ phiếu thường (`market.equity(...)`), không cần adapter
+    riêng. Các tham số còn lại (NAV, kiểu tín hiệu, giá cắt lỗ/chốt lời,
+    ký quỹ...) vẫn NHẬP TAY vì phụ thuộc quyết định/tài khoản riêng của
+    người dùng, không thể tự động hóa.
     """
     st.subheader("📐 HĐTL VN30 — Entry / Phân bổ vốn / R:R")
     st.caption(
         "⚠️ Công cụ TÍNH TOÁN THAM KHẢO — KHÔNG tự động đặt lệnh, không phải khuyến "
         "nghị đầu tư hay đảm bảo lợi nhuận. Phái sinh có đòn bẩy cao, cơ chế thanh "
         "toán bù trừ hàng ngày (mark-to-market) có thể gây lỗ nhanh hơn nhiều so với "
-        "cổ phiếu thường. Toàn bộ input bên dưới NHẬP TAY theo dữ liệu bạn tự theo dõi."
+        "cổ phiếu thường."
     )
 
     from core.derivatives_trading_engine import (
         HUONG_THEO_TIN_HIEU, InvalidDerivativesError, phan_tich_lenh_hdtl_vn30,
     )
+
+    # "Giá tham chiếu"/"ATR14" tự điền từ VN30F1M đã lấy tự động (nếu có),
+    # vẫn cho sửa tay — ví dụ mặc định cũ (1830.0/25.0) chỉ dùng khi CHƯA
+    # có dữ liệu tự động (VD máy mới chưa chạy `update_indices.py` lần nào).
+    snapshot_vn30f1m = storage.get_latest("indicator_snapshot", "VN30F1M")
+    gia_tham_chieu_mac_dinh, atr14_mac_dinh = 1830.0, 25.0
+    if snapshot_vn30f1m is not None:
+        data_vn30f1m = snapshot_vn30f1m["data"]
+        if data_vn30f1m.get("close") is not None:
+            gia_tham_chieu_mac_dinh = float(data_vn30f1m["close"])
+        if data_vn30f1m.get("atr14") is not None:
+            atr14_mac_dinh = float(data_vn30f1m["atr14"])
+        st.caption(
+            f"🕒 Giá tham chiếu/ATR14 đã TỰ ĐIỀN từ dữ liệu VN30F1M — cập nhật lúc "
+            f"{_dinh_dang_thoi_gian_ngan_gon(snapshot_vn30f1m.get('timestamp'))}. "
+            f"Vẫn có thể sửa tay bên dưới nếu cần."
+        )
+    else:
+        st.caption(
+            "ℹ️ Chưa có dữ liệu VN30F1M tự động — chạy `update_indices.py` (hoặc "
+            "`update_pm_ck_daily.bat`) để lấy. Đang dùng giá trị ví dụ mặc định bên "
+            "dưới, anh tự nhập số liệu thật."
+        )
 
     col1, col2 = st.columns(2)
     with col1:
@@ -2058,8 +2088,8 @@ def render_hdtl_vn30_section(storage: Storage) -> None:
             key="hdtl_kieu_tin_hieu",
         )
     with col2:
-        gia_tham_chieu = st.number_input("Giá tham chiếu (điểm chỉ số)", value=1830.0, min_value=0.1, step=0.5, key="hdtl_gia_tham_chieu")
-        atr14 = st.number_input("ATR14 (điểm chỉ số)", value=25.0, min_value=0.1, step=0.5, key="hdtl_atr14")
+        gia_tham_chieu = st.number_input("Giá tham chiếu (điểm chỉ số)", value=gia_tham_chieu_mac_dinh, min_value=0.1, step=0.5, key="hdtl_gia_tham_chieu")
+        atr14 = st.number_input("ATR14 (điểm chỉ số)", value=atr14_mac_dinh, min_value=0.1, step=0.5, key="hdtl_atr14")
         gia_cat_lo = st.number_input("Giá cắt lỗ (điểm chỉ số)", value=1812.0, step=0.5, key="hdtl_gia_cat_lo")
         gia_chot_loi_nhap = st.number_input(
             "Giá chốt lời dự kiến (điểm chỉ số) — để 0 nếu chưa xác định",

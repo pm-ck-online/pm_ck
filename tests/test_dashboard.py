@@ -87,6 +87,15 @@ def seeded_storage(isolated_db_path):
         "choppiness_score": 55.0, "canh_bao": [], "do_tin_cay_thap": False,
     })
 
+    # Mục "📐 HĐTL VN30" (bổ sung 23/09/2026) tự điền "Giá tham chiếu"/
+    # "ATR14" từ indicator_snapshot của "VN30F1M" (do run_vn30f1m_step()
+    # lưu — xem tests/test_main_index_step.py::TestRunVn30F1mStep).
+    storage.save("indicator_snapshot", "VN30F1M", {
+        "close": 1955.5, "ma20": 1940.0, "ema50": 1900.0, "ema100": 1850.0,
+        "ema200": 1800.0, "volume_ma_15": 150_000, "volume_ma_20": 140_000,
+        "price_above_ema200": True, "atr14": 27.3,
+    })
+
     # Cần thiết để mục "Giai đoạn thị trường" không thoát sớm ở bước lấy
     # danh sách ngành (all_symbol_sector_keys) — mã HPG được gán ngành
     # "banking", khớp với market_regime "banking" seed bên dưới.
@@ -226,6 +235,12 @@ class TestDashboardSmoke:
         at = AppTest.from_file(DASHBOARD_PATH)
         at.run(timeout=30)
         assert not at.exception
+
+        # Mục "📐 HĐTL VN30" (bổ sung 23/09/2026): "Giá tham chiếu"/"ATR14"
+        # phải TỰ ĐIỀN đúng từ indicator_snapshot của "VN30F1M" đã seed
+        # (1955.5/27.3), KHÔNG còn dùng ví dụ mặc định cũ (1830.0/25.0).
+        assert at.number_input(key="hdtl_gia_tham_chieu").value == pytest.approx(1955.5)
+        assert at.number_input(key="hdtl_atr14").value == pytest.approx(27.3)
 
         # Mục "🎭 Tính cách giao dịch từng mã": danh sách chỉ có 1 mã (HPG,
         # seed ở seeded_storage) -> TỰ ĐỘNG thử lấy giá Realtime (không cần

@@ -261,6 +261,44 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    sẽ có 1 NGÀY chạy lâu hơn hẳn (gần bằng đợt backfill full ~1.5-2 giờ)
    vào đúng ngày đó, các ngày còn lại vẫn nhanh (~35-40 phút) như bình
    thường — đây là hành vi ĐÃ BIẾT TRƯỚC, không phải lỗi.
+4p. **BỔ SUNG 23/09/2026 — HĐTL VN30F1M giờ lấy dữ liệu TỰ ĐỘNG qua
+   vnstock, KHÔNG còn nhập tay hoàn toàn**: docstring cũ của
+   `render_hdtl_vn30_section()` (dashboard/app.py) từng khẳng định "HĐTL
+   VN30 cần nguồn dữ liệu phái sinh riêng, KHÔNG lấy được qua vnstock" —
+   giả định này ĐÃ LỖI THỜI/SAI. Đã kiểm chứng thực tế (script debug thủ
+   công): `market.equity("VN30F1M").ohlcv(...)` — ĐÚNG endpoint cổ phiếu
+   thường mà `DataCollector.get_ohlcv()`/`VnstockDataSource.fetch_ohlcv()`
+   đã dùng cho cổ phiếu — vnstock TỰ nhận diện mã phái sinh, TỰ quy đổi
+   sang định dạng KRX nội bộ, KHÔNG cần adapter riêng. **LƯU Ý quan
+   trọng**: đây là endpoint CỔ PHIẾU (`fetch_ohlcv`/`get_ohlcv`), KHÁC
+   với endpoint CHỈ SỐ (`fetch_index_ohlcv`/`get_index_ohlcv` — dùng cho
+   VNINDEX/VN30/VN100) — dễ nhầm vì VN30F1M "nghe giống" VN30 (chỉ số)
+   nhưng về mặt API lại giống CỔ PHIẾU hơn.
+
+   Đã thêm `main.run_vn30f1m_step()` (mẫu theo `run_index_step()` nhưng
+   dùng `get_ohlcv()` thay vì `get_index_ohlcv()`, có tính thêm `atr14`
+   qua `core.market_breadth.calculate_atr()` — chỉ số ATR14 không có sẵn
+   trong `get_indicator_snapshot()`), đọc symbol list từ
+   `config.yaml -> watchlist.derivatives` (mảng mới, sườn giống
+   `watchlist.indices`) — gọi ở CẢ 2 nơi `main.py::run_pipeline()` VÀ
+   `update_indices.py` (đúng bài học 4c/4c2: không chỉ 1 trong 2 entry
+   point). Giống chỉ số: CHỈ tính chỉ báo + "Tính cách giao dịch"
+   (`run_stock_character_step`), KHÔNG chạy pattern_detector/
+   market_regime/capital_allocation/tín hiệu mua-bán (các module đó giả
+   định mua CỔ PHIẾU theo lô, không có khái niệm đòn bẩy/ký quỹ/hợp đồng
+   của phái sinh) — KHÔNG gọi `run_long_term_screener_step()` cho
+   VN30F1M (không được yêu cầu, tránh tốn thêm ~26s fit Ensemble không
+   cần thiết).
+
+   Mục **"📐 HĐTL VN30 — Entry/Vốn/R:R"** giờ TỰ ĐIỀN "Giá tham chiếu"
+   (= `indicator_snapshot["VN30F1M"]["close"]`) và "ATR14" từ dữ liệu tự
+   động này (vẫn cho sửa tay) — các tham số còn lại (NAV, kiểu tín hiệu,
+   giá cắt lỗ/chốt lời, ký quỹ...) VẪN nhập tay vì phụ thuộc quyết định/
+   tài khoản riêng, không thể tự động hóa. `VN30F1M` cũng TỰ ĐỘNG xuất
+   hiện ở "🕯️ Biểu đồ nến" và "🎭 Tính cách giao dịch từng mã" (2 mục đó
+   đọc GENERIC qua `storage.query_all_keys(...)`, không lọc theo
+   watchlist — không cần sửa gì thêm, giống cách VN30/VNINDEX đã hoạt
+   động từ trước, xem mục 4k phía trên).
 5. **Toàn bộ code/comment/UI dùng tiếng Việt** (người dùng không đọc tiếng
    Anh trôi chảy). Giữ nguyên quy ước này cho mọi code mới.
 6. **Vietstock/CafeF/dữ liệu tài chính doanh nghiệp CHƯA có nguồn** — các

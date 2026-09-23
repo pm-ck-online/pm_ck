@@ -48,6 +48,7 @@ from backtest.backtest_engine import Trade  # noqa: F401 (tham chiếu cho phát
 from core.capital_allocator import get_allocation_recommendation
 from core.data_collector import BinanceDataSource, DataCollector, MockDataSource, VnstockDataSource
 from core.indicators import get_indicator_snapshot
+from core.market_breadth import calculate_atr
 from core.market_regime_detector import detect_market_regime
 from core.notifier import Notifier, RealTelegramClient
 from core.paper_portfolio import create_portfolio
@@ -722,6 +723,61 @@ def run_index_step(
     return snapshot
 
 
+def run_vn30f1m_step(
+    collector: DataCollector,
+    storage: Storage,
+    symbol: str,
+    config: dict,
+) -> Optional[dict]:
+    """Lấy dữ liệu + tính chỉ báo cho HỢP ĐỒNG TƯƠNG LAI chỉ số VN30 (VD
+    "VN30F1M") — bổ sung 23/09/2026 theo yêu cầu người dùng.
+
+    KHÁC với `run_index_step()` (dùng `DataCollector.get_index_ohlcv()`,
+    endpoint chỉ số riêng): hợp đồng tương lai lấy qua ĐÚNG endpoint cổ
+    phiếu thường (`DataCollector.get_ohlcv()` -> `market.equity(...)`)
+    — đã KIỂM CHỨNG THỰC TẾ (23/09/2026, script debug thủ công) rằng
+    vnstock TỰ nhận diện mã phái sinh, TỰ quy đổi sang định dạng KRX nội
+    bộ, KHÔNG cần adapter riêng. Ghi đè giả định TRƯỚC ĐÂY trong docstring
+    `render_hdtl_vn30_section()` (dashboard/app.py) rằng "không lấy được
+    qua vnstock" — giả định đó đã LỖI THỜI/SAI, nay đã sửa lại.
+
+    Giống `run_index_step()`: CHỈ tính chỉ báo (MA/EMA/RSI qua
+    `get_indicator_snapshot()`, THÊM `atr14` — dùng để tự điền mục
+    "📐 HĐTL VN30 — Entry/Vốn/R:R") + "Tính cách giao dịch" — KHÔNG chạy
+    pattern_detector/market_regime/capital_allocation/tín hiệu mua bán,
+    vì các module đó giả định mua CỔ PHIẾU theo lô (không có khái niệm
+    đòn bẩy/ký quỹ/số hợp đồng của phái sinh).
+    """
+    try:
+        df = collector.get_ohlcv(symbol, timeframe="day")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[%s] Không lấy được dữ liệu hợp đồng tương lai: %s", symbol, exc)
+        return None
+
+    ohlcv_tail = df.tail(1500).copy()
+    ohlcv_tail["date"] = ohlcv_tail["date"].astype(str)
+    storage.save(
+        "ohlcv_history", symbol,
+        {"records": ohlcv_tail.to_dict(orient="records")},
+    )
+
+    snapshot = get_indicator_snapshot(df, config=config.get("indicators", {}))
+    atr14_series = calculate_atr(df, 14)
+    snapshot["atr14"] = (
+        None if len(atr14_series) == 0 or pd.isna(atr14_series.iloc[-1])
+        else float(atr14_series.iloc[-1])
+    )
+    storage.save("indicator_snapshot", symbol, snapshot)
+    logger.info(
+        "[%s] Chỉ báo hợp đồng tương lai: close=%.2f, ATR14=%s, EMA200=%s",
+        symbol, snapshot["close"], snapshot.get("atr14"), snapshot.get("ema200"),
+    )
+
+    run_stock_character_step(storage, symbol, df)
+
+    return snapshot
+
+
 # ==============================================================================
 # BƯỚC 4 — paper_portfolio + notifier
 # ==============================================================================
@@ -850,6 +906,19 @@ def run_pipeline(config: dict) -> None:
         except Exception:
             logger.exception(
                 "Lỗi khi xử lý chỉ số %s — bỏ qua, tiếp tục chỉ số tiếp theo.", index_symbol
+            )
+            continue
+
+    # --- Hợp đồng tương lai (VN30F1M...) — bổ sung 23/09/2026 ---
+    derivative_symbols = config.get("watchlist", {}).get("derivatives", [])
+    for derivative_symbol in derivative_symbols:
+        logger.info("=== Xử lý hợp đồng tương lai %s ===", derivative_symbol)
+        try:
+            run_vn30f1m_step(collector, storage, derivative_symbol, config)
+        except Exception:
+            logger.exception(
+                "Lỗi khi xử lý hợp đồng tương lai %s — bỏ qua, tiếp tục mã tiếp theo.",
+                derivative_symbol,
             )
             continue
 

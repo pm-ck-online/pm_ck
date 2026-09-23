@@ -343,6 +343,18 @@ watchlist:
     - "VN30"
     - "VN100"
 
+  # Hợp đồng tương lai (phái sinh) — bổ sung 23/09/2026 theo yêu cầu
+  # người dùng, sau khi kiểm chứng thực tế vnstock TỰ nhận diện + lấy
+  # được dữ liệu qua ĐÚNG endpoint cổ phiếu thường (market.equity(...)),
+  # KHÔNG qua endpoint chỉ số như "indices" ở trên — xem run_vn30f1m_step()
+  # trong main.py. Cũng CHỈ lấy giá + chỉ báo (thêm ATR14) để theo dõi/vẽ
+  # biểu đồ + tự điền mục "📐 HĐTL VN30 — Entry/Vốn/R:R", KHÔNG chạy
+  # pattern_detector/market_regime/capital_allocation/tín hiệu mua bán
+  # (các module đó giả định mua CỔ PHIẾU theo lô, không áp dụng cho hợp
+  # đồng có đòn bẩy/ký quỹ).
+  derivatives:
+    - "VN30F1M"
+
 # ------------------------------------------------------------------------------
 # STORAGE
 # ------------------------------------------------------------------------------

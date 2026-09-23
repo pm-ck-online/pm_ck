@@ -16,7 +16,7 @@ import logging
 
 from main import (
     build_data_collector, load_config, resolve_storage_path,
-    run_index_step, run_long_term_screener_step,
+    run_index_step, run_long_term_screener_step, run_vn30f1m_step,
 )
 from core.storage import Storage
 
@@ -47,6 +47,19 @@ def main() -> None:
             logger.exception(
                 "Lỗi khi xử lý chỉ số %s — bỏ qua, tiếp tục chỉ số tiếp theo.",
                 index_symbol,
+            )
+            continue
+
+    # --- Hợp đồng tương lai (VN30F1M...) — bổ sung 23/09/2026 ---
+    derivative_symbols = config.get("watchlist", {}).get("derivatives", [])
+    for derivative_symbol in derivative_symbols:
+        logger.info("=== Xử lý hợp đồng tương lai %s ===", derivative_symbol)
+        try:
+            run_vn30f1m_step(collector, storage, derivative_symbol, config)
+        except Exception:
+            logger.exception(
+                "Lỗi khi xử lý hợp đồng tương lai %s — bỏ qua, tiếp tục mã tiếp theo.",
+                derivative_symbol,
             )
             continue
 

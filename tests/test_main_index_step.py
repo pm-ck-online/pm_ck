@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from core.data_collector import DataCollector, MockDataSource
 from core.storage import Storage
 from main import (
@@ -19,6 +21,7 @@ from main import (
     _da_qua_han_lam_moi_co_phieu_dai_han,
     run_index_step,
     run_long_term_screener_step,
+    run_vn30f1m_step,
 )
 
 
@@ -54,6 +57,64 @@ class TestRunIndexStepTinhCachGiaoDich:
 
         assert ket_qua is None
         assert storage.get_latest("stock_character", "VN30") is None
+        storage.close()
+
+
+class TestRunVn30F1mStep:
+    """Bổ sung 23/09/2026 (yêu cầu người dùng): tự động lấy dữ liệu HĐTL
+    VN30F1M hàng ngày giống 1 mã bình thường — dùng `DataCollector.get_ohlcv()`
+    (endpoint cổ phiếu thường), KHÁC `run_index_step()` (dùng
+    `get_index_ohlcv()`, endpoint chỉ số riêng) — đã kiểm chứng thực tế
+    vnstock TỰ nhận diện mã phái sinh qua đúng endpoint cổ phiếu thường."""
+
+    def test_luu_ohlcv_va_indicator_snapshot_kem_atr14(self):
+        from core.market_breadth import calculate_atr
+
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(MockDataSource())
+
+        snapshot = run_vn30f1m_step(collector, storage, "VN30F1M", config={})
+
+        assert snapshot is not None
+        assert storage.get_latest("ohlcv_history", "VN30F1M") is not None
+        record = storage.get_latest("indicator_snapshot", "VN30F1M")
+        assert record is not None
+        assert "atr14" in record["data"]  # có tính thêm ATR14 (dùng cho mục HĐTL VN30)
+
+        # Đối chiếu chéo: ATR14 lưu lại phải KHỚP với gọi calculate_atr()
+        # trực tiếp trên CÙNG dữ liệu (đã có test riêng cho calculate_atr()
+        # — ở đây chỉ xác nhận run_vn30f1m_step() NỐI ĐÚNG kết quả đó vào
+        # snapshot, không tính sai/tính thiếu).
+        df_doi_chieu = collector.get_ohlcv("VN30F1M", timeframe="day")
+        atr14_ky_vong = calculate_atr(df_doi_chieu, 14).iloc[-1]
+        assert record["data"]["atr14"] == pytest.approx(float(atr14_ky_vong))
+
+    def test_cung_tinh_ca_tinh_cach_giao_dich(self):
+        """Giống chỉ số (run_index_step) — VN30F1M cũng phải xuất hiện ở
+        mục "Tính cách giao dịch từng mã" (đọc storage.query_all_keys("stock_character"))."""
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(MockDataSource())
+
+        run_vn30f1m_step(collector, storage, "VN30F1M", config={})
+
+        character_record = storage.get_latest("stock_character", "VN30F1M")
+        assert character_record is not None
+        assert character_record["data"].get("nhan_tinh_cach") is not None
+        storage.close()
+
+    def test_loi_lay_du_lieu_khong_luu_gi_va_tra_ve_none(self):
+        class _ThatBaiSource(MockDataSource):
+            def fetch_ohlcv(self, symbol, timeframe="day"):
+                raise RuntimeError("giả lập lỗi mạng")
+
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(_ThatBaiSource())
+
+        ket_qua = run_vn30f1m_step(collector, storage, "VN30F1M", config={})
+
+        assert ket_qua is None
+        assert storage.get_latest("ohlcv_history", "VN30F1M") is None
+        assert storage.get_latest("stock_character", "VN30F1M") is None
         storage.close()
 
 
