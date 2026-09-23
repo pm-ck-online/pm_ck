@@ -19,6 +19,7 @@ from core.storage import Storage
 from main import (
     SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
     _da_qua_han_lam_moi_co_phieu_dai_han,
+    _thieu_bo_chi_so_moi_trong_long_term_screener_report,
     run_index_step,
     run_long_term_screener_step,
     run_vn30f1m_step,
@@ -220,6 +221,51 @@ class TestDaQuaHanLamMoiCoPhieuDaiHan:
 
 
 # ==============================================================================
+# Test: _thieu_bo_chi_so_moi_trong_long_term_screener_report — sự cố thực
+# tế 24/09/2026 (LẦN THỨ 4 cùng dạng lỗi — xem 4n/4o trong CLAUDE.md): sau
+# khi thêm bộ chỉ số MỚI "Cuối tháng + RSI70" vào xay_8_bo_chi_so(), dữ
+# liệu ĐÃ TÍNH TRƯỚC ĐÓ (dù còn mới theo NGÀY, trong hạn 7 ngày) vẫn
+# THIẾU bộ chỉ số này — checkpoint theo hạn ngày (4o) không phát hiện
+# được, cần thêm kiểm tra CẤU TRÚC riêng.
+# ==============================================================================
+
+class TestThieuBoChiSoMoiTrongLongTermScreenerReport:
+    def _ket_qua_mau(self, ten_bo_chi_so_list):
+        return {ten: {"n_trades": 0} for ten in ten_bo_chi_so_list}
+
+    def test_record_none_khong_can_tinh_lai_o_day(self):
+        # None đã được _da_qua_han_lam_moi_co_phieu_dai_han() xử lý riêng
+        # -> hàm này PHẢI trả về False để tránh trùng logic/gây nhầm lẫn.
+        assert _thieu_bo_chi_so_moi_trong_long_term_screener_report(None) is False
+
+    def test_du_ca_9_bo_khong_can_tinh_lai(self):
+        from core.long_term_indicator_backtest import TEN_CAC_BO_CHI_SO_DON_LE
+        record = {"data": {
+            "regime_fast": {"results": self._ket_qua_mau(TEN_CAC_BO_CHI_SO_DON_LE)},
+            "regime_ensemble": {"results": self._ket_qua_mau(TEN_CAC_BO_CHI_SO_DON_LE)},
+        }}
+        assert _thieu_bo_chi_so_moi_trong_long_term_screener_report(record) is False
+
+    def test_thieu_cuoi_thang_rsi70_can_tinh_lai(self):
+        # Mô phỏng ĐÚNG dữ liệu cũ (tính trước 24/09/2026, chỉ có 8 bộ).
+        ten_8_bo_cu = [
+            "MA20 (Giá cắt MA20)", "EMA50/EMA200 (Golden/Death Cross)",
+            "RSI14 (Quá mua/Quá bán 30-70)", "Bollinger Breakout + Volume",
+            "Bollinger Bounce (mua đáy dải dưới)", "Volume Breakout + MA20",
+            "Kết hợp: Trend Filter EMA + RSI", "Mua và giữ (Buy & Hold)",
+        ]
+        record = {"data": {
+            "regime_fast": {"results": self._ket_qua_mau(ten_8_bo_cu)},
+            "regime_ensemble": {"results": self._ket_qua_mau(ten_8_bo_cu)},
+        }}
+        assert _thieu_bo_chi_so_moi_trong_long_term_screener_report(record) is True
+
+    def test_thieu_ca_regime_fast_lan_regime_ensemble_van_can_tinh_lai(self):
+        record = {"data": {}}
+        assert _thieu_bo_chi_so_moi_trong_long_term_screener_report(record) is True
+
+
+# ==============================================================================
 # Test: run_long_term_screener_step tự làm mới theo hạn — sự cố thực tế
 # 15/09/2026: dù chạy batch hàng ngày, "Cổ phiếu dài hạn" của SSI vẫn báo
 # "Cập nhật lần cuối: 26/08/2026" vì checkpoint cũ chỉ hỏi "đã có chưa",
@@ -229,10 +275,34 @@ class TestDaQuaHanLamMoiCoPhieuDaiHan:
 
 class TestLamMoiTheoHanCoPhieuDaiHan:
     def _seed_bao_cao_cu(self, storage: Storage, updated_at: str) -> None:
+        # `results` liệt kê ĐỦ TẤT CẢ bộ chỉ số HIỆN TẠI (không rỗng) —
+        # mô phỏng dữ liệu THỰC SỰ đầy đủ/mới, khác với kịch bản "thiếu
+        # bộ chỉ số mới" (test riêng bên dưới, dùng dữ liệu CHỈ có 8 bộ cũ).
+        from core.long_term_indicator_backtest import TEN_CAC_BO_CHI_SO_DON_LE
+        ket_qua_mau = {ten: {"n_trades": 0} for ten in TEN_CAC_BO_CHI_SO_DON_LE}
         storage.save("long_term_screener_report", "VN30", {
             "sector": "index", "updated_at": updated_at,
-            "regime_fast": {"current": None, "best_strategy": None, "results": {}},
-            "regime_ensemble": {"current": None, "best_strategy": None, "results": {}},
+            "regime_fast": {"current": None, "best_strategy": None, "results": ket_qua_mau},
+            "regime_ensemble": {"current": None, "best_strategy": None, "results": ket_qua_mau},
+        })
+        storage.save("chien_luoc_to_hop_theo_nam", "VN30", {
+            "sector": "index", "updated_at": updated_at, "ket_qua": [],
+        })
+
+    def _seed_bao_cao_thieu_bo_chi_so_moi(self, storage: Storage, updated_at: str) -> None:
+        """Mô phỏng dữ liệu tính TRƯỚC 24/09/2026 — chỉ có 8 bộ cũ, THIẾU
+        "Cuối tháng + RSI70" — dù `updated_at` còn MỚI (trong hạn 7 ngày)."""
+        ten_8_bo_cu = [
+            "MA20 (Giá cắt MA20)", "EMA50/EMA200 (Golden/Death Cross)",
+            "RSI14 (Quá mua/Quá bán 30-70)", "Bollinger Breakout + Volume",
+            "Bollinger Bounce (mua đáy dải dưới)", "Volume Breakout + MA20",
+            "Kết hợp: Trend Filter EMA + RSI", "Mua và giữ (Buy & Hold)",
+        ]
+        ket_qua_mau = {ten: {"n_trades": 0} for ten in ten_8_bo_cu}
+        storage.save("long_term_screener_report", "VN30", {
+            "sector": "index", "updated_at": updated_at,
+            "regime_fast": {"current": None, "best_strategy": None, "results": ket_qua_mau},
+            "regime_ensemble": {"current": None, "best_strategy": None, "results": ket_qua_mau},
         })
         storage.save("chien_luoc_to_hop_theo_nam", "VN30", {
             "sector": "index", "updated_at": updated_at, "ket_qua": [],
@@ -272,4 +342,29 @@ class TestLamMoiTheoHanCoPhieuDaiHan:
         # trị đã seed (không có bản ghi MỚI nào được lưu đè lên).
         assert record_report["data"]["updated_at"] == ngay_moi
         assert record_to_hop["data"]["updated_at"] == ngay_moi
+        storage.close()
+
+    def test_du_moi_nhung_thieu_bo_chi_so_moi_van_duoc_tinh_lai(self):
+        """Sự cố thực tế 24/09/2026 (LẦN THỨ 4 cùng dạng lỗi — xem 4n/4o
+        CLAUDE.md): dữ liệu CÒN MỚI theo ngày (2 ngày trước, trong hạn 7
+        ngày) nhưng THIẾU bộ chỉ số "Cuối tháng + RSI70" (tính bằng code
+        cũ trước khi thêm bộ này) — PHẢI vẫn được tính lại, không được để
+        "mắc kẹt" thiếu vĩnh viễn cho tới lần quá hạn tiếp theo."""
+        storage = Storage(db_path=":memory:")
+        collector = DataCollector(MockDataSource())
+        run_index_step(collector, storage, "VN30", config={})
+
+        ngay_moi = (datetime.now() - timedelta(days=2)).isoformat()
+        self._seed_bao_cao_thieu_bo_chi_so_moi(storage, ngay_moi)
+
+        run_long_term_screener_step(storage, {"VN30": "index"})
+
+        record_report = storage.get_latest("long_term_screener_report", "VN30")
+        record_to_hop = storage.get_latest("chien_luoc_to_hop_theo_nam", "VN30")
+        assert record_report["data"]["updated_at"] != ngay_moi, (
+            "Dữ liệu thiếu bộ chỉ số mới phải được tính lại dù còn MỚI theo ngày"
+        )
+        assert record_to_hop["data"]["updated_at"] != ngay_moi
+        ket_qua_fast = record_report["data"]["regime_fast"]["results"]
+        assert "Cuối tháng + RSI70" in ket_qua_fast
         storage.close()

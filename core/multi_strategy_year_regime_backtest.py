@@ -6,8 +6,9 @@ multi_strategy_year_regime_backtest.py
 Mở rộng `core/long_term_indicator_backtest.py`: thay vì CHỈ bucket kết
 quả theo giai đoạn (Uptrend/Sideway/Downtrend) trên TOÀN BỘ lịch sử,
 module này bucket THÊM theo TỪNG NĂM DƯƠNG LỊCH riêng biệt (lãi cộng dồn
-TRONG 1 năm cụ thể, không cộng dồn qua các năm khác) — VÀ mở rộng từ 8
-bộ chỉ số đơn lẻ sang THÊM 21 TỔ HỢP CẶP (kết hợp 2 trong 7 bộ có điều
+TRONG 1 năm cụ thể, không cộng dồn qua các năm khác) — VÀ mở rộng từ 9
+bộ chỉ số đơn lẻ (xem `xay_8_bo_chi_so()` — tên hàm giữ "8" vì lý do lịch
+sử, nay đã có 9 bộ) sang THÊM 28 TỔ HỢP CẶP (kết hợp 2 trong 8 bộ có điều
 kiện vào/ra rõ ràng, không gồm "Mua và giữ" — tổ hợp với Buy&Hold vô
 nghĩa vì Buy&Hold không có điều kiện ra).
 
@@ -18,7 +19,7 @@ nghĩa vì Buy&Hold không có điều kiện ra).
 Dùng lại NGUYÊN VẸN `backtest.backtest_engine.run_backtest()` (không
 lookahead bias — thực thi ở giá MỞ CỬA ngày kế tiếp) và
 `core.long_term_indicator_backtest.xay_8_bo_chi_so()` (không tự viết lại
-công thức tín hiệu của 8 bộ đã có).
+công thức tín hiệu của các bộ đã có).
 
 QUAN TRỌNG: module này KHÔNG tự tính chuỗi giai đoạn (Ensemble 3 phương
 pháp cần fit Markov, ~26 giây/mã — RẤT TỐN) — `regime_series` phải được
@@ -47,7 +48,11 @@ def xay_to_hop_cap_bo_chi_so(
     `bo_8` (thường lấy từ `xay_8_bo_chi_so()`), TRỪ `TEN_KHONG_TO_HOP`
     ("Mua và giữ") — entry = A.entry AND B.entry, exit = A.exit OR B.exit.
 
-    Với 7 bộ còn lại (loại Buy&Hold), trả về C(7,2) = 21 tổ hợp.
+    Với 8 bộ còn lại (loại Buy&Hold), trả về C(8,2) = 28 tổ hợp — hàm
+    NÀY hoàn toàn GENERIC theo số lượng bộ chỉ số truyền vào `bo_8`, không
+    hardcode số 7/21 (những con số đó chỉ đúng ở thời điểm module này chỉ
+    có 8 bộ; sau khi thêm "Cuối tháng + RSI70" — bổ sung 24/09/2026 — tự
+    động lên 28 mà không cần sửa hàm này).
     """
     ten_hop_le = [t for t in bo_8 if t != TEN_KHONG_TO_HOP]
     ket_qua: dict[str, tuple[pd.Series, pd.Series]] = {}
@@ -100,7 +105,7 @@ def backtest_to_hop_theo_nam_giai_doan(
     fee_pct: float = 0.15,
     stop_loss_pct: Optional[float] = None,
 ) -> list[dict]:
-    """Backtest 8 bộ chỉ số đơn lẻ + 21 tổ hợp cặp cho 1 mã (`df`), bucket
+    """Backtest 9 bộ chỉ số đơn lẻ + 28 tổ hợp cặp cho 1 mã (`df`), bucket
     kết quả theo TỪNG NĂM có ít nhất 1 lệnh, kèm GIAI ĐOẠN CHỦ YẾU (giai
     đoạn xuất hiện nhiều nhất tại ngày VÀO LỆNH của các lệnh trong năm
     đó, tính theo `regime_series` truyền vào).

@@ -3672,6 +3672,7 @@ TEN_NGAN_BO_CHI_SO_DAI_HAN = {
     "Bollinger Bounce (mua đáy dải dưới)": "BB Bounce",
     "Volume Breakout + MA20": "Vol Breakout",
     "Kết hợp: Trend Filter EMA + RSI": "Trend+RSI",
+    "Cuối tháng + RSI70": "Cuối tháng",
     "Mua và giữ (Buy & Hold)": "Buy&Hold",
 }
 
@@ -3697,7 +3698,7 @@ def _tinh_gia_tri_mac_dinh_giai_doan_can_xem(
 
 def render_long_term_stock_screener_section(storage: Storage) -> None:
     """Bộ lọc "Cổ phiếu dài hạn" (bổ sung — thay thế mục tín hiệu Mua/Bán
-    ngắn hạn cũ) — so sánh 8 bộ chỉ số kỹ thuật (`core.long_term_indicator_
+    ngắn hạn cũ) — so sánh 9 bộ chỉ số kỹ thuật (`core.long_term_indicator_
     backtest`) cho TỪNG MÃ trong watchlist, tách theo giai đoạn Uptrend/
     Sideway/Downtrend, theo CẢ 2 phương pháp phân loại giai đoạn. Dữ liệu
     đọc từ category `long_term_screener_report` — do
@@ -3707,7 +3708,7 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
     st.subheader("🧮 Cổ phiếu dài hạn")
     st.caption(
         "⚠️ Đây là BACKTEST LỊCH SỬ trên dữ liệu đã thu thập — KHÔNG PHẢI khuyến "
-        "nghị đầu tư cho tương lai. So sánh 8 bộ chỉ số kỹ thuật, tách theo giai "
+        "nghị đầu tư cho tương lai. So sánh 9 bộ chỉ số kỹ thuật, tách theo giai "
         "đoạn Uptrend/Sideway/Downtrend, vốn mô phỏng ban đầu 1.000.000.000 đ/mã, "
         "phí 0,15%/lượt. Nhiều giai đoạn (đặc biệt Sideway/Downtrend) có thể chỉ có "
         "rất ít lệnh trong lịch sử — KHÔNG nên xem là quy luật đã kiểm chứng."
@@ -3846,7 +3847,7 @@ def render_long_term_stock_screener_section(storage: Storage) -> None:
 
 @st.cache_data(ttl=1800, show_spinner=False)
 def _ban_do_ten_ngan_bo_chi_so_va_to_hop() -> dict[str, str]:
-    """Bản đồ TÊN ĐẦY ĐỦ -> TÊN NGẮN cho CẢ 8 bộ đơn lẻ VÀ 21 tổ hợp cặp
+    """Bản đồ TÊN ĐẦY ĐỦ -> TÊN NGẮN cho CẢ 9 bộ đơn lẻ VÀ 28 tổ hợp cặp
     — xây bằng ĐÚNG vòng lặp ghép cặp mà
     `core.multi_strategy_year_regime_backtest.xay_to_hop_cap_bo_chi_so()`
     dùng để đặt tên, để CHẮC CHẮN khớp với tên đã lưu trong storage.
@@ -3888,7 +3889,7 @@ def _doc_tat_ca_hang_to_hop_theo_nam(storage: Storage) -> tuple[list[dict], set[
 
 
 def render_multi_strategy_year_regime_section(storage: Storage) -> None:
-    """Lọc TƯƠNG TÁC kết quả "8 bộ chỉ số đơn lẻ + 21 tổ hợp cặp", tách
+    """Lọc TƯƠNG TÁC kết quả "9 bộ chỉ số đơn lẻ + 28 tổ hợp cặp", tách
     theo TỪNG NĂM + giai đoạn chủ yếu, cho TOÀN BỘ watchlist — dữ liệu
     đọc từ category `chien_luoc_to_hop_theo_nam` (tính SẴN qua
     `main.run_long_term_screener_step()`, KHÔNG tính live ở đây — xem
@@ -3899,7 +3900,7 @@ def render_multi_strategy_year_regime_section(storage: Storage) -> None:
     st.subheader("🎯 Lọc bộ chỉ số/tổ hợp theo Năm & Giai đoạn")
     st.caption(
         "⚠️ BACKTEST LỊCH SỬ, KHÔNG PHẢI khuyến nghị đầu tư. Mở rộng mục "
-        "🧮 Cổ phiếu dài hạn: THÊM 21 TỔ HỢP 2 bộ chỉ số (vào lệnh khi CẢ "
+        "🧮 Cổ phiếu dài hạn: THÊM 28 TỔ HỢP 2 bộ chỉ số (vào lệnh khi CẢ "
         "2 cùng đồng ý — AND, ra lệnh khi 1 TRONG 2 báo hiệu — OR), VÀ "
         "tách kết quả theo TỪNG NĂM DƯƠNG LỊCH (lãi cộng dồn RIÊNG năm "
         "đó, không cộng dồn qua các năm khác) thay vì chỉ theo giai đoạn "

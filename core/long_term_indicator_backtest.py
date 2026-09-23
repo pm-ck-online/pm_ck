@@ -3,10 +3,12 @@ long_term_indicator_backtest.py
 ================================
 [Bổ sung — Bộ lọc "Cổ phiếu dài hạn"]
 
-So sánh 8 bộ chỉ số kỹ thuật (chiến lược long/flat) cho MỘT mã, tách kết
+So sánh 9 bộ chỉ số kỹ thuật (chiến lược long/flat) cho MỘT mã, tách kết
 quả theo giai đoạn thị trường Uptrend/Sideway/Downtrend đang có hiệu lực
 tại ngày VÀO LỆNH của từng giao dịch trong lịch sử — dùng để xếp hạng "bộ
-chỉ số nào phù hợp nhất với mã này trong giai đoạn hiện tại".
+chỉ số nào phù hợp nhất với mã này trong giai đoạn hiện tại". (Hàm
+`xay_8_bo_chi_so()` giữ nguyên tên vì lý do lịch sử — xem docstring hàm
+đó — dù nay trả về 9 bộ, thêm "Cuối tháng + RSI70" bổ sung 24/09/2026.)
 
 KHÔNG tự viết lại engine backtest — tái sử dụng nguyên vẹn
 `backtest.backtest_engine.run_backtest()` (đã test kỹ, thực thi lệnh tại
@@ -75,14 +77,54 @@ def tinh_chi_bao_dai_han(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ==============================================================================
-# BƯỚC 2 — 8 bộ chỉ số (mỗi bộ = 1 cặp Series tín hiệu vào/ra, KHÔNG cần
+# BƯỚC 2 — 9 bộ chỉ số (mỗi bộ = 1 cặp Series tín hiệu vào/ra, KHÔNG cần
 # tự quản lý trạng thái "đang giữ hàng" — run_backtest() đã làm việc đó).
 # ==============================================================================
+
+TEN_CAC_BO_CHI_SO_DON_LE = (
+    "MA20 (Giá cắt MA20)",
+    "EMA50/EMA200 (Golden/Death Cross)",
+    "RSI14 (Quá mua/Quá bán 30-70)",
+    "Bollinger Breakout + Volume",
+    "Bollinger Bounce (mua đáy dải dưới)",
+    "Volume Breakout + MA20",
+    "Kết hợp: Trend Filter EMA + RSI",
+    "Cuối tháng + RSI70",
+    "Mua và giữ (Buy & Hold)",
+)
+"""Danh sách tên CHÍNH XÁC 9 bộ chỉ số mà `xay_8_bo_chi_so()` trả về —
+tách thành hằng số RIÊNG để `main.py` (checkpoint "cần tính lại nếu thiếu
+bộ chỉ số mới") tham chiếu được MÀ KHÔNG phải gọi `xay_8_bo_chi_so()`
+(vốn cần 1 DataFrame OHLCV thật để tính). PHẢI giữ ĐỒNG BỘ với dict trả
+về của `xay_8_bo_chi_so()` bên dưới — có test riêng canh giữ điều này
+(`tests/test_long_term_indicator_backtest.py`)."""
+
+SO_PHIEN_CUOI_THANG = 5
+
+
+def _tinh_tin_hieu_cuoi_thang(df: pd.DataFrame, so_phien: int = SO_PHIEN_CUOI_THANG) -> pd.Series:
+    """Series bool — `True` tại các phiên nằm trong `so_phien` PHIÊN GIAO
+    DỊCH CUỐI CÙNG của MỖI THÁNG DƯƠNG LỊCH (dựa theo cột "date" của
+    `df`, không phụ thuộc df đã convert sang datetime hay chưa — tự
+    `pd.to_datetime()` cục bộ, không sửa `df` gốc). Dùng cho bộ chỉ số
+    "Cuối tháng + RSI70" bên dưới.
+    """
+    ngay = pd.to_datetime(df["date"])
+    la_cuoi_thang = pd.Series(False, index=df.index)
+    for _, idx_nhom in df.groupby(ngay.dt.to_period("M")).groups.items():
+        la_cuoi_thang.loc[sorted(idx_nhom)[-so_phien:]] = True
+    return la_cuoi_thang
+
 
 def xay_8_bo_chi_so(df_co_chi_bao: pd.DataFrame) -> dict[str, tuple[pd.Series, pd.Series]]:
     """Trả về `{tên_bộ_chỉ_số: (entry_series, exit_series)}` — mỗi Series
     kiểu bool, cùng độ dài/thứ tự với `df_co_chi_bao` (đã gọi
     `tinh_chi_bao_dai_han()` trước đó).
+
+    LƯU Ý VỀ TÊN HÀM: giữ nguyên "8" vì lý do lịch sử (đã dùng ở nhiều nơi
+    khác trong dự án) — kể từ 24/09/2026 hàm này thực tế trả về **9 BỘ**
+    (thêm "Cuối tháng + RSI70" ở cuối, xem chi tiết ngay dưới), không đổi
+    tên hàm để tránh phải sửa hàng loạt chỗ gọi/test không cần thiết.
     """
     df = df_co_chi_bao
     close, volume = df["close"], df["volume"]
@@ -110,6 +152,17 @@ def xay_8_bo_chi_so(df_co_chi_bao: pd.DataFrame) -> dict[str, tuple[pd.Series, p
     buy_hold_entry = (valid_ema200 & ~valid_ema200.shift(1, fill_value=False)).fillna(False)
     buy_hold_exit = pd.Series(False, index=df.index)
 
+    # BỔ SUNG 24/09/2026 (theo yêu cầu người dùng, sau khi phân tích tay
+    # GMD/HDB cho thấy hiệu ứng "cuối tháng"): mua trong `SO_PHIEN_CUOI_THANG`
+    # (5) PHIÊN GIAO DỊCH CUỐI CÙNG của mỗi tháng dương lịch — bán khi
+    # RSI14 vượt 70 (vùng quá mua/đỉnh ngắn hạn, TÁI DÙNG đúng ngưỡng
+    # `rsi_exit` ở trên). Kiểm chứng thực tế: GMD (+267.96% cả giai đoạn,
+    # 21 lệnh, thắng 71.4%) và HDB (+168.92%, 33 lệnh, thắng 66.7%) — mẫu
+    # lệnh LỚN NHẤT trong toàn bộ các bộ (tín hiệu lặp lại đều đặn mỗi
+    # tháng), tổng lợi nhuận vượt trội Mua & Giữ trên cả 2 mã đã thử.
+    cuoi_thang_entry = _tinh_tin_hieu_cuoi_thang(df)
+    cuoi_thang_exit = rsi_exit
+
     return {
         "MA20 (Giá cắt MA20)": (ma20_entry, ma20_exit),
         "EMA50/EMA200 (Golden/Death Cross)": (ema_entry, ema_exit),
@@ -118,6 +171,7 @@ def xay_8_bo_chi_so(df_co_chi_bao: pd.DataFrame) -> dict[str, tuple[pd.Series, p
         "Bollinger Bounce (mua đáy dải dưới)": (bb_bounce_entry, bb_bounce_exit),
         "Volume Breakout + MA20": (vol_breakout_entry, vol_breakout_exit),
         "Kết hợp: Trend Filter EMA + RSI": (trend_filter_entry, trend_filter_exit),
+        "Cuối tháng + RSI70": (cuoi_thang_entry, cuoi_thang_exit),
         "Mua và giữ (Buy & Hold)": (buy_hold_entry, buy_hold_exit),
     }
 
@@ -197,8 +251,8 @@ def backtest_toan_bo_8_bo_chi_so(
     initial_capital: float = DEFAULT_INITIAL_CAPITAL,
     fee_pct: float = DEFAULT_FEE_PCT,
 ) -> dict[str, dict[str, dict]]:
-    """Tính chỉ báo + backtest CẢ 8 bộ chỉ số cho 1 mã, trả về
-    `{tên_bộ_chỉ_số: {giai_đoạn: {...}}}`.
+    """Tính chỉ báo + backtest CẢ 9 bộ chỉ số (xem `xay_8_bo_chi_so()`) cho
+    1 mã, trả về `{tên_bộ_chỉ_số: {giai_đoạn: {...}}}`.
     """
     df_co_chi_bao = tinh_chi_bao_dai_han(df)
     bo_chi_so = xay_8_bo_chi_so(df_co_chi_bao)

@@ -299,6 +299,45 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    đọc GENERIC qua `storage.query_all_keys(...)`, không lọc theo
    watchlist — không cần sửa gì thêm, giống cách VN30/VNINDEX đã hoạt
    động từ trước, xem mục 4k phía trên).
+4q. **BỔ SUNG 24/09/2026 — Thêm bộ chỉ số thứ 9 "Cuối tháng + RSI70"
+   (`core/long_term_indicator_backtest.py::xay_8_bo_chi_so()`)**: theo
+   yêu cầu người dùng, sau khi tự phân tích tay 2 mã GMD/HDB cho thấy
+   "hiệu ứng cuối tháng" (mua trong 5 phiên giao dịch cuối cùng mỗi
+   tháng dương lịch, bán khi RSI14 vượt 70 — tái dùng ĐÚNG ngưỡng RSI
+   của bộ "RSI14" đã có) cho tổng lợi nhuận CAO NHẤT trong toàn bộ 31
+   cấu hình đã thử (GMD +267.96%, HDB +168.92%), với SỐ LỆNH LỚN NHẤT
+   (tín hiệu lặp lại đều đặn mỗi tháng) — đáng tin cậy hơn nhiều bộ có
+   tỷ lệ thắng cao hơn nhưng chỉ 1-6 lệnh. Đã kiểm chứng NHẤT QUÁN trên
+   2 mã khác ngành trước khi đưa vào hệ thống chính thức (không chỉ dựa
+   trên 1 mã).
+
+   **QUYẾT ĐỊNH THIẾT KẾ**: KHÔNG đổi tên hàm `xay_8_bo_chi_so()` /
+   `backtest_toan_bo_8_bo_chi_so()` dù nay trả về 9 bộ (tránh sửa hàng
+   loạt chỗ gọi/test không cần thiết) — thay vào đó tách hằng số
+   `TEN_CAC_BO_CHI_SO_DON_LE` (tuple 9 tên, dùng làm "nguồn sự thật" cho
+   cả code lẫn test canh giữ đồng bộ). Số tổ hợp cặp
+   (`xay_to_hop_cap_bo_chi_so()`) tự động tăng từ C(7,2)=21 lên
+   C(8,2)=28 — hàm đó GENERIC theo số lượng đầu vào, không cần sửa code,
+   chỉ cần sửa các docstring/caption có in cứng số 21.
+
+   **LỖI TÁI DIỄN LẦN THỨ 4 (xem 4n/4o) — ĐÃ CHỦ ĐỘNG PHÒNG TRƯỚC**: thêm
+   1 bộ chỉ số mới vào `xay_8_bo_chi_so()` làm THAY ĐỔI CẤU TRÚC dữ liệu
+   đã lưu trong `long_term_screener_report`/`chien_luoc_to_hop_theo_nam`
+   — nhưng checkpoint "hạn 7 ngày" (4o) CHỈ xét `updated_at`, KHÔNG phát
+   hiện được kiểu "cũ về cấu trúc" này (dữ liệu tính cách đây 2 ngày vẫn
+   coi là "mới", dù thiếu hẳn bộ chỉ số mới, sẽ mắc kẹt tới tận lần quá
+   hạn tiếp theo). Đã thêm hàm MỚI
+   `main._thieu_bo_chi_so_moi_trong_long_term_screener_report()` — kiểm
+   tra `TEN_CAC_BO_CHI_SO_DON_LE` có phải tập con của các tên bộ chỉ số
+   ĐÃ LƯU hay không, kết hợp OR với checkpoint theo hạn ngày (4o) cho cả
+   `can_tinh_report` VÀ `can_tinh_to_hop` (report thiếu bộ mới ->
+   to_hop chắc chắn cũng thiếu, vì cả 2 tính từ CÙNG 1 lượt gọi
+   `xay_8_bo_chi_so()`). **BÀI HỌC TỔNG QUÁT (LẦN THỨ 4)**: khi THAY ĐỔI
+   HÌNH DẠNG (shape) dữ liệu 1 hàm tính-rồi-lưu trả về (không chỉ khi
+   THÊM category mới như 4n, mà cả khi 1 category ĐÃ CÓ đổi cấu trúc bên
+   trong), checkpoint theo THỜI GIAN đơn thuần KHÔNG đủ — cần thêm kiểm
+   tra CẤU TRÚC (danh sách khóa/trường có đúng như phiên bản code hiện
+   tại mong đợi hay không).
 5. **Toàn bộ code/comment/UI dùng tiếng Việt** (người dùng không đọc tiếng
    Anh trôi chảy). Giữ nguyên quy ước này cho mọi code mới.
 6. **Vietstock/CafeF/dữ liệu tài chính doanh nghiệp CHƯA có nguồn** — các

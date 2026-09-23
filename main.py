@@ -48,6 +48,7 @@ from backtest.backtest_engine import Trade  # noqa: F401 (tham chiếu cho phát
 from core.capital_allocator import get_allocation_recommendation
 from core.data_collector import BinanceDataSource, DataCollector, MockDataSource, VnstockDataSource
 from core.indicators import get_indicator_snapshot
+from core.long_term_indicator_backtest import TEN_CAC_BO_CHI_SO_DON_LE
 from core.market_breadth import calculate_atr
 from core.market_regime_detector import detect_market_regime
 from core.notifier import Notifier, RealTelegramClient
@@ -684,7 +685,7 @@ def run_index_step(
     vào mục "🎭 Tính cách giao dịch từng mã") — thuần túy mô tả CÁCH giá
     của chính chỉ số đã vận động (percentile so với lịch sử của chính
     nó), không liên quan gì tới việc "mua" một vị thế cụ thể. "Cổ phiếu
-    dài hạn" (backtest 8 bộ chỉ số) cũng áp dụng được cùng lý do — xem
+    dài hạn" (backtest 9 bộ chỉ số) cũng áp dụng được cùng lý do — xem
     lệnh gọi `run_long_term_screener_step()` riêng cho chỉ số ở cuối
     `run_pipeline()`/`update_indices.py`.
     """
@@ -947,7 +948,7 @@ def run_pipeline(config: dict) -> None:
     run_short_term_signal_step(storage, list(symbol_sector_map.keys()))
     run_entry_screener_step(storage, list(symbol_sector_map.keys()))
 
-    # --- Bộ lọc "📈 Cổ phiếu dài hạn" (backtest 8 bộ chỉ số theo giai đoạn) ---
+    # --- Bộ lọc "📈 Cổ phiếu dài hạn" (backtest 9 bộ chỉ số theo giai đoạn) ---
     run_long_term_screener_step(storage, symbol_sector_map)
     # Áp dụng THÊM cho chỉ số (VNINDEX/VN30/VN100...) — cùng lý do đã nêu
     # ở docstring `run_index_step()`: thuần túy backtest kỹ thuật trên
@@ -1297,11 +1298,39 @@ def _da_qua_han_lam_moi_co_phieu_dai_han(record: Optional[dict], so_ngay: int) -
     return (datetime.now() - updated_at) > timedelta(days=so_ngay)
 
 
+def _thieu_bo_chi_so_moi_trong_long_term_screener_report(record: Optional[dict]) -> bool:
+    """Trả về `True` nếu `record` (category `long_term_screener_report`)
+    ĐANG THIẾU ít nhất 1 bộ chỉ số trong `TEN_CAC_BO_CHI_SO_DON_LE` hiện
+    tại — tức được tính bằng 1 PHIÊN BẢN CODE CŨ (VD trước khi thêm bộ
+    "Cuối tháng + RSI70" 24/09/2026). `record is None` -> trả về `False`
+    (trường hợp đó đã được `_da_qua_han_lam_moi_co_phieu_dai_han()` xử lý
+    riêng — tránh trùng logic).
+
+    BỔ SUNG 24/09/2026 — SỰ CỐ CÙNG DẠNG LẦN THỨ 4 (xem 4n/4o trong
+    CLAUDE.md): checkpoint theo "hạn 7 ngày" (4o) chỉ phát hiện dữ liệu
+    CŨ THEO THỜI GIAN, KHÔNG phát hiện dữ liệu CŨ THEO CẤU TRÚC (thêm 1
+    bộ chỉ số mới vào `xay_8_bo_chi_so()` không tự động làm `updated_at`
+    "quá hạn") — nếu không có kiểm tra này, mã nào vừa tính trong 7 ngày
+    gần đây sẽ bị "mắc kẹt" thiếu bộ chỉ số mới cho tới tận lần "quá hạn"
+    tiếp theo. Dùng CHUNG cho CẢ 2 category (`can_tinh_report`,
+    `can_tinh_to_hop`) trong `run_long_term_screener_step()` bên dưới —
+    lan truyền sang `chien_luoc_to_hop_theo_nam` vì cả 2 đều tính từ
+    CÙNG 1 lượt gọi `xay_8_bo_chi_so()`.
+    """
+    if record is None:
+        return False
+    data = record["data"]
+    ket_qua_fast = (data.get("regime_fast") or {}).get("results") or {}
+    ket_qua_ensemble = (data.get("regime_ensemble") or {}).get("results") or {}
+    ten_da_co = set(ket_qua_fast.keys()) | set(ket_qua_ensemble.keys())
+    return not set(TEN_CAC_BO_CHI_SO_DON_LE).issubset(ten_da_co)
+
+
 def run_long_term_screener_step(
     storage: Storage, symbol_sector_map: dict, force_recompute: bool = False,
 ) -> None:
     """Tính bộ lọc "📈 Cổ phiếu dài hạn" — cho TỪNG MÃ trong
-    `symbol_sector_map`, backtest 8 bộ chỉ số kỹ thuật
+    `symbol_sector_map`, backtest 9 bộ chỉ số kỹ thuật
     (`core.long_term_indicator_backtest.backtest_toan_bo_8_bo_chi_so`),
     tách kết quả theo giai đoạn Uptrend/Sideway/Downtrend, theo CẢ 2
     phương pháp phân loại giai đoạn:
@@ -1364,11 +1393,18 @@ def run_long_term_screener_step(
     so_da_tinh, so_bo_qua, so_loi = 0, 0, 0
 
     for ma, nganh in symbol_sector_map.items():
-        can_tinh_report = force_recompute or _da_qua_han_lam_moi_co_phieu_dai_han(
-            storage.get_latest("long_term_screener_report", ma), SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
+        report_record = storage.get_latest("long_term_screener_report", ma)
+        can_tinh_report = (
+            force_recompute
+            or _da_qua_han_lam_moi_co_phieu_dai_han(report_record, SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN)
+            or _thieu_bo_chi_so_moi_trong_long_term_screener_report(report_record)
         )
-        can_tinh_to_hop = force_recompute or _da_qua_han_lam_moi_co_phieu_dai_han(
-            storage.get_latest("chien_luoc_to_hop_theo_nam", ma), SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
+        can_tinh_to_hop = (
+            force_recompute
+            or can_tinh_report  # report thiếu bộ chỉ số mới -> to_hop chắc chắn cũng thiếu
+            or _da_qua_han_lam_moi_co_phieu_dai_han(
+                storage.get_latest("chien_luoc_to_hop_theo_nam", ma), SO_NGAY_LAM_MOI_CO_PHIEU_DAI_HAN,
+            )
         )
 
         if not can_tinh_report and not can_tinh_to_hop:

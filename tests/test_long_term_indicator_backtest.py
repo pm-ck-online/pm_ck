@@ -17,8 +17,10 @@ import pytest
 
 from backtest.backtest_engine import Trade
 from core.long_term_indicator_backtest import (
+    TEN_CAC_BO_CHI_SO_DON_LE,
     VALID_REGIMES,
     InvalidLongTermBacktestError,
+    _tinh_tin_hieu_cuoi_thang,
     backtest_theo_giai_doan,
     backtest_toan_bo_8_bo_chi_so,
     tim_bo_chi_so_tot_nhat,
@@ -68,15 +70,30 @@ class TestTinhChiBaoDaiHan:
 # ==============================================================================
 
 class TestXay8BoChiSo:
-    def test_du_8_bo_chi_so(self):
+    def test_du_9_bo_chi_so(self):
+        # Tên hàm giữ "8" vì lý do lịch sử — thực tế trả về 9 bộ (thêm
+        # "Cuối tháng + RSI70" 24/09/2026), PHẢI khớp đúng
+        # TEN_CAC_BO_CHI_SO_DON_LE (main.py dùng hằng số này để phát hiện
+        # dữ liệu cũ thiếu bộ chỉ số mới — xem tests/test_main_index_step.py).
         df = tinh_chi_bao_dai_han(_make_df(list(range(100, 140))))
         bo_chi_so = xay_8_bo_chi_so(df)
-        assert len(bo_chi_so) == 8
+        assert len(bo_chi_so) == 9
+        assert set(bo_chi_so.keys()) == set(TEN_CAC_BO_CHI_SO_DON_LE)
         for entry, exit_ in bo_chi_so.values():
             assert len(entry) == len(df)
             assert len(exit_) == len(df)
             assert entry.dtype == bool
             assert exit_.dtype == bool
+
+    def test_cuoi_thang_entry_khop_ham_tinh_tin_hieu_cuoi_thang(self):
+        df = tinh_chi_bao_dai_han(_make_df(list(range(100, 140))))
+        bo_chi_so = xay_8_bo_chi_so(df)
+        entry, exit_ = bo_chi_so["Cuối tháng + RSI70"]
+        assert entry.equals(_tinh_tin_hieu_cuoi_thang(df))
+        # Exit dung LAI DUNG nguong RSI>70 nhu bo RSI14 don le (tai su
+        # dung, khong tinh lai cong thuc).
+        _, rsi_exit = bo_chi_so["RSI14 (Quá mua/Quá bán 30-70)"]
+        assert exit_.equals(rsi_exit)
 
     def test_rsi14_entry_khi_qua_ban_exit_khi_qua_mua(self):
         # Giá giảm mạnh liên tục 20 phiên (RSI thấp) rồi tăng mạnh liên tục
@@ -123,6 +140,48 @@ class TestXay8BoChiSo:
         vi_tri_mua = int(np.flatnonzero(entry.to_numpy())[0])
         assert df["ema200"].iloc[vi_tri_mua - 1] != df["ema200"].iloc[vi_tri_mua - 1]  # NaN trước đó
         assert not pd.isna(df["ema200"].iloc[vi_tri_mua])
+
+
+# ==============================================================================
+# _tinh_tin_hieu_cuoi_thang — bộ chỉ số "Cuối tháng + RSI70" (24/09/2026)
+# ==============================================================================
+
+class TestTinhTinHieuCuoiThang:
+    def test_thang_nhieu_hon_5_phien_chi_5_phien_cuoi_la_true(self):
+        # 8 phiên LIÊN TIẾP, CÙNG 1 tháng (6/2024) -> chỉ 5 phiên CUỐI
+        # (theo đúng thứ tự ngày) được đánh dấu True, 3 phiên ĐẦU là False.
+        dates = pd.to_datetime([
+            "2024-06-03", "2024-06-04", "2024-06-05", "2024-06-06",
+            "2024-06-07", "2024-06-10", "2024-06-11", "2024-06-12",
+        ])
+        df = pd.DataFrame({"date": dates, "close": range(8)})
+        ket_qua = _tinh_tin_hieu_cuoi_thang(df, so_phien=5)
+        assert ket_qua.tolist() == [False, False, False, True, True, True, True, True]
+
+    def test_thang_it_hon_5_phien_danh_dau_tat_ca(self):
+        dates = pd.to_datetime(["2024-01-29", "2024-01-30", "2024-01-31"])
+        df = pd.DataFrame({"date": dates, "close": [1, 2, 3]})
+        ket_qua = _tinh_tin_hieu_cuoi_thang(df, so_phien=5)
+        assert ket_qua.tolist() == [True, True, True]
+
+    def test_nhieu_thang_lien_tiep_doi_chieu_doc_lap(self):
+        dates = pd.bdate_range("2024-01-01", "2024-03-31")
+        df = pd.DataFrame({"date": dates, "close": range(len(dates))})
+        ket_qua = _tinh_tin_hieu_cuoi_thang(df, so_phien=5)
+
+        nhom_thang = pd.to_datetime(df["date"]).dt.to_period("M")
+        for ky_thang, idx_nhom in df.groupby(nhom_thang).groups.items():
+            idx_sap_xep = sorted(idx_nhom)
+            ky_vong_true = set(idx_sap_xep[-5:])
+            for idx in idx_sap_xep:
+                assert bool(ket_qua.loc[idx]) == (idx in ky_vong_true), f"Sai ở tháng {ky_thang}, dòng {idx}"
+
+    def test_khong_sua_doi_df_goc(self):
+        dates = pd.to_datetime(["2024-06-03", "2024-06-04"])
+        df = pd.DataFrame({"date": dates, "close": [1, 2]})
+        df_truoc = df.copy()
+        _tinh_tin_hieu_cuoi_thang(df, so_phien=5)
+        pd.testing.assert_frame_equal(df, df_truoc)
 
 
 # ==============================================================================
@@ -188,7 +247,7 @@ class TestBacktestToanBo8BoChiSo:
         df = _make_df(list(np.linspace(100, 300, 220)))
         regime_series = pd.Series("uptrend", index=df["date"])
         ket_qua = backtest_toan_bo_8_bo_chi_so(df, regime_series, initial_capital=1_000_000.0, fee_pct=0.15)
-        assert len(ket_qua) == 8
+        assert len(ket_qua) == 9
         for ten_bo_chi_so, ket_qua_giai_doan in ket_qua.items():
             assert set(ket_qua_giai_doan.keys()) == VALID_REGIMES
             for regime_stats in ket_qua_giai_doan.values():

@@ -24,16 +24,21 @@ from core.multi_strategy_year_regime_backtest import (
 # ==============================================================================
 
 class TestXayToHopCapBoChiSo:
-    def test_tra_ve_dung_21_to_hop_tu_8_bo(self):
+    def test_tra_ve_dung_28_to_hop_tu_9_bo(self):
+        # Hàm GENERIC theo số lượng bộ chỉ số truyền vào — dùng 8 bộ đơn
+        # lẻ giả (khớp đúng số lượng THẬT hiện tại của
+        # core.long_term_indicator_backtest.xay_8_bo_chi_so(), sau khi
+        # thêm "Cuối tháng + RSI70" 24/09/2026, không tính "Mua và giữ")
+        # + Buy&Hold -> C(8,2) = 28 tổ hợp.
         gia_tri_gia = pd.Series([True, False, True])
         bo_8_gia = {
-            f"Bo {i}": (gia_tri_gia, gia_tri_gia) for i in range(7)
+            f"Bo {i}": (gia_tri_gia, gia_tri_gia) for i in range(8)
         }
         bo_8_gia["Mua và giữ (Buy & Hold)"] = (gia_tri_gia, gia_tri_gia)
 
         to_hop = xay_to_hop_cap_bo_chi_so(bo_8_gia)
 
-        assert len(to_hop) == 21  # C(7,2)
+        assert len(to_hop) == 28  # C(8,2)
         assert all("Mua và giữ (Buy & Hold)" not in ten for ten in to_hop)
 
     def test_entry_la_and_exit_la_or(self):
