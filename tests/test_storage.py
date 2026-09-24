@@ -416,6 +416,35 @@ class TestReconnectOnConnectionDrop:
             storage.get_latest("test_category", "test_key")
         assert fake_module.connect.call_count == 1  # KHÔNG tự kết nối lại
 
+    def test_rollback_duoc_goi_khi_loi_khac_de_khong_lay_lan_sang_lan_goi_sau(self, monkeypatch):
+        """SỬA LỖI 24/09/2026: sự cố thực tế — 1 câu lệnh lỗi (không phải
+        mất kết nối) khiến transaction Postgres chuyển sang trạng thái
+        "aborted" nhưng code chỉ `raise` lại mà KHÔNG rollback(), làm MỌI
+        lệnh gọi Storage SAU ĐÓ trên cùng kết nối đều lỗi lây lan với
+        "current transaction is aborted, commands ignored until end of
+        transaction block" — khiến gần như toàn bộ nửa sau watchlist
+        (~180/212 mã) bị bỏ qua liên tiếp trong 1 lần chạy
+        run_full_market.py. Test này xác nhận rollback() được gọi ngay khi
+        gặp lỗi không phải mất kết nối, để lần gọi KẾ TIẾP trên cùng
+        Storage không bị lây lỗi."""
+        fake_module, _ = _make_fake_psycopg2_module()
+        conn1, cursor1 = self._fake_conn_voi_cursor(
+            execute_side_effect=[
+                None, None,
+                Exception("current transaction is aborted, commands ignored until end of transaction block"),
+            ]
+        )
+        fake_module.connect = MagicMock(return_value=conn1)
+        monkeypatch.setitem(sys.modules, "psycopg2", fake_module)
+        monkeypatch.setitem(sys.modules, "psycopg2.extras", fake_module.extras)
+
+        storage = Storage(db_path="postgresql://x:y@host:5432/db")
+        with pytest.raises(Exception, match="current transaction is aborted"):
+            storage.get_latest("test_category", "test_key")
+
+        conn1.rollback.assert_called_once()
+        assert fake_module.connect.call_count == 1  # vẫn KHÔNG tự kết nối lại (kết nối còn sống)
+
 
 class TestRowToDictFallback:
     def test_falls_back_to_positional_access_when_name_access_fails(self):

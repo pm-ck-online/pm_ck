@@ -461,6 +461,24 @@ class TestTinhChuoiGiaiDoanTheoNgay:
         chuoi = tinh_chuoi_giai_doan_theo_ngay(du_lieu)
         assert len(chuoi) > 0
 
+    def test_does_not_crash_with_duplicate_dates_in_one_symbol(self):
+        """Sự cố thực tế 24/09/2026: 1 mã có NGÀY TRÙNG LẶP trong OHLCV
+        lịch sử (dữ liệu ghi lại nhiều lần cho cùng 1 ngày) làm
+        `pd.DataFrame(cot_tren_ema)` ném "ValueError: cannot reindex on an
+        axis with duplicate labels", giết chết TOÀN BỘ `run_full_market.py`
+        ngay tại bước gọi hàm này (trước khi kịp chạy tới bước tính "Cổ
+        phiếu dài hạn" cho cả watchlist). Phải tự loại bỏ ngày trùng (giữ
+        dòng CUỐI) thay vì ném lỗi."""
+        import pandas as pd
+        du_lieu = self._make_du_lieu()
+        df_a = du_lieu["A"]
+        dong_trung = df_a.iloc[[250]]  # nhân đôi 1 dòng giữa chuỗi
+        du_lieu["A"] = pd.concat([df_a, dong_trung], ignore_index=True)
+
+        chuoi = tinh_chuoi_giai_doan_theo_ngay(du_lieu)  # không được raise
+        assert isinstance(chuoi, pd.Series)
+        assert len(chuoi) > 0
+
     def test_consistent_with_classify_sector_trend_on_latest_day(self):
         # Đối chiếu: kết quả ngày CUỐI CÙNG của chuỗi phải khớp với
         # classify_sector_trend() gọi trực tiếp trên snapshot mới nhất.

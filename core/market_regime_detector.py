@@ -587,6 +587,15 @@ def tinh_chuoi_giai_doan_theo_ngay(du_lieu_theo_ma, config=None):
         df = df.copy()
         df["date"] = pd.to_datetime(df["date"])
         df = df.set_index("date")
+        # Loại bỏ ngày trùng lặp (giữ dòng CUỐI — giả định bản ghi sau là
+        # cập nhật mới hơn), giống bản vá đã áp dụng ở
+        # dashboard/app.py::_dung_chi_so_dai_dien_tu_cac_ma() — thiếu bước
+        # này khiến `pd.DataFrame(cot_tren_ema)` bên dưới ném
+        # "ValueError: cannot reindex on an axis with duplicate labels"
+        # ngay khi có ĐÚNG 1 mã bị trùng ngày trong `ohlcv_history`, làm
+        # CHẾT CỨNG toàn bộ `run_full_market.py` (sự cố thực tế 24/09/2026
+        # — lỗi này chưa từng được vá ở đây dù đã vá ở dashboard).
+        df = df[~df.index.duplicated(keep="last")]
 
         ema200 = calculate_ema(df.reset_index(), 200)
         ema200.index = df.index

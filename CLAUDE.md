@@ -394,6 +394,66 @@ mô phỏng dựa trên khuyến nghị hệ thống đưa ra.
    ở tầng trên (dễ sót, khó bảo trì, và có thể vô tình nuốt luôn
    `KeyboardInterrupt` thật của người dùng nếu viết ẩu bằng
    `except BaseException:`).
+4s. **LỖI NGHIÊM TRỌNG ĐÃ SỬA 24/09/2026 — 2 lỗi KHÁC NHAU cùng khiến
+   `run_full_market.py` không bao giờ tính được "Cổ phiếu dài hạn" cho
+   watchlist dù batch báo "Hoan tat"**: sau khi vá xong 4r (SystemExit),
+   người dùng chạy lại `update_pm_ck_daily.bat` trên MỘT MÁY KHÁC (đã
+   `git pull`) nhưng bộ chỉ số "Cuối tháng + RSI70" vẫn không xuất hiện
+   cho hầu hết mã. Truy vết qua `update_log.txt` phát hiện `update_pm_ck_
+   daily.bat` chạy 3 script độc lập bằng `>>` (KHÔNG có `&&`), nên dù
+   `run_full_market.py` CRASH GIỮA CHỪNG, `update_indices.py`/
+   `update_vcp.py` vẫn chạy tiếp và in "Hoan tat" như không có gì —
+   ĐÂY LÀ LÝ DO GỐC khiến batch "trông như xong" dù chưa xong (xem thêm
+   ý gợi mở ở mục 6 bên dưới về việc thêm kiểm tra exit code giữa các
+   lệnh trong .bat).
+
+   **Lỗi A (nguyên nhân trực tiếp khiến `run_full_market.py` chết hẳn)**:
+   `core/market_regime_detector.py::tinh_chuoi_giai_doan_theo_ngay()` —
+   khi 1 mã bất kỳ có NGÀY TRÙNG LẶP trong `ohlcv_history` (chưa rõ nguồn
+   gốc trùng), `pd.DataFrame(cot_tren_ema)` (dict nhiều Series, mỗi
+   Series index=ngày theo TỪNG mã) ném thẳng `ValueError: cannot reindex
+   on an axis with duplicate labels` — Y HỆT lỗi đã gặp và vá ở
+   `dashboard/app.py::_dung_chi_so_dai_dien_tu_cac_ma()` trước đây, nhưng
+   CHƯA TỪNG được vá ở hàm này. Vì lỗi này KHÔNG được bọc try/except ở
+   `run_full_market.py::run_full_market()` (gọi trực tiếp ở dòng
+   `storage = run_market_regime_history_step(storage)`), nó giết chết
+   TOÀN BỘ tiến trình ngay tại đó — TRƯỚC bước `run_market_regime_
+   ensemble_step`/`run_long_term_screener_step` phía sau. Đã vá bằng
+   đúng kỹ thuật cũ (`df = df[~df.index.duplicated(keep="last")]` ngay
+   sau `set_index("date")`), kèm PHÒNG NGỪA thêm 1 chỗ tương tự CHƯA
+   crash nhưng cùng lớp rủi ro (`main.py` — hàm dựng
+   `gia_dong_cua_theo_ma` cho `dung_chi_so_dai_dien_tu_gia_dong_cua()`,
+   cũng gộp nhiều mã qua `pd.concat`). **BÀI HỌC**: khi 1 hàm build
+   dict/list nhiều `pd.Series` theo TỪNG MÃ rồi GỘP LẠI
+   (`pd.DataFrame(dict)`/`pd.concat(axis=1)`), PHẢI dedupe index của
+   MỖI Series con TRƯỚC khi gộp — không đợi tới khi đúng 1 mã bị lỗi dữ
+   liệu mới phát hiện qua sự cố thật (đây đã là lần THỨ 2 cùng 1 dạng
+   lỗi, chỉ khác hàm).
+
+   **Lỗi B (làm hỏng dữ liệu ~180/212 mã ngay TRƯỚC khi Lỗi A xảy ra,
+   độc lập với Lỗi A)**: `core/storage.py::_voi_ket_noi_lai()` — khi 1
+   câu lệnh SQL lỗi vì BẤT KỲ lý do gì KHÔNG khớp `CONNECTION_ERROR_
+   KEYWORDS` (chỉ nhận diện "mất kết nối hẳn", KHÔNG nhận diện lỗi
+   Postgres "current transaction is aborted, commands ignored until end
+   of transaction block" — 1 lỗi transaction bị hỏng dở trong khi kết
+   nối vẫn CÒN SỐNG), code chỉ `raise` lại lỗi gốc mà KHÔNG hề gọi
+   `self._conn.rollback()` — khiến transaction Postgres bị "kẹt" ở
+   trạng thái hỏng VĨNH VIỄN cho MỌI câu lệnh SAU ĐÓ trên CÙNG 1 kết nối
+   (đặc tính chuẩn của Postgres: 1 lệnh lỗi trong transaction làm mọi
+   lệnh sau đó tự động lỗi theo tới khi có ROLLBACK). Sự cố thực tế: 1
+   lỗi Postgres bất kỳ xảy ra ở khoảng giữa bảng chữ cái (~mã "DNP") đã
+   khiến TOÀN BỘ ~180 mã còn lại (D→Y) bị bỏ qua liên tiếp trong hàm
+   `main.py` build `ohlcv_map`/`gia_dong_cua_theo_ma` cho bước Ensemble
+   theo ngành — dù server Supabase hoàn toàn bình thường trong suốt thời
+   gian đó. Đã sửa: `_voi_ket_noi_lai()` giờ LUÔN gọi `self._conn.
+   rollback()` (bọc try/except riêng, không để lỗi rollback che lấp lỗi
+   gốc) TRƯỚC KHI `raise` lại, cho MỌI lỗi không phải mất-kết-nối-hẳn —
+   không chỉ riêng trường hợp "aborted transaction". **BÀI HỌC**: với
+   backend Postgres chạy `autocommit=False`, BẤT KỲ nơi nào bắt lỗi rồi
+   `raise`/`continue`/bỏ qua mà KHÔNG rollback() đều có nguy cơ để lại 1
+   transaction "kẹt", làm lỗi LAN SANG mọi lệnh gọi Storage tiếp theo
+   trên cùng kết nối — không chỉ ảnh hưởng đúng 1 mã/thao tác đang lỗi
+   như thiết kế ban đầu tưởng.
 5. **Toàn bộ code/comment/UI dùng tiếng Việt** (người dùng không đọc tiếng
    Anh trôi chảy). Giữ nguyên quy ước này cho mọi code mới.
 6. **Vietstock/CafeF/dữ liệu tài chính doanh nghiệp CHƯA có nguồn** — các
@@ -521,6 +581,17 @@ dữ liệu thật (`"mock"` chỉ dùng khi code/test không có mạng).
    `capital_allocation_engine` để lấy đúng mức cắt lỗ đã đặt khi vào lệnh
    (hiện `position_info["gia_cat_lo"]` luôn `None` khi gọi từ
    `run_stock_signal_step()` trong `main.py`).
+7. **`update_pm_ck_daily.bat`/`run_full_market_update.bat`/`run_main_update.bat`
+   chạy các lệnh `python ... >> log.txt 2>&1` LIÊN TIẾP, KHÔNG kiểm tra
+   exit code giữa các lệnh** (không dùng `&&` hay `if errorlevel`) — nếu
+   1 script (VD `run_full_market.py`) crash giữa chừng, các script SAU
+   nó (`update_indices.py`/`update_vcp.py`) vẫn cứ chạy và in "Hoan tat"
+   như không có gì xảy ra (xem sự cố thực tế 24/09/2026, mục 4s). Nên
+   thêm kiểm tra `if %errorlevel% neq 0` sau mỗi lệnh `python` để dừng
+   sớm + ghi rõ log "THẤT BẠI" thay vì im lặng chạy tiếp — CHƯA làm vì
+   cần người dùng xác nhận có muốn dừng cả chuỗi khi 1 bước lỗi hay
+   không (có thể vẫn muốn `update_indices.py` chạy dù `run_full_market.py`
+   lỗi, tùy mức độ ưu tiên).
 
 ## 7. Lịch sử phiên làm việc (tóm tắt, xem chi tiết trong lịch sử chat claude.ai nếu cần)
 

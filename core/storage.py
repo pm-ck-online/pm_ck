@@ -221,6 +221,24 @@ class Storage:
             return thao_tac()
         except Exception as exc:  # noqa: BLE001
             if not is_connection_error(exc):
+                # QUAN TRỌNG (sự cố thực tế 24/09/2026): 1 câu lệnh lỗi vì
+                # BẤT KỲ lý do gì (không phải mất kết nối) khiến transaction
+                # Postgres hiện tại chuyển sang trạng thái "aborted" — MỌI
+                # câu lệnh SAU ĐÓ trên CÙNG kết nối này sẽ lỗi LÂY LAN với
+                # thông báo "current transaction is aborted, commands
+                # ignored until end of transaction block", dù bản thân kết
+                # nối vẫn còn sống (không khớp `CONNECTION_ERROR_KEYWORDS`,
+                # nên trước đây code chỉ `raise` lại mà KHÔNG rollback) —
+                # đã khiến gần như toàn bộ nửa sau watchlist (~180/212 mã)
+                # bị bỏ qua liên tiếp trong 1 lần chạy `run_full_market.py`.
+                # PHẢI rollback() ngay để giải phóng transaction, để lần
+                # gọi KẾ TIẾP trên cùng `Storage` (mã/lô tiếp theo) không bị
+                # lây lỗi — rồi mới raise lại lỗi gốc cho tầng gọi xử lý
+                # đúng phạm vi 1 mã/lô như thiết kế ban đầu.
+                try:
+                    self._conn.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
                 raise
             try:
                 self._conn.close()

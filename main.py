@@ -1249,6 +1249,13 @@ def run_market_regime_ensemble_step(storage: Storage) -> None:
         df_ma = pd.DataFrame(recs)
         df_ma["date"] = pd.to_datetime(df_ma["date"])
         df_ma = df_ma.sort_values("date").set_index("date")
+        # Loại ngày trùng lặp (giữ dòng CUỐI) trước khi đưa vào chuỗi giá
+        # đại diện theo ngành — cùng lớp lỗi với sự cố thực tế 24/09/2026
+        # đã vá ở market_regime_detector.tinh_chuoi_giai_doan_theo_ngay()
+        # và dashboard/app.py — chuỗi này cũng được gộp nhiều mã lại
+        # (dung_chi_so_dai_dien_tu_gia_dong_cua -> pd.concat), nên vá
+        # PHÒNG NGỪA trước khi gặp sự cố thật, không đợi crash mới sửa.
+        df_ma = df_ma[~df_ma.index.duplicated(keep="last")]
         gia_dong_cua_theo_ma[ma] = df_ma["close"]
 
     tat_ca_nganh = sorted({v for v in nganh_theo_ma.values() if v})
